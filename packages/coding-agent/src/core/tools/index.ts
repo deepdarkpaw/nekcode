@@ -96,6 +96,7 @@ import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
 import { createPowerShellTool, createPowerShellToolDefinition, type PowerShellToolOptions } from "./powershell.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
+import { createReadStateStore, type ReadStateStore } from "./read-state.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
@@ -126,20 +127,31 @@ export interface ToolsOptions {
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
 	ast_grep?: AstGrepToolOptions;
+	/**
+	 * Read state shared by read, write, and edit so an edit cannot overwrite a file the model has not read.
+	 * Omitted callers get one store per tool set.
+	 */
+	readState?: ReadStateStore;
+}
+
+/** One read state store per tool set when the caller supplies none. */
+function resolveReadState(options: ToolsOptions | undefined): ReadStateStore {
+	return options?.readState ?? createReadStateStore();
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
+	const readState = resolveReadState(options);
 	switch (toolName) {
 		case "read":
-			return createReadToolDefinition(cwd, options?.read);
+			return createReadToolDefinition(cwd, { ...options?.read, readState });
 		case "bash":
 			return createBashToolDefinition(cwd, options?.bash);
 		case "powershell":
 			return createPowerShellToolDefinition(cwd, options?.powershell);
 		case "edit":
-			return createEditToolDefinition(cwd, options?.edit);
+			return createEditToolDefinition(cwd, { ...options?.edit, readState });
 		case "write":
-			return createWriteToolDefinition(cwd, options?.write);
+			return createWriteToolDefinition(cwd, { ...options?.write, readState });
 		case "grep":
 			return createGrepToolDefinition(cwd, options?.grep);
 		case "find":
@@ -154,17 +166,18 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 }
 
 export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptions): Tool {
+	const readState = resolveReadState(options);
 	switch (toolName) {
 		case "read":
-			return createReadTool(cwd, options?.read);
+			return createReadTool(cwd, { ...options?.read, readState });
 		case "bash":
 			return createBashTool(cwd, options?.bash);
 		case "powershell":
 			return createPowerShellTool(cwd, options?.powershell);
 		case "edit":
-			return createEditTool(cwd, options?.edit);
+			return createEditTool(cwd, { ...options?.edit, readState });
 		case "write":
-			return createWriteTool(cwd, options?.write);
+			return createWriteTool(cwd, { ...options?.write, readState });
 		case "grep":
 			return createGrepTool(cwd, options?.grep);
 		case "find":
@@ -179,17 +192,18 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 }
 
 export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
+	const readState = resolveReadState(options);
 	return [
-		createReadToolDefinition(cwd, options?.read),
+		createReadToolDefinition(cwd, { ...options?.read, readState }),
 		createBashToolDefinition(cwd, options?.bash),
-		createEditToolDefinition(cwd, options?.edit),
-		createWriteToolDefinition(cwd, options?.write),
+		createEditToolDefinition(cwd, { ...options?.edit, readState }),
+		createWriteToolDefinition(cwd, { ...options?.write, readState }),
 	];
 }
 
 export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
 	return [
-		createReadToolDefinition(cwd, options?.read),
+		createReadToolDefinition(cwd, { ...options?.read, readState: resolveReadState(options) }),
 		createGrepToolDefinition(cwd, options?.grep),
 		createFindToolDefinition(cwd, options?.find),
 		createLsToolDefinition(cwd, options?.ls),
@@ -198,12 +212,13 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 }
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
+	const readState = resolveReadState(options);
 	return {
-		read: createReadToolDefinition(cwd, options?.read),
+		read: createReadToolDefinition(cwd, { ...options?.read, readState }),
 		bash: createBashToolDefinition(cwd, options?.bash),
 		powershell: createPowerShellToolDefinition(cwd, options?.powershell),
-		edit: createEditToolDefinition(cwd, options?.edit),
-		write: createWriteToolDefinition(cwd, options?.write),
+		edit: createEditToolDefinition(cwd, { ...options?.edit, readState }),
+		write: createWriteToolDefinition(cwd, { ...options?.write, readState }),
 		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
 		ls: createLsToolDefinition(cwd, options?.ls),
@@ -212,11 +227,12 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 }
 
 export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
+	const readState = resolveReadState(options);
 	return [
-		createReadTool(cwd, options?.read),
+		createReadTool(cwd, { ...options?.read, readState }),
 		createBashTool(cwd, options?.bash),
-		createEditTool(cwd, options?.edit),
-		createWriteTool(cwd, options?.write),
+		createEditTool(cwd, { ...options?.edit, readState }),
+		createWriteTool(cwd, { ...options?.write, readState }),
 	];
 }
 

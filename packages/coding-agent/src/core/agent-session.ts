@@ -129,7 +129,8 @@ import {
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
-import { createAllToolDefinitions, DEFAULT_ACTIVE_TOOL_NAMES } from "./tools/index.ts";
+import { createAllToolDefinitions, DEFAULT_ACTIVE_TOOL_NAMES, type ToolsOptions } from "./tools/index.ts";
+import { createReadStateStore, type ReadStateStore } from "./tools/read-state.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
@@ -411,6 +412,9 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	/** Prompt options after before_agent_start mutations for the active run. */
 	private _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
+
+	/** Read state shared by this session's read, write, and edit tools. */
+	private readonly _readState: ReadStateStore = createReadStateStore();
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -3242,6 +3246,11 @@ export class AgentSession {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
+		const toolsOptions: ToolsOptions = {
+			read: { autoResizeImages },
+			bash: { commandPrefix: shellCommandPrefix, shellPath },
+			readState: this._readState,
+		};
 		const baseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -3249,10 +3258,7 @@ export class AgentSession {
 						createToolDefinitionFromAgentTool(tool),
 					]),
 				)
-			: createAllToolDefinitions(this._cwd, {
-					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
-				});
+			: createAllToolDefinitions(this._cwd, toolsOptions);
 
 		this._baseToolDefinitions = new Map(
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),

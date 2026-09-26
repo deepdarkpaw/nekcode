@@ -15,6 +15,7 @@ import {
 } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
+import type { ReadStateStore } from "./read-state.ts";
 import { type EditRenderState, editRenderers } from "./renderers/edit.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -98,6 +99,8 @@ const defaultEditOperations: EditOperations = {
 export interface EditToolOptions {
 	/** Custom operations for file editing. Default: local filesystem */
 	operations?: EditOperations;
+	/** Read state that must contain the file before it can be edited; supplied by the tool set. */
+	readState?: ReadStateStore;
 }
 
 function prepareEditArguments(input: unknown): EditToolInput {

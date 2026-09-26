@@ -5,6 +5,7 @@ import { type Static, Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
+import type { ReadStateStore } from "./read-state.ts";
 import { writeRenderers } from "./renderers/write.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -39,6 +40,8 @@ const defaultWriteOperations: WriteOperations = {
 export interface WriteToolOptions {
 	/** Custom operations for file writing. Default: local filesystem */
 	operations?: WriteOperations;
+	/** Read state checked before overwriting an existing file; supplied by the tool set. */
+	readState?: ReadStateStore;
 }
 
 export function createWriteToolDefinition(
