@@ -85,10 +85,10 @@ describe("Coding Agent Tools", () => {
 
 			const result = await readTool.execute("test-call-1", { path: testFile });
 
-			expect(getTextOutput(result)).toBe(content);
+			expect(getTextOutput(result)).toContain("     1|Hello, world!");
 			// No truncation message since file fits within limits
 			expect(getTextOutput(result)).not.toContain("Use offset=");
-			expect(result.details).toBeUndefined();
+			expect(result.details?.representation).toBe("full");
 		});
 
 		it("should handle non-existent files", async () => {

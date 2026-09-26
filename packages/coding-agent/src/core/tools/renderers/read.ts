@@ -43,6 +43,15 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 	}
 	return lines.slice(0, end);
 }
+
+/** Remove Cursor's physical line-number metadata before displaying read output in the TUI. */
+export function stripLineNumberPrefix(line: string): string {
+	return line.replace(/^\s*\d+\|/, "");
+}
+
+function stripLineNumberPrefixes(text: string): string {
+	return text.split("\n").map(stripLineNumberPrefix).join("\n");
+}
 function toPosixPath(filePath: string): string {
 	return filePath.split(sep).join("/");
 }
@@ -123,7 +132,7 @@ function formatReadResult(
 	}
 
 	const rawPath = str(args?.file_path ?? args?.path);
-	const output = getTextOutput(result, showImages);
+	const output = stripLineNumberPrefixes(getTextOutput(result, showImages));
 	const lang = !isError && rawPath ? getLanguageFromPath(rawPath) : undefined;
 	const renderedLines = lang ? highlightCode(replaceTabs(output), lang) : output.split("\n");
 	const lines = trimTrailingEmptyLines(renderedLines);
@@ -136,6 +145,9 @@ function formatReadResult(
 	}
 
 	const truncation = result.details?.truncation;
+	if (result.details?.representation && result.details.representation !== "full") {
+		text += `\n${theme.fg("muted", `[${result.details.representation}]`)}`;
+	}
 	if (truncation?.truncated) {
 		if (truncation.firstLineExceedsLimit) {
 			text += `\n${theme.fg("warning", `[First line exceeds ${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit]`)}`;

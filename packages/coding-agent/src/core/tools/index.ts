@@ -63,11 +63,40 @@ export {
 export {
 	createReadTool,
 	createReadToolDefinition,
+	type ReadChunkDetails,
 	type ReadOperations,
+	type ReadRepresentation,
 	type ReadToolDetails,
 	type ReadToolInput,
 	type ReadToolOptions,
 } from "./read.ts";
+export {
+	buildReadChunks,
+	CHUNK_FALLBACK_LINES,
+	CHUNK_MAX_AVERAGE_CHARACTERS,
+	CHUNK_TARGET_LINES,
+	FOLD_MIN_LINES,
+	formatReadChunkLines,
+	type ReadChunk,
+	type ReadChunksResult,
+} from "./read-chunks.ts";
+export {
+	buildReadOutline,
+	clearReadOutlineCache,
+	getReadOutlineLanguage,
+	type ReadOutline,
+	type ReadOutlineOptions,
+	type ReadOutlineSymbol,
+	renderReadOutline,
+} from "./read-outline.ts";
+export {
+	createReadStateStore,
+	DEFAULT_READ_STATE_BYTES,
+	DEFAULT_READ_STATE_ENTRIES,
+	type ReadStateRecord,
+	type ReadStateStore,
+	readStateKey,
+} from "./read-state.ts";
 export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -237,8 +266,9 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 }
 
 export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[] {
+	const readState = resolveReadState(options);
 	return [
-		createReadTool(cwd, options?.read),
+		createReadTool(cwd, { ...options?.read, readState }),
 		createGrepTool(cwd, options?.grep),
 		createFindTool(cwd, options?.find),
 		createLsTool(cwd, options?.ls),
@@ -247,12 +277,13 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 }
 
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
+	const readState = resolveReadState(options);
 	return {
-		read: createReadTool(cwd, options?.read),
+		read: createReadTool(cwd, { ...options?.read, readState }),
 		bash: createBashTool(cwd, options?.bash),
 		powershell: createPowerShellTool(cwd, options?.powershell),
-		edit: createEditTool(cwd, options?.edit),
-		write: createWriteTool(cwd, options?.write),
+		edit: createEditTool(cwd, { ...options?.edit, readState }),
+		write: createWriteTool(cwd, { ...options?.write, readState }),
 		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
 		ls: createLsTool(cwd, options?.ls),
