@@ -38,7 +38,9 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 		const args = block.arguments as Record<string, unknown> | undefined;
 		if (!args) continue;
 
-		const path = typeof args.path === "string" ? args.path : undefined;
+		// edit uses the Claude Code `file_path` argument; read and write use `path`.
+		const rawPath = args.file_path ?? args.path;
+		const path = typeof rawPath === "string" ? rawPath : undefined;
 		if (!path) continue;
 
 		switch (block.name) {

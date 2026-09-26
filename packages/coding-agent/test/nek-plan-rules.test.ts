@@ -70,20 +70,23 @@ describe("checkModeToolCall", () => {
 		expect(checkModeToolCall("plan", "write", { path: "src/a.ts", content: "" })).toBe(
 			'Plan mode: only markdown files can be edited. Call switch_mode with target_mode_id="agent" (requires user approval) before editing src/a.ts.',
 		);
-		expect(checkModeToolCall("plan", "edit", { path: "src/a.ts", edits: [] })).toContain("before editing src/a.ts.");
+		expect(checkModeToolCall("plan", "edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" })).toContain(
+			"before editing src/a.ts.",
+		);
+		expect(checkModeToolCall("plan", "edit", { old_string: "a", new_string: "b" })).toContain("only markdown files");
 		expect(checkModeToolCall("plan", "write", {})).toContain("only markdown files");
 	});
 
 	it("allows markdown targets in plan mode", () => {
 		expect(checkModeToolCall("plan", "write", { path: ".pi/plans/x.plan.md" })).toBeUndefined();
-		expect(checkModeToolCall("plan", "edit", { path: "README.markdown" })).toBeUndefined();
+		expect(checkModeToolCall("plan", "edit", { file_path: "README.markdown" })).toBeUndefined();
 	});
 
 	it("allows other tools in plan mode and everything in agent mode", () => {
 		expect(checkModeToolCall("plan", "read", { path: "src/a.ts" })).toBeUndefined();
 		expect(checkModeToolCall("plan", "bash", { command: "rm -rf x" })).toBeUndefined();
 		expect(checkModeToolCall("agent", "write", { path: "src/a.ts" })).toBeUndefined();
-		expect(checkModeToolCall("agent", "edit", { path: "src/a.ts" })).toBeUndefined();
+		expect(checkModeToolCall("agent", "edit", { file_path: "src/a.ts" })).toBeUndefined();
 	});
 });
 

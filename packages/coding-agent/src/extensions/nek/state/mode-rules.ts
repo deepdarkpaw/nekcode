@@ -24,13 +24,19 @@ export function modeToolNames(active: readonly string[], mode: Mode): string[] {
 	return next;
 }
 
+/** Target path of an edit (`file_path`, Claude Code schema) or write (`path`) call; empty when absent. */
+function targetPath(input: Record<string, unknown>): string {
+	if (typeof input.file_path === "string") return input.file_path;
+	return typeof input.path === "string" ? input.path : "";
+}
+
 /**
  * Reason to block a tool call in the given mode, or undefined when it is allowed. In plan mode, edit and write may
  * only target markdown files; every other call is allowed.
  */
 export function checkModeToolCall(mode: Mode, toolName: string, input: Record<string, unknown>): string | undefined {
 	if (mode !== "plan" || !PLAN_MODE_EDIT_TOOLS.includes(toolName)) return undefined;
-	const path = typeof input.path === "string" ? input.path : "";
+	const path = targetPath(input);
 	if (isMarkdownPath(path)) return undefined;
 	return `Plan mode: only markdown files can be edited. Call switch_mode with target_mode_id="agent" (requires user approval) before editing ${path}.`;
 }

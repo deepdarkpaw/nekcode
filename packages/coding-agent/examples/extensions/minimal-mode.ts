@@ -210,7 +210,7 @@ export default function (pi: ExtensionAPI) {
 		name: "edit",
 		label: "edit",
 		description:
-			"Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
+			"Edit a file by replacing exact text. The old_string must match exactly (including whitespace). Use this for precise, surgical edits.",
 		parameters: getBuiltInTools(process.cwd()).edit.parameters,
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
