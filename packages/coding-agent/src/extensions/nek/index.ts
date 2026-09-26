@@ -7,6 +7,7 @@ import type {
 	ExtensionFactory,
 } from "../../core/extensions/types.ts";
 import { DEFAULT_NEK_CONFIG, loadNekConfig, type NekConfig } from "./config.ts";
+import { registerPlanMode } from "./plan-wiring.ts";
 import { openTodosReminder, TASK_MANAGEMENT } from "./prompts/task-management.ts";
 import { createSessionState, replayBranch } from "./state/session-state.ts";
 import { describeTodos, openTodos } from "./state/todos.ts";
@@ -52,6 +53,7 @@ export function createNekExtension(options: NekExtensionOptions): ExtensionFacto
 		});
 		pi.on("session_tree", (_event, ctx) => restoreSessionState(nek, ctx));
 		registerTodos(pi, nek);
+		if (options.role === "root") registerPlanMode(pi, nek);
 	};
 }
 

@@ -69,3 +69,40 @@ export interface AgentType {
 	/** Tool allowlist of the child session. */
 	tools: string[];
 }
+
+/** create_plan result details; replayBranch() restores the current plan from them. */
+export interface PlanData {
+	plan: PlanRecord;
+}
+
+/** One answer option of an ask_question question (Cursor AskQuestion). */
+export interface QuestionOption {
+	id: string;
+	label: string;
+}
+
+/** One ask_question question (Cursor AskQuestion). */
+export interface Question {
+	id: string;
+	prompt: string;
+	options: QuestionOption[];
+	allow_multiple?: boolean;
+}
+
+/** The user's answer to one question: chosen options and/or free text typed under "Other". */
+export interface QuestionAnswer {
+	questionId: string;
+	optionIds: string[];
+	labels: string[];
+	other?: string;
+}
+
+/** ask_question result details. */
+export interface AskQuestionData {
+	answers: QuestionAnswer[];
+}
+
+/** Data of a `nek.mode` custom entry. */
+export interface ModeEntryData {
+	mode: Mode;
+}
