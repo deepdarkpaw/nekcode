@@ -2,6 +2,12 @@
 
 nekcode is a fork of Pi with Cursor-style planning and delegation, plus the file tools of Cursor and Claude Code. The additions ship as a built-in extension named `nek`, and as replacements for the built-in `read` and `edit` tools.
 
+## Command and configuration
+
+nekcode runs as the `nek` command. Its configuration lives in `~/.nek/agent/` (`settings.json`, `models.json`, `auth.json`, sessions), and project configuration in `.nek/`. It is separate from an installed Pi, which keeps using `~/.pi`. The environment variable for a custom agent directory is `NEK_CODING_AGENT_DIR`.
+
+nek does not install, update, or discover extension packages: the `install`, `remove`, `update`, `list`, and `config` commands are removed, and `extensions`/`packages` entries in settings are ignored. Extensions passed with `-e <path>` still load for that run.
+
 ## Tools
 
 A new session activates `read`, `bash`, `edit`, `write`, `ast_grep`, and the `nek` tools below. A `--tools` allowlist still applies: `nek` tools appear only when listed.
@@ -22,7 +28,7 @@ A new session activates `read`, `bash`, `edit`, `write`, `ast_grep`, and the `ne
 ## Modes
 
 - **Agent mode** is the default.
-- **Plan mode** researches and writes a plan without changing code. In plan mode, `edit` and `write` may only target Markdown files, and subagents are read-only. The plan is saved under `.pi/plans/`.
+- **Plan mode** researches and writes a plan without changing code. In plan mode, `edit` and `write` may only target Markdown files, and subagents are read-only. The plan is saved under `.nek/plans/`.
 
 Toggle plan mode with `/plan` or the `alt+m` shortcut, or start in it with `pi --plan`. `/plan <text>` enters plan mode and submits the text. When the model finishes a plan, an approval panel offers to implement it in the current session or in a new one. `/nek-build` implements the current plan; `/nek-build --fresh` does so in a new session.
 
@@ -38,7 +44,7 @@ Built-in subagent types:
 | `explore` | `read`, `grep`, `find`, `ls`, `ast_grep` (read-only) |
 | `shell` | `bash`, `read` |
 
-Define custom types as Markdown files in `~/.pi/agent/agents/` or, for trusted projects, `.pi/agents/`. Project types override user types, which override built-in types. The body becomes the subagent's instructions.
+Define custom types as Markdown files in `~/.nek/agent/agents/` or, for trusted projects, `.nek/agents/`. Project types override user types, which override built-in types. The body becomes the subagent's instructions.
 
 ```markdown
 ---
@@ -68,11 +74,11 @@ Use `/tasks` to list subagents, show a result, or cancel a running task.
 
 ## Configuration
 
-Settings are read from `~/.pi/agent/nek.yaml`, then from `.pi/nek.yaml` in trusted projects. Unknown keys and mistyped values are rejected. Defaults:
+Settings are read from `~/.nek/agent/nek.yaml`, then from `.nek/nek.yaml` in trusted projects. Unknown keys and mistyped values are rejected. Defaults:
 
 ```yaml
 plan:
-  dir: .pi/plans
+  dir: .nek/plans
   shortcut: alt+m
 todo:
   settleReminder: true   # continue once when a run ends with open todos

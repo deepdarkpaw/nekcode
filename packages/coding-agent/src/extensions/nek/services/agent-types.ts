@@ -66,7 +66,8 @@ export interface AgentTypeDiscovery {
 export const AGENTS_DIR_NAME = "agents";
 
 /**
- * Built-in types overlaid with `<agentDir>/agents/*.md` (user) and `<cwd>/.pi/agents/*.md` (project, trusted only).
+ * Built-in types overlaid with `<agentDir>/agents/*.md` (user) and `<cwd>/<config dir>/agents/*.md` (project, trusted
+ * only).
  * A later source replaces the same name: project > user > builtin.
  */
 export function discoverAgentTypes(agentDir: string, cwd: string, projectTrusted: boolean): AgentTypeDiscovery {

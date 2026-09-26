@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CONFIG_DIR_NAME } from "../src/config.ts";
 import {
 	BUILTIN_AGENT_TYPES,
 	describeAgentTypes,
@@ -20,7 +21,7 @@ describe("discoverAgentTypes", () => {
 		agentDir = join(root, "agent");
 		cwd = join(root, "project");
 		mkdirSync(join(agentDir, "agents"), { recursive: true });
-		mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+		mkdirSync(join(cwd, CONFIG_DIR_NAME, "agents"), { recursive: true });
 	});
 
 	afterEach(() => {
@@ -50,7 +51,7 @@ describe("discoverAgentTypes", () => {
 		);
 		writeAgent(join(agentDir, "agents"), "explore.md", "---\nname: explore\ndescription: user explore\n---\n");
 		writeAgent(
-			join(cwd, ".pi", "agents"),
+			join(cwd, CONFIG_DIR_NAME, "agents"),
 			"explore.md",
 			"---\nname: explore\ndescription: project explore\nreadonly: true\n---\nProject notes\n",
 		);
@@ -102,7 +103,11 @@ describe("discoverAgentTypes", () => {
 	});
 
 	it("does not read project agents when the project is not trusted", () => {
-		writeAgent(join(cwd, ".pi", "agents"), "local.md", "---\nname: local\ndescription: project only\n---\n");
+		writeAgent(
+			join(cwd, CONFIG_DIR_NAME, "agents"),
+			"local.md",
+			"---\nname: local\ndescription: project only\n---\n",
+		);
 		expect(findAgentType(discoverAgentTypes(agentDir, cwd, false).types, "local")).toBeUndefined();
 		expect(findAgentType(discoverAgentTypes(agentDir, cwd, true).types, "local")).toBeDefined();
 	});

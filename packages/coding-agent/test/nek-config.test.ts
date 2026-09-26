@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CONFIG_DIR_NAME } from "../src/config.ts";
 import { DEFAULT_NEK_CONFIG, loadNekConfig } from "../src/extensions/nek/config.ts";
 
 describe("loadNekConfig", () => {
@@ -14,7 +15,7 @@ describe("loadNekConfig", () => {
 		agentDir = join(root, "agent");
 		cwd = join(root, "project");
 		mkdirSync(agentDir, { recursive: true });
-		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		mkdirSync(join(cwd, CONFIG_DIR_NAME), { recursive: true });
 	});
 
 	afterEach(() => {
@@ -27,7 +28,7 @@ describe("loadNekConfig", () => {
 
 	it("overlays user then trusted project values", () => {
 		writeFileSync(join(agentDir, "nek.yaml"), "subagent:\n  maxConcurrent: 3\nplan:\n  shortcut: alt+p\n");
-		writeFileSync(join(cwd, ".pi", "nek.yaml"), "subagent:\n  maxConcurrent: 2\n");
+		writeFileSync(join(cwd, CONFIG_DIR_NAME, "nek.yaml"), "subagent:\n  maxConcurrent: 2\n");
 
 		const config = loadNekConfig(agentDir, cwd, true);
 
@@ -38,7 +39,7 @@ describe("loadNekConfig", () => {
 	});
 
 	it("ignores the project file when the project is untrusted", () => {
-		writeFileSync(join(cwd, ".pi", "nek.yaml"), "subagent:\n  maxConcurrent: 2\n");
+		writeFileSync(join(cwd, CONFIG_DIR_NAME, "nek.yaml"), "subagent:\n  maxConcurrent: 2\n");
 		expect(loadNekConfig(agentDir, cwd, false).subagent.maxConcurrent).toBe(6);
 	});
 

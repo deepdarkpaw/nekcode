@@ -10,7 +10,7 @@
 
 > New issues and PRs from new contributors are closed automatically. Maintainers review closed submissions daily. See [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md).
 
-> **nekcode** is a fork of Pi that adds Cursor-style plan mode, todos, and subagents (`task`/`await`), a Cursor-style `read` tool, a Claude Code-style `edit` tool, and a built-in `ast_grep` tool. See [nekcode](docs/nek.md).
+> **nekcode** is a fork of Pi, run as the `nek` command with its configuration in `~/.nek`. It adds Cursor-style plan mode, todos, and subagents (`task`/`await`), a Cursor-style `read` tool, a Claude Code-style `edit` tool, and a built-in `ast_grep` tool. nek does not install or discover extension packages; only built-in features and extensions passed with `-e` load. See [nekcode](docs/nek.md).
 
 # Pi
 

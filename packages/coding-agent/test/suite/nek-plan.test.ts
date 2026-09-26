@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall, type JsonObject } from "@earendil-works/pi-ai";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { CONFIG_DIR_NAME } from "../../src/config.ts";
 import type {
 	ExtensionCommandContextActions,
 	ExtensionUIContext,
@@ -172,7 +173,8 @@ describe("nek plan mode", () => {
 		expect(harness.getPendingResponseCount()).toBe(1);
 		const plan = currentState(harness).plan;
 		if (!plan) throw new Error("expected a plan after create_plan");
-		expect(plan.path).toMatch(/[\\/]\.pi[\\/]plans[\\/]add-auth_[0-9a-f]{6}\.plan\.md$/);
+		expect(plan.path).toContain(join(CONFIG_DIR_NAME, "plans"));
+		expect(plan.path).toMatch(/[\\/]add-auth_[0-9a-f]{6}\.plan\.md$/);
 		expect(readFileSync(plan.path, "utf-8")).toContain("# Add auth\n\n- Add the schema");
 
 		harness.setResponses([

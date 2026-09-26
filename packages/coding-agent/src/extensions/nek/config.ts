@@ -30,7 +30,7 @@ export interface NekConfig {
 
 /** Defaults (ARD section 7). */
 export const DEFAULT_NEK_CONFIG: NekConfig = {
-	plan: { dir: ".pi/plans", shortcut: "alt+m" },
+	plan: { dir: `${CONFIG_DIR_NAME}/plans`, shortcut: "alt+m" },
 	todo: { settleReminder: true, widgetMaxLines: 8 },
 	subagent: {
 		maxConcurrent: 6,
@@ -46,7 +46,7 @@ export const DEFAULT_NEK_CONFIG: NekConfig = {
 export const NEK_CONFIG_FILE = "nek.yaml";
 
 /**
- * Load `<agentDir>/nek.yaml`, then `<cwd>/.pi/nek.yaml` when the project is trusted, over the defaults.
+ * Load `<agentDir>/nek.yaml`, then `<cwd>/<config dir>/nek.yaml` when the project is trusted, over the defaults.
  * Missing files are skipped. Invalid YAML, unknown keys, and mistyped values throw with the file path.
  */
 export function loadNekConfig(agentDir: string, cwd: string, projectTrusted: boolean): NekConfig {

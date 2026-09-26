@@ -4,6 +4,8 @@
 
 ### Breaking Changes
 
+- Renamed the CLI to `nek` with configuration in `~/.nek` and project configuration in `.nek/`; the agent directory override is `NEK_CODING_AGENT_DIR` (nekcode).
+- Removed the `install`, `remove`, `update`, `list`, and `config` commands, extension discovery from settings and resource directories, and the startup version and package update checks. Extensions passed with `-e` still load (nekcode).
 - Replaced the `edit` tool input with the Claude Code schema: `file_path`, `old_string`, `new_string`, and `replace_all`. The `path`/`edits[]` input, fuzzy matching, and multi-edit calls were removed. `edit` requires a prior `read` of the file, and `write` requires one before overwriting an existing file.
 - Changed `read` output to prefix each line with a six-column line number and `|`, and to return files over 10,000 characters as symbol-aligned chunks.
 
