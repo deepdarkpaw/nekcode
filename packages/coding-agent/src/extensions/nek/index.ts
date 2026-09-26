@@ -1,6 +1,18 @@
 import { getAgentDir } from "../../config.ts";
-import type { ExtensionFactory } from "../../core/extensions/types.ts";
+import type {
+	AgentBeforeSettleEvent,
+	BoundaryResult,
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionFactory,
+} from "../../core/extensions/types.ts";
 import { DEFAULT_NEK_CONFIG, loadNekConfig, type NekConfig } from "./config.ts";
+import { openTodosReminder, TASK_MANAGEMENT } from "./prompts/task-management.ts";
+import { createSessionState, replayBranch } from "./state/session-state.ts";
+import { describeTodos, openTodos } from "./state/todos.ts";
+import { createTodoWriteToolDefinition } from "./tools/todo-write.ts";
+import type { NekSessionState } from "./types.ts";
+import { showTodoList, syncTodoUi } from "./ui/todo-widget.ts";
 
 /** `root` wires the main session; `subagent` wires a child session (no task/await, so no nesting). */
 export type NekRole = "root" | "subagent";
@@ -16,15 +28,73 @@ export interface NekExtensionOptions {
 export interface NekRuntime {
 	role: NekRole;
 	config: NekConfig;
+	/** Branch-scoped state, rebuilt by replayBranch() on session_start and session_tree. */
+	session: NekSessionState;
+	/** The open-todos reminder already continued the current run; cleared when the run settles. */
+	settleReminderSent: boolean;
 }
+
+/** Custom message type of hidden nek reminders. */
+export const NEK_REMINDER_TYPE = "nek.reminder";
 
 /** Create the nek extension factory (todos, plan mode, subagents) for the given role. */
 export function createNekExtension(options: NekExtensionOptions): ExtensionFactory {
 	return (pi) => {
-		const nek: NekRuntime = { role: options.role, config: options.config ?? DEFAULT_NEK_CONFIG };
+		const nek: NekRuntime = {
+			role: options.role,
+			config: options.config ?? DEFAULT_NEK_CONFIG,
+			session: createSessionState(),
+			settleReminderSent: false,
+		};
 		pi.on("session_start", (_event, ctx) => {
-			if (options.config) return;
-			nek.config = loadNekConfig(getAgentDir(), ctx.cwd, ctx.isProjectTrusted());
+			if (!options.config) nek.config = loadNekConfig(getAgentDir(), ctx.cwd, ctx.isProjectTrusted());
+			restoreSessionState(nek, ctx);
 		});
+		pi.on("session_tree", (_event, ctx) => restoreSessionState(nek, ctx));
+		registerTodos(pi, nek);
 	};
+}
+
+function restoreSessionState(nek: NekRuntime, ctx: ExtensionContext): void {
+	nek.session = replayBranch(ctx.sessionManager.getBranch());
+	syncTodoUi(ctx, nek.session.todos, nek.config.todo.widgetMaxLines);
+}
+
+function registerTodos(pi: ExtensionAPI, nek: NekRuntime): void {
+	pi.registerTool(
+		createTodoWriteToolDefinition({
+			getTodos: () => nek.session.todos,
+			setTodos: (todos, ctx) => {
+				nek.session.todos = todos;
+				syncTodoUi(ctx, todos, nek.config.todo.widgetMaxLines);
+			},
+		}),
+	);
+	pi.registerCommand("todos", {
+		description: "Show the todo list of the current branch",
+		handler: (_args, ctx) => showTodoList(ctx, nek.session.todos),
+	});
+	pi.on("before_agent_start", (event) => {
+		event.systemPromptOptions.sections.task_management = TASK_MANAGEMENT;
+	});
+	pi.on("agent_before_settle", (event) => remindOpenTodos(nek, event));
+	pi.on("agent_settled", () => {
+		nek.settleReminderSent = false;
+	});
+}
+
+/** Continue a completed agent-mode run once when todos are still open (Cursor task_management). */
+function remindOpenTodos(nek: NekRuntime, event: AgentBeforeSettleEvent): BoundaryResult | undefined {
+	if (event.outcome !== "completed" || !nek.config.todo.settleReminder) return undefined;
+	if (nek.settleReminderSent || nek.session.mode !== "agent") return undefined;
+	const open = openTodos(nek.session.todos);
+	if (open.length === 0) return undefined;
+	nek.settleReminderSent = true;
+	const reminder = {
+		type: "custom_message" as const,
+		customType: NEK_REMINDER_TYPE,
+		content: openTodosReminder(describeTodos(open)),
+		display: false,
+	};
+	return { entries: [...event.entries, reminder], continue: true };
 }

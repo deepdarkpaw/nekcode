@@ -16,6 +16,11 @@ export interface Todo {
 	status: TodoStatus;
 }
 
+/** Persisted todo list: todo_write result details and `nek.todos` entry data. */
+export interface TodoListData {
+	todos: Todo[];
+}
+
 /** The current plan of a session, written by create_plan. */
 export interface PlanRecord {
 	name: string;
