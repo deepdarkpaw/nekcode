@@ -9,8 +9,10 @@ import type {
 import { DEFAULT_NEK_CONFIG, loadNekConfig, type NekConfig } from "./config.ts";
 import { registerPlanMode } from "./plan-wiring.ts";
 import { openTodosReminder, TASK_MANAGEMENT } from "./prompts/task-management.ts";
+import { registerSubagentPrompts } from "./services/subagent-role.ts";
 import { createSessionState, replayBranch } from "./state/session-state.ts";
 import { describeTodos, openTodos } from "./state/todos.ts";
+import { registerSubagents } from "./task-wiring.ts";
 import { createTodoWriteToolDefinition } from "./tools/todo-write.ts";
 import type { NekSessionState } from "./types.ts";
 import { showTodoList, syncTodoUi } from "./ui/todo-widget.ts";
@@ -23,6 +25,8 @@ export interface NekExtensionOptions {
 	role: NekRole;
 	/** Fixed config, e.g. inherited by child sessions. When omitted, nek.yaml is loaded on session_start. */
 	config?: NekConfig;
+	/** Subagent role only: instructions of the delegated agent type, added as a system prompt section. */
+	instructions?: string;
 }
 
 /** Per-instance state shared by the tools, hooks, and UI of one nek extension. */
@@ -38,7 +42,11 @@ export interface NekRuntime {
 /** Custom message type of hidden nek reminders. */
 export const NEK_REMINDER_TYPE = "nek.reminder";
 
-/** Create the nek extension factory (todos, plan mode, subagents) for the given role. */
+/**
+ * Create the nek extension factory for the given role. Root: subagents, todos, plan mode; subagent: todos and the
+ * subagent prompts only. Subagents register first so their completion notices precede the open-todos reminder in
+ * `agent_before_settle`.
+ */
 export function createNekExtension(options: NekExtensionOptions): ExtensionFactory {
 	return (pi) => {
 		const nek: NekRuntime = {
@@ -52,6 +60,8 @@ export function createNekExtension(options: NekExtensionOptions): ExtensionFacto
 			restoreSessionState(nek, ctx);
 		});
 		pi.on("session_tree", (_event, ctx) => restoreSessionState(nek, ctx));
+		if (options.role === "root") registerSubagents(pi, nek);
+		else registerSubagentPrompts(pi, options.instructions);
 		registerTodos(pi, nek);
 		if (options.role === "root") registerPlanMode(pi, nek);
 	};

@@ -55,6 +55,28 @@ export interface TaskRecord {
 	error?: string;
 	/** Result already delivered to the parent (await or foreground return); suppresses the completion notice. */
 	observed: boolean;
+	/** Latest `→ tool args` lines of the current run, at most `subagent.progressMaxLines`. */
+	progress: string[];
+	/** Tail of the assistant text being streamed, at most 80 characters. */
+	tail?: string;
+	/** Tokens used by the child session so far (sum of assistant usage totals). */
+	tokens: number;
+}
+
+/** task result details: a snapshot of the record when the call returned. */
+export interface TaskToolData {
+	task: TaskRecord;
+}
+
+/** await result details: finished records returned by this call, and whether the wait timed out. */
+export interface AwaitToolData {
+	tasks: TaskRecord[];
+	timedOut: boolean;
+}
+
+/** Details of a `nek.task_notice` message: the finished record the notice reports. */
+export interface TaskNoticeData {
+	task: TaskRecord;
 }
 
 /** Subagent type: built-in (Cursor) or discovered from agent markdown files. */
