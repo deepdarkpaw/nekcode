@@ -77,6 +77,10 @@
               "path": "configuration.md"
             },
             {
+              "title": "Use nekcode Planning and Subagents",
+              "path": "nek.md"
+            },
+            {
               "title": "Create Prompt Templates",
               "path": "prompt-templates.md"
             },

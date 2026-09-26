@@ -15,6 +15,7 @@ If Pi is already installed, choose what you want to do:
 - [Continue or branch a session](sessions.md) to resume work or explore another approach without losing history.
 - [Configure Pi](configuration.md) for your preferences, working folders, instructions, and reusable resources.
 - [Understand how Pi works](how-pi-works.md), including tools, context, sessions, and the agent loop.
+- [Use nekcode planning and subagents](nek.md): plan mode, todos, delegated subagents, and the Cursor and Claude Code file tools.
 
 ## Customize Pi
 

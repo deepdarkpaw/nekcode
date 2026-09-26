@@ -10,6 +10,8 @@
 
 > New issues and PRs from new contributors are closed automatically. Maintainers review closed submissions daily. See [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md).
 
+> **nekcode** is a fork of Pi that adds Cursor-style plan mode, todos, and subagents (`task`/`await`), a Cursor-style `read` tool, a Claude Code-style `edit` tool, and a built-in `ast_grep` tool. See [nekcode](docs/nek.md).
+
 # Pi
 
 Pi is a minimal, extensible AI agent for the terminal. Adapt Pi to your workflow, not the other way around.
