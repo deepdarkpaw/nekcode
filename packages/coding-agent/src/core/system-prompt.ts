@@ -94,7 +94,7 @@ function buildRules(
 
 	const hasBash = selectedTools.includes("bash");
 	const hasPowerShell = selectedTools.includes("powershell");
-	const hasGrep = selectedTools.includes("grep");
+	const hasGrep = selectedTools.includes("grep") || selectedTools.includes("ast_grep");
 	const hasFind = selectedTools.includes("find");
 	const hasLs = selectedTools.includes("ls");
 

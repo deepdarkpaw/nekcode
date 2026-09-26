@@ -269,7 +269,7 @@ export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 					})
 					.join("\n")}\n`
 			: "";
-	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write tools
+	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write, ast_grep tools
 
 ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [--] [@files...] [messages...]
@@ -454,5 +454,6 @@ ${chalk.bold("Built-in Tool Names:")}
   grep       - Search file contents (read-only, off by default)
   find       - Find files by glob pattern (read-only, off by default)
   ls         - List directory contents (read-only, off by default)
+  ast_grep   - Structural code search by AST pattern (read-only)
 `);
 }

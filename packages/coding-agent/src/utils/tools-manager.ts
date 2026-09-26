@@ -26,7 +26,10 @@ interface ToolConfig {
 	getAssetName: (version: string, plat: string, architecture: string) => string | null;
 }
 
-const TOOLS: Record<string, ToolConfig> = {
+/** Binaries managed by the tools manager; the key type of the TOOLS table. */
+export type ToolBinary = "fd" | "rg" | "ast-grep";
+
+const TOOLS: Record<ToolBinary, ToolConfig> = {
 	fd: {
 		name: "fd",
 		repo: "sharkdp/fd",
@@ -66,6 +69,21 @@ const TOOLS: Record<string, ToolConfig> = {
 			return null;
 		},
 	},
+	"ast-grep": {
+		name: "ast-grep",
+		repo: "ast-grep/ast-grep",
+		binaryName: "ast-grep",
+		// Never probe `sg`: on Linux it is the setgroups command.
+		systemBinaryNames: ["ast-grep"],
+		tagPrefix: "",
+		getAssetName: (_version, plat, architecture) => {
+			const archStr = architecture === "arm64" ? "aarch64" : "x86_64";
+			if (plat === "darwin") return `app-${archStr}-apple-darwin.zip`;
+			if (plat === "linux") return `app-${archStr}-unknown-linux-gnu.zip`;
+			if (plat === "win32") return `app-${archStr}-pc-windows-msvc.zip`;
+			return null;
+		},
+	},
 };
 
 // Check if a command exists in PATH by trying to run it
@@ -80,7 +98,7 @@ function commandExists(cmd: string): boolean {
 }
 
 // Get the path to a tool (system-wide or in our tools dir)
-export function getToolPath(tool: "fd" | "rg"): string | null {
+export function getToolPath(tool: ToolBinary): string | null {
 	const config = TOOLS[tool];
 	if (!config) return null;
 
@@ -255,7 +273,7 @@ function extractZipArchive(archivePath: string, extractDir: string, assetName: s
 }
 
 // Download and install a tool
-async function downloadTool(tool: "fd" | "rg"): Promise<string> {
+async function downloadTool(tool: ToolBinary): Promise<string> {
 	const config = TOOLS[tool];
 	if (!config) throw new Error(`Unknown tool: ${tool}`);
 
@@ -347,7 +365,7 @@ export interface ToolStatus {
  * Returns the tool path, or undefined if unavailable.
  */
 export async function ensureTool(
-	tool: "fd" | "rg",
+	tool: ToolBinary,
 	onStatus?: (status: ToolStatus) => void,
 ): Promise<string | undefined> {
 	const existingPath = getToolPath(tool);

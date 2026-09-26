@@ -1,4 +1,11 @@
 export {
+	type AstGrepToolDetails,
+	type AstGrepToolInput,
+	type AstGrepToolOptions,
+	createAstGrepTool,
+	createAstGrepToolDefinition,
+} from "./ast-grep.ts";
+export {
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -81,6 +88,7 @@ export {
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";
+import { type AstGrepToolOptions, createAstGrepTool, createAstGrepToolDefinition } from "./ast-grep.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
@@ -92,7 +100,7 @@ import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } fro
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "read" | "bash" | "powershell" | "edit" | "write" | "grep" | "find" | "ls";
+export type ToolName = "read" | "bash" | "powershell" | "edit" | "write" | "grep" | "find" | "ls" | "ast_grep";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
@@ -102,10 +110,11 @@ export const allToolNames: Set<ToolName> = new Set([
 	"grep",
 	"find",
 	"ls",
+	"ast_grep",
 ]);
 
 /** Built-in tools active in a new session when neither settings nor options select tools. */
-export const DEFAULT_ACTIVE_TOOL_NAMES: readonly ToolName[] = ["read", "bash", "edit", "write"];
+export const DEFAULT_ACTIVE_TOOL_NAMES: readonly ToolName[] = ["read", "bash", "edit", "write", "ast_grep"];
 
 export interface ToolsOptions {
 	read?: ReadToolOptions;
@@ -116,6 +125,7 @@ export interface ToolsOptions {
 	grep?: GrepToolOptions;
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
+	ast_grep?: AstGrepToolOptions;
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
@@ -136,6 +146,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createFindToolDefinition(cwd, options?.find);
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
+		case "ast_grep":
+			return createAstGrepToolDefinition(cwd, options?.ast_grep);
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -159,6 +171,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createFindTool(cwd, options?.find);
 		case "ls":
 			return createLsTool(cwd, options?.ls);
+		case "ast_grep":
+			return createAstGrepTool(cwd, options?.ast_grep);
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -179,6 +193,7 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 		createGrepToolDefinition(cwd, options?.grep),
 		createFindToolDefinition(cwd, options?.find),
 		createLsToolDefinition(cwd, options?.ls),
+		createAstGrepToolDefinition(cwd, options?.ast_grep),
 	];
 }
 
@@ -192,6 +207,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
 		ls: createLsToolDefinition(cwd, options?.ls),
+		ast_grep: createAstGrepToolDefinition(cwd, options?.ast_grep),
 	};
 }
 
@@ -210,6 +226,7 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 		createGrepTool(cwd, options?.grep),
 		createFindTool(cwd, options?.find),
 		createLsTool(cwd, options?.ls),
+		createAstGrepTool(cwd, options?.ast_grep),
 	];
 }
 
@@ -223,5 +240,6 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
 		ls: createLsTool(cwd, options?.ls),
+		ast_grep: createAstGrepTool(cwd, options?.ast_grep),
 	};
 }

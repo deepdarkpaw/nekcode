@@ -319,12 +319,17 @@ export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
 // Tools
 export {
+	type AstGrepToolDetails,
+	type AstGrepToolInput,
+	type AstGrepToolOptions,
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
 	type BashToolDetails,
 	type BashToolInput,
 	type BashToolOptions,
+	createAstGrepTool,
+	createAstGrepToolDefinition,
 	createBashToolDefinition,
 	createEditToolDefinition,
 	createFindToolDefinition,

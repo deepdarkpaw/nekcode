@@ -8,6 +8,7 @@
 
 import type { ToolDefinition } from "../../extensions/types.ts";
 import type { ToolName } from "../index.ts";
+import { astGrepRenderers } from "./ast-grep.ts";
 import { createShellRenderers } from "./bash.ts";
 import { editRenderers } from "./edit.ts";
 import { findRenderers } from "./find.ts";
@@ -19,6 +20,7 @@ import { writeRenderers } from "./write.ts";
 export type ToolRenderers = Pick<ToolDefinition<any, any>, "renderCall" | "renderResult">;
 
 export {
+	astGrepRenderers,
 	createShellRenderers,
 	editRenderers,
 	findRenderers,
@@ -39,6 +41,7 @@ export function createAllToolRenderers(): Record<ToolName, ToolRenderers> {
 		grep: grepRenderers,
 		find: findRenderers,
 		ls: lsRenderers,
+		ast_grep: astGrepRenderers,
 	};
 }
 
