@@ -104,6 +104,9 @@ export const allToolNames: Set<ToolName> = new Set([
 	"ls",
 ]);
 
+/** Built-in tools active in a new session when neither settings nor options select tools. */
+export const DEFAULT_ACTIVE_TOOL_NAMES: readonly ToolName[] = ["read", "bash", "edit", "write"];
+
 export interface ToolsOptions {
 	read?: ReadToolOptions;
 	bash?: BashToolOptions;

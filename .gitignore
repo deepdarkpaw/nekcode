@@ -43,3 +43,27 @@ plans/
 .pi/hf-sessions-backup/
 collect.sh
 packages/agent/docs/extensions/pi-server-artifact/index.md
+
+# nekcode workspace
+reference/
+/*.md
+!/README.md
+!/AGENTS.md
+!/CONTRIBUTING.md
+!/SECURITY.md
+!/tui-plan.md
+.gitignore.workspace
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+target/
+*.exe
+*.dll
+*.so
+*.dylib
+*.tmp
+*.temp
+Thumbs.db
+Desktop.ini

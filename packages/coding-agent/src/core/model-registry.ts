@@ -38,6 +38,11 @@ export class ModelRegistry {
 		this.runtime = runtime;
 	}
 
+	/** Underlying runtime, shared by in-process child sessions so they reuse auth and model state. */
+	get modelRuntime(): ModelRuntime {
+		return this.runtime;
+	}
+
 	/** Reload models.json asynchronously. Await before making synchronous registry reads. */
 	refresh(options?: ModelsRefreshOptions): Promise<ModelsRefreshResult> {
 		return this.runtime.refresh(options);

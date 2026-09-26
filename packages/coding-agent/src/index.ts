@@ -382,6 +382,9 @@ export {
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,
 } from "./core/trust-manager.ts";
+// Built-in nek extension (todos, plan mode, subagents) for SDK assembly
+export { DEFAULT_NEK_CONFIG, loadNekConfig, type NekConfig } from "./extensions/nek/config.ts";
+export { createNekExtension, type NekExtensionOptions, type NekRole } from "./extensions/nek/index.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage
