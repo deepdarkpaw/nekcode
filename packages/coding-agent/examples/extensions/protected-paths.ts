@@ -15,7 +15,13 @@ export default function (pi: ExtensionAPI) {
 			return undefined;
 		}
 
-		const path = event.input.path as string;
+		const input = event.input;
+		const path =
+			"file_path" in input && typeof input.file_path === "string"
+				? input.file_path
+				: "path" in input && typeof input.path === "string"
+					? input.path
+					: "";
 		const isProtected = protectedPaths.some((p) => path.includes(p));
 
 		if (isProtected) {

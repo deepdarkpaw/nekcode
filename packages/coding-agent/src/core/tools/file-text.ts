@@ -9,6 +9,8 @@ export type LineEnding = "\r\n" | "\n";
 export interface FileTextMetadata {
 	/** Content with the BOM removed and CRLF normalized to LF. */
 	content: string;
+	/** Decoded original content, including a leading BOM when present. */
+	raw: string;
 	/** Detected BOM, `\uFEFF` for a UTF-8 BOM and `""` otherwise. */
 	bom: string;
 	/** Encoding the file was decoded with; write back with the same value. */
@@ -30,19 +32,24 @@ export function detectEncoding(buffer: Buffer): BufferEncoding {
 	return "utf8";
 }
 
+/** Decode file bytes and derive all metadata required for a lossless edit write. */
+export function decodeFileText(buffer: Buffer): FileTextMetadata {
+	const encoding = detectEncoding(buffer);
+	const raw = buffer.toString(encoding);
+	const { bom, text } = splitBom(raw);
+	return {
+		content: normalizeToLF(text),
+		raw,
+		bom,
+		encoding,
+		lineEnding: detectLineEnding(text),
+	};
+}
+
 /**
  * Read one file and report its content, encoding, and line endings from the same bytes, so callers that write
  * the file back do not have to re-read it to detect them (Claude Code readFileSyncWithMetadata).
  */
 export function readFileText(absolutePath: string): FileTextMetadata {
-	const buffer = readFileSync(absolutePath);
-	const encoding = detectEncoding(buffer);
-	const decoded = buffer.toString(encoding);
-	const { bom, text } = splitBom(decoded);
-	return {
-		content: normalizeToLF(text),
-		bom,
-		encoding,
-		lineEnding: detectLineEnding(text),
-	};
+	return decodeFileText(readFileSync(absolutePath));
 }

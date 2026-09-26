@@ -1,11 +1,11 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
+import { mkdir as fsMkdir, stat as fsStat, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import type { ReadStateStore } from "./read-state.ts";
+import { createReadStateStore, type ReadStateStore } from "./read-state.ts";
 import { writeRenderers } from "./renderers/write.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -49,6 +49,7 @@ export function createWriteToolDefinition(
 	options?: WriteToolOptions,
 ): ToolDefinition<typeof writeSchema, undefined> {
 	const ops = options?.operations ?? defaultWriteOperations;
+	const readState = options?.readState ?? createReadStateStore();
 	return {
 		name: "write",
 		label: "write",
@@ -77,12 +78,31 @@ export function createWriteToolDefinition(
 				};
 
 				throwIfAborted();
+				let existing = false;
+				try {
+					const fileStat = await fsStat(absolutePath);
+					existing = !fileStat.isDirectory();
+				} catch (error) {
+					if (!(typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"))
+						throw error;
+				}
+				if (existing && !readState.get(absolutePath)) {
+					throw new Error("File has not been read yet. Read it first before overwriting it.");
+				}
+
 				// Create parent directories if needed.
 				await ops.mkdir(dir);
 				throwIfAborted();
 
 				// Write the file contents.
 				await ops.writeFile(absolutePath, content);
+				const updatedStat = await fsStat(absolutePath);
+				readState.set(absolutePath, {
+					content: content.replaceAll("\r\n", "\n"),
+					timestamp: Math.floor(updatedStat.mtimeMs),
+					offset: undefined,
+					limit: undefined,
+				});
 				throwIfAborted();
 
 				return {
