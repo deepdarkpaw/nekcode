@@ -107,20 +107,6 @@ describe("buildSystemPrompt", () => {
 
 			expect(prompt).toContain(expected);
 		});
-
-		test("keeps the default documentation guidance concise", () => {
-			const prompt = buildSystemPrompt({
-				contextFiles: [],
-				skills: [],
-				cwd: process.cwd(),
-			});
-
-			expect(prompt).toContain("- Main documentation:");
-			expect(prompt).toContain("- Additional docs:");
-			expect(prompt).toContain("- Examples:");
-			expect(prompt).not.toContain("When reading nekcode docs or examples");
-			expect(prompt).not.toContain("docs/environment-variables.md");
-		});
 	});
 
 	describe("custom tool snippets", () => {
