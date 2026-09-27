@@ -1,5 +1,5 @@
 {
-	"name": "pi-extension-sandbox",
+	"name": "nek-extension-sandbox",
 	"private": true,
 	"version": "1.17.1",
 	"type": "module",
@@ -8,7 +8,7 @@
 		"build": "echo 'nothing to build'",
 		"check": "echo 'nothing to check'"
 	},
-	"pi": {
+	"nek": {
 		"extensions": [
 			"./index.ts"
 		]

@@ -17,19 +17,19 @@ describe("resolveModelSelection", () => {
 		expect(
 			resolveModelSelection(
 				{ provider: "anthropic", id: "claude-opus-4-6" },
-				{ PI_PROVIDER: "openai-codex", PI_MODEL: "gpt-5.6-sol" },
+				{ NEK_PROVIDER: "openai-codex", NEK_MODEL: "gpt-5.6-sol" },
 			),
 		).toEqual({ provider: "anthropic", id: "claude-opus-4-6" });
 	});
 
 	it("uses trimmed environment defaults", () => {
-		expect(resolveModelSelection(undefined, { PI_PROVIDER: " openai-codex ", PI_MODEL: " gpt-5.6-sol " })).toEqual({
+		expect(resolveModelSelection(undefined, { NEK_PROVIDER: " openai-codex ", NEK_MODEL: " gpt-5.6-sol " })).toEqual({
 			provider: "openai-codex",
 			id: "gpt-5.6-sol",
 		});
 	});
 
-	it.each([{}, { PI_PROVIDER: "openai-codex" }, { PI_MODEL: "gpt-5.6-sol" }])(
+	it.each([{}, { NEK_PROVIDER: "openai-codex" }, { NEK_MODEL: "gpt-5.6-sol" }])(
 		"rejects incomplete model selection",
 		(environment) => {
 			expect(() => resolveModelSelection(undefined, environment)).toThrow("Select a harness model explicitly");
@@ -46,7 +46,7 @@ describe("isolateProcessEnvironment", () => {
 			const restore = applyIsolatedEnvironment("/tmp/eval-home", "/tmp/eval-agent");
 			try {
 				expect(homedir()).toBe("/tmp/eval-home");
-				expect(process.env.PI_CODING_AGENT_DIR).toBe("/tmp/eval-agent");
+				expect(process.env.NEK_CODING_AGENT_DIR).toBe("/tmp/eval-agent");
 				expect(process.env.PI_EVAL_VARIANT).toBeUndefined();
 				expect(process.env.PI_EVAL_ARTIFACT_DIR).toBeUndefined();
 			} finally {

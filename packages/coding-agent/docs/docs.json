@@ -12,7 +12,7 @@
           "path": "quickstart.md"
         },
         {
-          "title": "How Pi Works",
+          "title": "How nekcode Works",
           "path": "how-pi-works.md"
         }
       ]
@@ -21,10 +21,10 @@
       "title": "Guides",
       "items": [
         {
-          "title": "Run Pi",
+          "title": "Run nekcode",
           "items": [
             {
-              "title": "Use Pi in the Terminal",
+              "title": "Use nekcode in the Terminal",
               "path": "usage.md"
             },
             {
@@ -36,11 +36,11 @@
               "path": "sessions.md"
             },
             {
-              "title": "Run Pi Safely",
+              "title": "Run nekcode Safely",
               "path": "security.md"
             },
             {
-              "title": "Isolate Pi",
+              "title": "Isolate nekcode",
               "path": "containerization.md"
             },
             {
@@ -56,24 +56,24 @@
               "path": "shell-aliases.md"
             },
             {
-              "title": "Run Pi in tmux",
+              "title": "Run nekcode in tmux",
               "path": "tmux.md"
             },
             {
-              "title": "Run Pi on Windows",
+              "title": "Run nekcode on Windows",
               "path": "windows.md"
             },
             {
-              "title": "Run Pi on Android",
+              "title": "Run nekcode on Android",
               "path": "termux.md"
             }
           ]
         },
         {
-          "title": "Customize Pi",
+          "title": "Customize nekcode",
           "items": [
             {
-              "title": "Configure Pi",
+              "title": "Configure nekcode",
               "path": "configuration.md"
             },
             {
@@ -93,13 +93,13 @@
               "path": "themes.md"
             },
             {
-              "title": "Use Pi Packages",
+              "title": "Use nekcode Packages",
               "path": "packages.md"
             }
           ]
         },
         {
-          "title": "Build on Pi",
+          "title": "Build on nekcode",
           "items": [
             {
               "title": "Build Extensions",

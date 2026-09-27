@@ -1,40 +1,43 @@
-# Pi
+# nekcode documentation
 
-Pi is an extensible AI agent that works from your terminal. Give it a goal and a working folder, and it can inspect files, run commands, edit content, and work through multi-step tasks.
+nekcode is an extensible terminal coding agent. It can inspect files, run commands, edit content, manage sessions, and delegate bounded work to subagents.
 
-Use Pi for software development, research notes, writing projects, data files, or hobby work. You can use Pi as is, prompt it to adapt itself to your workflow, or build other applications powered by Pi using the SDK.
+## Start using nekcode
 
-## Start using Pi
+New to nekcode? Follow the [Quickstart](quickstart.md) to install it, connect a model, and complete your first task.
 
-New to Pi? Follow the [Quickstart](quickstart.md) to install Pi, connect a model, and complete your first task.
+If nekcode is already installed:
 
-If Pi is already installed, choose what you want to do:
-
-- [Use Pi interactively](usage.md) to add files, run commands, direct ongoing work, and export results.
+- [Use nekcode interactively](usage.md) to add files, run commands, direct ongoing work, and export results.
 - [Choose a model](models.md) or connect a subscription, API key, local model, or compatible endpoint.
 - [Continue or branch a session](sessions.md) to resume work or explore another approach without losing history.
-- [Configure Pi](configuration.md) for your preferences, working folders, instructions, and reusable resources.
-- [Understand how Pi works](how-pi-works.md), including tools, context, sessions, and the agent loop.
-- [Use nekcode planning and subagents](nek.md): plan mode, todos, delegated subagents, and the Cursor and Claude Code file tools.
+- [Configure nekcode](configuration.md) for preferences, working folders, instructions, and reusable resources.
+- [Understand how nekcode works](how-nek-works.md), including tools, context, sessions, and the agent loop.
+- [Use nekcode planning and subagents](nek.md): plan mode, todos, delegated subagents, and the built-in file tools.
 
-## Customize Pi
+## Customize nekcode
 
-Pi can reuse prompts, load specialized instructions, add executable integrations, change its terminal interface, connect model services, and distribute these resources as packages.
-Use the [Quickstart customization chooser](quickstart.md#choose-how-to-customize-pi) to select the smallest mechanism that meets your need.
+nekcode can reuse prompts, load specialized instructions, add explicit extensions, change its terminal interface, connect model services, and load themes.
 
-## Automate or embed Pi
+- [Extensions](extensions.md)
+- [Skills](skills.md)
+- [Prompt templates](prompt-templates.md)
+- [Themes](themes.md)
+- [Terminal UI](tui.md)
+
+## Automate or embed nekcode
 
 - Use [print mode](cli.md#invocation-and-output) for one-off and scripted tasks.
 - Use [JSON event stream mode](json.md) to consume structured events from one run.
-- Use [RPC mode](rpc.md) to control a separate Pi process.
-- Use the [TypeScript SDK](sdk.md) to run Pi inside an application.
+- Use [RPC mode](rpc.md) to control a separate nekcode process.
+- Use the [TypeScript SDK](sdk.md) to run nekcode inside an application.
 
-## Find reference and setup information
+## Reference and platform setup
 
-Use the reference pages to look up [CLI options](cli.md), [settings](settings.md), [provider authentication](providers.md), [keybindings](keybindings.md), and [environment variables](environment-variables.md).
+Use the reference pages for [CLI options](cli.md), [settings](settings.md), [provider authentication](providers.md), [keybindings](keybindings.md), and [environment variables](environment-variables.md).
 
 For platform-specific help, see [Terminal Setup](terminal-setup.md), [Windows](windows.md), [tmux](tmux.md), [Termux on Android](termux.md), or [Containerization](containerization.md).
 
-## Work safely
+## Safety
 
-Pi's tools and extensions run with the permissions of the Pi process. Project trust controls which project resources Pi loads, but it does not sandbox tool calls. Review [Security](security.md) before using untrusted files, repositories, extensions, or unattended automation.
+Tools and explicit extensions run with the permissions of the nekcode process. Project trust controls which project resources are loaded; it is not a sandbox. Review [Security](security.md) before using untrusted files, repositories, extensions, or unattended automation.

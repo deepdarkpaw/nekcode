@@ -1,10 +1,10 @@
 # nekcode
 
-nekcode is a fork of Pi with Cursor-style planning and delegation, plus the file tools of Cursor and Claude Code. The additions ship as a built-in extension named `nek`, and as replacements for the built-in `read` and `edit` tools.
+nekcode is an independent fork with Cursor-style planning and delegation, plus the file tools of Cursor and Claude Code. The additions ship as a built-in extension named `nek`, and as replacements for the built-in `read` and `edit` tools.
 
 ## Command and configuration
 
-nekcode runs as the `nek` command. Its configuration lives in `~/.nek/agent/` (`settings.json`, `models.json`, `auth.json`, sessions), and project configuration in `.nek/`. It is separate from an installed Pi, which keeps using `~/.pi`. The environment variable for a custom agent directory is `NEK_CODING_AGENT_DIR`.
+nekcode runs as the `nek` command. Its configuration lives in `~/.nek/agent/` (`settings.json`, `models.json`, `auth.json`, sessions), and project configuration in `.nek/`. It uses a separate data directory and does not migrate data from another installation automatically. The environment variable for a custom agent directory is `NEK_CODING_AGENT_DIR`.
 
 nek does not install, update, or discover extension packages: the `install`, `remove`, `update`, `list`, and `config` commands are removed, and `extensions`/`packages` entries in settings are ignored. Extensions passed with `-e <path>` still load for that run.
 
@@ -30,7 +30,7 @@ A new session activates `read`, `bash`, `edit`, `write`, `ast_grep`, and the `ne
 - **Agent mode** is the default.
 - **Plan mode** researches and writes a plan without changing code. In plan mode, `edit` and `write` may only target Markdown files, and subagents are read-only. The plan is saved under `.nek/plans/`.
 
-Toggle plan mode with `/plan` or the `alt+m` shortcut, or start in it with `pi --plan`. `/plan <text>` enters plan mode and submits the text. When the model finishes a plan, an approval panel offers to implement it in the current session or in a new one. `/nek-build` implements the current plan; `/nek-build --fresh` does so in a new session.
+Toggle plan mode with `/plan` or the `alt+m` shortcut, or start in it with `nek --plan`. `/plan <text>` enters plan mode and submits the text. When the model finishes a plan, an approval panel offers to implement it in the current session or in a new one. `/nek-build` implements the current plan; `/nek-build --fresh` does so in a new session.
 
 ## Subagents
 

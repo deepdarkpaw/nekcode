@@ -1,5 +1,5 @@
 /**
- * Run one prompt through a Pi RPC child process.
+ * Run one prompt through a nekcode RPC child process.
  *
  * Build the coding-agent package first, then run:
  * node examples/rpc-client.ts "Explain this repository"

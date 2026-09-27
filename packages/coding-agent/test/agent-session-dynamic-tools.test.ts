@@ -74,24 +74,24 @@ describe("AgentSession dynamic tool registration", () => {
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash")!;
 		expect(session.systemPrompt).toContain(
-			"You can inspect PI_* environment variables for current model and session details.",
+			"You can inspect NEK_* environment variables for current model and session details.",
 		);
 		await bashTool.execute("bash-env", { command: "printf ok" });
 		expect(sessionEnv).toMatchObject({
-			PI_SESSION_ID: session.sessionId,
-			PI_SESSION_FILE: session.sessionFile,
-			PI_PROVIDER: model.provider,
-			PI_MODEL: model.id,
-			PI_REASONING_LEVEL: session.thinkingLevel,
+			NEK_SESSION_ID: session.sessionId,
+			NEK_SESSION_FILE: session.sessionFile,
+			NEK_PROVIDER: model.provider,
+			NEK_MODEL: model.id,
+			NEK_REASONING_LEVEL: session.thinkingLevel,
 		});
 
 		const optedOutBashTool = session.agent.state.tools.find((tool) => tool.name === "bash_without_session_env")!;
 		await optedOutBashTool.execute("bash-no-env", { command: "printf ok" });
-		expect(optedOutEnv).not.toHaveProperty("PI_SESSION_ID");
-		expect(optedOutEnv).not.toHaveProperty("PI_SESSION_FILE");
-		expect(optedOutEnv).not.toHaveProperty("PI_PROVIDER");
-		expect(optedOutEnv).not.toHaveProperty("PI_MODEL");
-		expect(optedOutEnv).not.toHaveProperty("PI_REASONING_LEVEL");
+		expect(optedOutEnv).not.toHaveProperty("NEK_SESSION_ID");
+		expect(optedOutEnv).not.toHaveProperty("NEK_SESSION_FILE");
+		expect(optedOutEnv).not.toHaveProperty("NEK_PROVIDER");
+		expect(optedOutEnv).not.toHaveProperty("NEK_MODEL");
+		expect(optedOutEnv).not.toHaveProperty("NEK_REASONING_LEVEL");
 
 		session.dispose();
 	});

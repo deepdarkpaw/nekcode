@@ -37,8 +37,8 @@ function runEntry(entry: string, experimental: boolean) {
 				HOME: directory,
 				USERPROFILE: directory,
 				[ENV_AGENT_DIR]: join(directory, "agent"),
-				PI_OFFLINE: "1",
-				PI_EXPERIMENTAL: experimental ? "1" : "0",
+				NEK_OFFLINE: "1",
+				NEK_EXPERIMENTAL: experimental ? "1" : "0",
 			},
 		},
 	);

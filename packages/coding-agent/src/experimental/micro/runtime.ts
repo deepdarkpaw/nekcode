@@ -336,7 +336,7 @@ export async function openMicro(options: OpenMicroOptions = {}): Promise<OpenMic
 					);
 					if (!account) throw new Error(`Unknown login method: ${providerId}/${authType}`);
 					if (!account.interactive)
-						throw new Error(`${account.methodName ?? "Authentication"} is configured outside pi`);
+						throw new Error(`${account.methodName ?? "Authentication"} is configured outside nekcode`);
 					loginController = new AbortController();
 					update({
 						auth: { providerId, providerName: account.name, authType, notices: [] },

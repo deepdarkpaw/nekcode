@@ -8,7 +8,7 @@ First things first: **pi's core is minimal**.
 
 If your feature does not belong in the core, it should be an extension. PRs that bloat the core will likely be rejected.
 
-Pi's core exists to be minimal and to be extensible so that it can be influenced and manipulated by extensions.  Even hook points for extensions however should be well considered and discussed to avoid adding unmaintainable bloat and complex interactions.
+nekcode's core exists to be minimal and to be extensible so that it can be influenced and manipulated by extensions.  Even hook points for extensions however should be well considered and discussed to avoid adding unmaintainable bloat and complex interactions.
 
 ## The One Rule
 
@@ -16,7 +16,7 @@ Pi's core exists to be minimal and to be extensible so that it can be influenced
 
 Using AI to write code is fine. Submitting AI-generated slop without understanding it is not.
 
-If you use an agent, run it from the `pi` root directory so it picks up `AGENTS.md` automatically. Your agent must follow the rules and guidelines in that file.
+If you use an agent, run it from the `nekcode` root directory so it picks up `AGENTS.md` automatically. Your agent must follow the rules and guidelines in that file.
 
 ## Contribution Gate
 

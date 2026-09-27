@@ -66,7 +66,7 @@ function environment(name: string, value: string): string[] {
 
 export function requireEvalAuthFile(provider: string): string {
 	const path = join(
-		process.env.PI_CODING_AGENT_DIR ? resolve(process.env.PI_CODING_AGENT_DIR) : join(homedir(), ".pi", "agent"),
+		process.env.NEK_CODING_AGENT_DIR ? resolve(process.env.NEK_CODING_AGENT_DIR) : join(homedir(), ".nek", "agent"),
 		"auth.json",
 	);
 	if (!existsSync(path) || !statSync(path).isFile())
@@ -109,8 +109,8 @@ function dockerArgs(
 		...environment("PI_EVAL_RUNS_PER_VARIANT", String(context.runsPerVariant)),
 		...environment("PI_EVAL_SANDBOX_UID", "65532"),
 		...environment("PI_EVAL_SANDBOX_GID", "65532"),
-		...environment("PI_PROVIDER", context.provider),
-		...environment("PI_MODEL", context.model),
+		...environment("NEK_PROVIDER", context.provider),
+		...environment("NEK_MODEL", context.model),
 	];
 	if (typeof process.getuid === "function" && typeof process.getgid === "function") {
 		args.push(

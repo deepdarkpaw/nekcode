@@ -21,10 +21,10 @@ Eval suites and their fixtures live under `evals/`. Image build files live in `d
 
 ## Run evals
 
-Host evals (smoke, documentation audit) and documentation-lift evals need `PI_PROVIDER` and `PI_MODEL`.
+Host evals (smoke, documentation audit) and documentation-lift evals need `NEK_PROVIDER` and `NEK_MODEL`.
 
 ```bash
-PI_PROVIDER=openai-codex PI_MODEL=gpt-5.6-sol npm run eval -w packages/evals
+NEK_PROVIDER=openai-codex NEK_MODEL=gpt-5.6-sol npm run eval -w packages/evals
 ```
 
 That runs host evals, then the documentation comparison. Extra CLI flags after `--` go to `eval:docs` only.
@@ -32,13 +32,13 @@ That runs host evals, then the documentation comparison. Extra CLI flags after `
 Host only:
 
 ```bash
-PI_PROVIDER=openai-codex PI_MODEL=gpt-5.6-sol npm run eval:host -w packages/evals
+NEK_PROVIDER=openai-codex NEK_MODEL=gpt-5.6-sol npm run eval:host -w packages/evals
 ```
 
 One host suite:
 
 ```bash
-PI_PROVIDER=openai-codex PI_MODEL=gpt-5.6-sol \
+NEK_PROVIDER=openai-codex NEK_MODEL=gpt-5.6-sol \
   npm run eval:host -w packages/evals -- evals/documentation-audit.eval.ts
 ```
 
@@ -52,7 +52,7 @@ npm run eval:docs -w packages/evals -- \
   --model gpt-5.6-sol
 ```
 
-`PI_PROVIDER` and `PI_MODEL` provide the same defaults. Both values are required.
+`NEK_PROVIDER` and `NEK_MODEL` provide the same defaults. Both values are required.
 
 The default is one run per variant. Increase repetitions explicitly when measuring stability:
 

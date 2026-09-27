@@ -1,72 +1,54 @@
-<p align="center">
-  <a href="https://pi.dev">
-    <img alt="Pi logo" src="https://pi.dev/logo-auto.svg" width="128">
-  </a>
-</p>
-<p align="center">
-  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
-  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square&logo=npm&logoColor=white" /></a>
-</p>
+# nekcode coding agent
 
-> New issues and PRs from new contributors are closed automatically. Maintainers review closed submissions daily. See [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md).
+nekcode is an extensible terminal coding agent. The CLI is installed as `nek`, stores user data under `~/.nek/agent`, and uses `.nek/` for trusted project resources.
 
-> **nekcode** is a fork of Pi, run as the `nek` command with its configuration in `~/.nek`. It adds Cursor-style plan mode, todos, and subagents (`task`/`await`), a Cursor-style `read` tool, a Claude Code-style `edit` tool, and a built-in `ast_grep` tool. nek does not install or discover extension packages; only built-in features and extensions passed with `-e` load. See [nekcode](docs/nek.md).
+It provides file inspection, search, shell execution, deterministic editing, session persistence, multiple model providers, plan mode, todo tracking, and bounded subagents. The built-in `nek` extension also provides `ast_grep`, Cursor-style read output, and Claude Code-style edit semantics.
 
-# Pi
+The published npm package identifier remains `@earendil-works/pi-coding-agent` so that the existing workspace dependency graph and package distribution remain usable. This does not change the application name or command.
 
-Pi is a minimal, extensible AI agent for the terminal. Adapt Pi to your workflow, not the other way around.
+## Install
 
-Ask Pi to create the prompt templates, skills, extensions, and themes you need, or install a Pi package. Use Pi directly, automate it in print, JSON, or RPC mode, or build applications with the TypeScript SDK.
-
-## Getting started
-
-Install the command-line interface with npm:
+nekcode is not published to the npm registry. The registry package `@earendil-works/pi-coding-agent` is upstream pi and installs the `pi` command, not `nek`. Build and install from a checkout instead:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+git clone https://github.com/deepdarkpaw/nekcode.git
+cd nekcode
+npm ci --ignore-scripts
+npm run build
+npm install -g --ignore-scripts ./packages/coding-agent
+nek --version
 ```
 
-This requires Node.js 22.19 or newer. Pi does not require dependency lifecycle scripts for a normal npm installation.
+Node.js 22.19 or newer is required. The global install links to the checkout, so keep the checkout in place.
 
-On macOS or Linux, you can instead use the installer:
-
-```bash
-curl -fsSL https://pi.dev/install.sh | sh
-```
-
-Start Pi in the directory where you want it to work:
+Start it in the directory it should inspect and modify:
 
 ```bash
 cd /path/to/project
-pi
+nek
 ```
 
-For a built-in AI provider, run `/login` inside Pi to connect a subscription or API key. Then give Pi a task.
+Authenticate with `/login`, then give the agent a task. For Linux, macOS, Windows, WSL, and Termux details, see the [documentation](docs/index.md).
 
-See the [documentation](docs/index.md) for full setup and usage instructions.
+## Run from source
 
-## Development
-
-Clone the repository, install its dependencies, and run Pi from source:
+From the repository root:
 
 ```bash
-git clone https://github.com/earendil-works/pi
-cd pi
 npm install --ignore-scripts
-./pi-test.sh
+./nek-test.sh
 ```
 
-`pi-test.sh` can be called from any directory and preserves the caller's working directory.
+The script can be called from any directory. It preserves the caller's working directory and loads the source CLI directly.
 
-Before submitting changes, run:
+## Built-in tools and modes
 
-```bash
-npm run check
-./test.sh
-```
+A new session activates `read`, `bash`, `edit`, `write`, and `ast_grep` by default. The `nek` extension adds:
 
-Read [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md) before opening an issue or pull request. It defines the contribution gate, issue quality bar, and required checks. Read [AGENTS.md](https://github.com/earendil-works/pi/blob/main/AGENTS.md) for repository-specific implementation, testing, dependency, and release rules.
+- `todo_write` for bounded task lists
+- `switch_mode`, `create_plan`, and `ask_question` for plan mode
+- `task` and `await` for foreground and background subagents
 
-## License
+Agent data is stored in `~/.nek/agent/`; trusted project resources are stored in `.nek/`. Configure plan and subagent behavior in `~/.nek/agent/nek.yaml` or `.nek/nek.yaml`.
 
-MIT
+See [docs/nek.md](docs/nek.md) for the full nekcode-specific behavior and [docs/index.md](docs/index.md) for the general CLI documentation.

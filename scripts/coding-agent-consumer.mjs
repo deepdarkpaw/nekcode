@@ -92,9 +92,9 @@ export function smokeTestCodingAgentConsumer(directory, runtime = process.execPa
 		LOCALAPPDATA: home,
 		XDG_CONFIG_HOME: home,
 		XDG_CACHE_HOME: home,
-		PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
-		PI_OFFLINE: "1",
-		PI_TELEMETRY: "0",
+		NEK_CODING_AGENT_DIR: join(home, ".nek", "agent"),
+		NEK_OFFLINE: "1",
+		NEK_TELEMETRY: "0",
 	};
 	for (const name of ["SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"]) {
 		if (process.env[name]) env[name] = process.env[name];
@@ -113,7 +113,7 @@ for (const subpath of ["/client", "/experimental/plugin"]) {
 }
 `);
 		run(runtime, [entry], { cwd: directory, env, timeout: 30_000 });
-		for (const cli of new Set([manifest.bin.pi, "dist/cli.js"])) {
+		for (const cli of new Set([manifest.bin.nek, "dist/cli.js"])) {
 			const output = run(runtime, [join(packageDir, cli), "--version"], { cwd: directory, env, timeout: 30_000 });
 			if (output.trim() !== manifest.version) throw new Error(`Unexpected version from ${cli}: ${output}`);
 		}
@@ -126,7 +126,7 @@ for (const subpath of ["/client", "/experimental/plugin"]) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	if (process.argv.length !== 2) throw new Error("Usage: node scripts/coding-agent-consumer.mjs");
-	const root = mkdtempSync(join(tmpdir(), "pi-package-consumer-"));
+	const root = mkdtempSync(join(tmpdir(), "nek-package-consumer-"));
 	try {
 		const tarballs = packReleasePackages(getPublicWorkspacePackages(), join(root, "tarballs"));
 		const directory = join(root, "consumer");

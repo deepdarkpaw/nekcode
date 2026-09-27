@@ -1,25 +1,25 @@
 # Sessions and Context
 
-Pi saves a conversation as a session. The active branch of that session supplies conversation history for the next model request. Use session commands to continue work, explore another branch, or reduce the amount of history sent to the model.
+nekcode saves a conversation as a session. The active branch supplies conversation history for the next model request. Use session commands to continue work, explore another branch, or reduce the amount of history sent to the model.
 
 ## Continue or switch sessions
 
-Pi saves sessions automatically unless you start it with `--no-session`.
+Sessions are saved automatically unless started with `--no-session`.
 
 ```bash
-pi --continue
-pi --resume
+nek --continue
+nek --resume
 ```
 
 `--continue` opens the most recent session for the current working directory. `--resume` opens the session picker. In interactive mode, `/resume` opens the same picker and `/new` starts a new session.
 
 Use `/name` or `--name` to assign a recognizable session name. Run `/session` to verify the current session file, ID, message count, token usage, and cost.
 
-The session picker lets you search, rename, and delete sessions. It can also show paths, change sorting, and limit results to named sessions. See [Keybindings](keybindings.md#sessions) for its shortcuts.
+The session picker lets you search, rename, and delete sessions. See [Keybindings](keybindings.md#sessions) for its shortcuts.
 
-## Choose how to branch
+## Branch a session
 
-Pi stores entries as a tree, so returning to an earlier point does not erase the branch you leave.
+Sessions store entries as a tree, so returning to an earlier point does not erase the branch you leave.
 
 | Action | Result | Use it when |
 |---|---|---|
@@ -27,40 +27,28 @@ Pi stores entries as a tree, so returning to an earlier point does not erase the
 | `/fork` | Creates a new session from an earlier user message | The alternative should become separate work |
 | `/clone` | Copies the active branch into a new session | You want a separate copy of the current state |
 
-In `/tree`, select a user message to put its text back in the editor. Edit and submit it to create another branch. Selecting an assistant response or another entry continues after that entry with an empty editor.
+When you leave a branch, nekcode can summarize it and attach that summary to the branch you enter. This preserves relevant work without including every message from the abandoned path.
 
-When you leave a branch, Pi can summarize it and attach that summary to the branch you enter. This preserves relevant work from the abandoned path without including every message from it.
-
-For the persisted tree and entry types, see [Session Format](session-format.md).
+For persisted tree and entry types, see [Session Format](session-format.md).
 
 ## Manage conversation context
 
-The model receives the active branch, not every branch in the session file. Pi combines that history with the system prompt, discovered context files, available tools, and loaded skill descriptions. [How Pi Works](how-pi-works.md#context) describes how those inputs are assembled.
+The model receives the active branch, not every branch in the session file. nekcode combines that history with the system prompt, discovered context files, available tools, and loaded skill descriptions. [How nekcode works](how-nek-works.md#context) describes how those inputs are assembled.
 
-The footer shows current context usage. When the active context approaches the model's limit, Pi normally compacts older history automatically. Compaction adds a summary and keeps recent messages. It does not delete the original session entries.
+When the active context approaches the model's limit, nekcode normally compacts older history automatically. Compaction adds a summary and keeps recent messages; it does not delete original session entries.
 
-Run `/compact` to compact manually. You can add instructions when the summary should preserve a particular topic or decision. Configure automatic compaction and retained history through [Settings](settings.md#compaction).
-
-Compaction can fail if the provider is unavailable or cannot accept the summarization request. Correct the provider problem and run `/compact` again. Disabling automatic compaction does not disable the manual command.
-
-See [Compaction Reference](compaction.md) for thresholds, retained boundaries, branch-summary behavior, and extension hooks.
+Run `/compact` to compact manually. See [Compaction Reference](compaction.md) for thresholds, retained boundaries, branch-summary behavior, and extension hooks.
 
 ## Control session storage
 
-By default, Pi stores sessions under `~/.pi/agent/sessions/`, grouped by working directory. Use `--session-dir`, `PI_CODING_AGENT_SESSION_DIR`, or the `sessionDir` setting to choose another location. The CLI option has highest precedence.
+By default, sessions are stored under `~/.nek/agent/sessions/`, grouped by working directory. Use `--session-dir`, `NEK_CODING_AGENT_SESSION_DIR`, or the `sessionDir` setting to choose another location. The CLI option has highest precedence.
 
-Use `--no-session` for an ephemeral run. An ephemeral session cannot be resumed after Pi exits.
-
-Use `--session` when you already know the session path or ID. Use `--fork` to create a new session from an existing session before interactive mode starts.
+Use `--no-session` for an ephemeral run. Use `--session` when you already know the session path or ID, and `--fork` to create a new session before interactive mode starts.
 
 ## Export or share a session
 
-Use `/export` to write the current session as HTML or JSONL. Use `/share` to upload it and get a viewer link. Pi uses a Radius artifact when Radius authentication is configured; otherwise, it uses a private GitHub gist.
-
-Review exported or shared sessions first. They can contain prompts, model responses, tool arguments, command output, file contents, and extension messages.
+Use `/export` to write the current session as HTML or JSONL. Use `/share` to upload it and get a viewer link. Review exported or shared sessions first: they can contain prompts, model responses, tool arguments, command output, file contents, and extension messages.
 
 ## Report a bug
 
-Run `/bug [description]` to prepare a private report for the Pi developers. You can include the session transcript, omit it, or ask the current model to summarize the problem. Review any transcript or generated summary because it can contain sensitive conversation data.
-
-The report includes environment and provider configuration without credential values, plus recorded error diagnostics. Upload it through `radius.pi.dev` or export the same report as a zip to inspect and share yourself. Uploads do not require a login; Radius authentication attributes the report to your account so the developers can follow up. If an upload fails, Pi offers to export the zip.
+Run `/bug [description]` to prepare a private report for the nekcode developers. Review any transcript or generated summary because it can contain sensitive conversation data. If uploads are unavailable, nekcode can export the report as a zip for inspection and manual sharing.

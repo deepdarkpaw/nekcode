@@ -1,14 +1,14 @@
-# Run Pi on Android with Termux
+# Run nekcode on Android with Termux
 
-Pi runs on Android through [Termux](https://termux.dev/), a terminal emulator and Linux environment. Text input, file tools, and shell commands are supported. Pi can copy and paste text through the Android clipboard with Termux:API. Clipboard image paste is not supported.
+nekcode runs on Android through [Termux](https://termux.dev/), a terminal emulator and Linux environment. Text input, file tools, and shell commands are supported. nekcode can copy and paste text through Termux:API; clipboard image paste is not supported.
 
 ## Before you begin
 
 Install Termux from [GitHub or F-Droid](https://github.com/termux/termux-app#installation). Do not use the deprecated Google Play build.
 
-[Termux:API](https://github.com/termux/termux-api#installation) is optional. Install it only when you want Pi to copy or paste Android clipboard text, or when shell commands need Android device APIs.
+[Termux:API](https://github.com/termux/termux-api#installation) is optional. Install it only for Android clipboard text or device APIs.
 
-## Install Pi
+## Install nekcode
 
 1. Update Termux packages:
 
@@ -22,7 +22,7 @@ Install Termux from [GitHub or F-Droid](https://github.com/termux/termux-app#ins
    pkg install nodejs git
    ```
 
-3. Install Pi:
+3. Install nekcode:
 
    ```bash
    npm install -g --ignore-scripts @earendil-works/pi-coding-agent
@@ -31,33 +31,31 @@ Install Termux from [GitHub or F-Droid](https://github.com/termux/termux-app#ins
 4. Verify the installation:
 
    ```bash
-   pi --version
+   nek --version
    ```
 
-5. Open the folder you want to work in and start Pi:
+5. Start it in the working folder:
 
    ```bash
    cd /path/to/working-folder
-   pi
+   nek
    ```
 
-Continue with the main [Quickstart](quickstart.md#3-choose-a-model) to connect a model and run your first task.
+Continue with the [Quickstart](quickstart.md#3-choose-a-model) to connect a model and run a task.
 
 ## Access Android shared storage
 
-Termux cannot access shared Android storage until you grant permission. Run this once:
+Run this once to grant access:
 
 ```bash
 termux-setup-storage
 ```
 
-After approval, Android shared storage is available under `/storage/emulated/0` and through the links Termux creates under `~/storage/`.
-
-Only grant this permission when Pi should be able to access those files. Commands and tools running in Termux use the same storage permissions as the Termux process.
+Shared storage is available under `/storage/emulated/0` and through `~/storage/`. Only grant this permission when nekcode needs those files.
 
 ## Use clipboard commands
 
-Pi uses `termux-clipboard-set` to copy text and `termux-clipboard-get` for its clipboard-paste shortcut. Shell commands can use both commands directly. Install the Termux:API app and its command-line package:
+Install Termux:API and its command-line package:
 
 ```bash
 pkg install termux-api
@@ -66,22 +64,20 @@ pkg install termux-api
 Verify the integration:
 
 ```bash
-printf 'Pi clipboard test' | termux-clipboard-set
+printf 'nekcode clipboard test' | termux-clipboard-set
 termux-clipboard-get
 ```
 
-The second command should print `Pi clipboard test`.
-
-The Termux clipboard API supports text only. Pi's clipboard-paste shortcut inserts that text into the editor but cannot attach clipboard images.
+The Termux clipboard API supports text only. nekcode's clipboard-paste shortcut cannot attach clipboard images.
 
 ## Add Termux-specific instructions
 
-Pi detects that it is running in Termux, but it cannot infer how you want it to interact with Android. Add only the environment details relevant to your work to `~/.pi/agent/AGENTS.md`:
+Add relevant environment details to `~/.nek/agent/AGENTS.md`:
 
 ````markdown
 # Termux environment
 
-- Pi runs in Termux on Android.
+- nekcode runs in Termux on Android.
 - Shared Android storage is under `/storage/emulated/0`.
 - Open URLs with `termux-open-url "https://example.com"`.
 - Open files with `termux-open <path>`.
@@ -94,24 +90,19 @@ Run `/reload` after changing the file during an active session.
 
 ### Clipboard integration fails
 
-Confirm that you installed both components:
-
-1. The Termux:API Android app from the same source as Termux
-2. The `termux-api` command-line package
-
-Then run the clipboard verification commands above outside Pi. If they fail there, fix the Termux:API installation before retrying Pi's copy command.
+Confirm that the Termux:API Android app and the `termux-api` package were installed from the same source as Termux. Test the clipboard commands outside nekcode first.
 
 ### Shared storage reports permission denied
 
 Run `termux-setup-storage`, approve the Android permission request, and retry the path under `~/storage/` or `/storage/emulated/0`.
 
-### Pi is not found after installation
+### nekcode is not found after installation
 
 Open a new Termux shell and run:
 
 ```bash
 npm prefix -g
-command -v pi
+command -v nek
 ```
 
-Confirm that the global npm binary directory is on `PATH`, then reinstall Pi if the package is missing.
+Confirm that the global npm binary directory is on `PATH`, then reinstall the package if necessary.

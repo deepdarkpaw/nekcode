@@ -9,7 +9,7 @@ const codingAgentName = "@earendil-works/pi-coding-agent";
 const devPackages = ["pi-client", "pi-protocol", "pi-server"].map((name) => `@earendil-works/${name}`);
 
 function createFixture(t, { importServer = false, declareServer = false } = {}) {
-	const root = mkdtempSync(join(tmpdir(), "pi-consumer-test-"));
+	const root = mkdtempSync(join(tmpdir(), "nek-consumer-test-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const packages = [codingAgentName, "@earendil-works/chord", ...devPackages].map((name) => ({
 		name,
@@ -27,7 +27,7 @@ function createFixture(t, { importServer = false, declareServer = false } = {}) 
 				"./experimental/plugin": { source: "./src/experimental/plugin.ts" },
 			} : "./dist/index.js",
 			...(isAgent ? {
-				bin: { pi: "dist/bundle/cli.js" },
+				bin: { nek: "dist/bundle/cli.js" },
 				dependencies: {
 					"@earendil-works/chord": "1.0.0",
 					...(declareServer ? { "@earendil-works/pi-server": "1.0.0" } : {}),
