@@ -28,8 +28,10 @@ export type TodoWriteToolInput = Static<typeof todoWriteSchema>;
 /** Access to the branch-scoped todo list owned by the extension. */
 export interface TodoWriteToolOptions {
 	getTodos(): readonly Todo[];
+	/** Ownership comes from the runtime, not from model-supplied tool arguments. */
+	getOwner?(): TodoListData["owner"];
 	/** Store the merged list and refresh the UI. */
-	setTodos(todos: Todo[], ctx: ExtensionContext): void;
+	setTodos(todos: Todo[], ctx: ExtensionContext, owner: TodoListData["owner"]): void;
 }
 
 /**
@@ -47,8 +49,12 @@ export function createTodoWriteToolDefinition(
 		executionMode: "sequential",
 		async execute(_toolCallId, { merge, todos }: TodoWriteToolInput, _signal, _onUpdate, ctx) {
 			const next = mergeTodos(options.getTodos(), todos, merge);
-			options.setTodos(next, ctx);
-			return { content: [{ type: "text", text: summarizeTodos(next) }], details: { todos: next } };
+			const owner = options.getOwner?.();
+			options.setTodos(next, ctx, owner);
+			return {
+				content: [{ type: "text", text: summarizeTodos(next) }],
+				details: { todos: next, ...(owner ? { owner } : {}) },
+			};
 		},
 		...todoWriteRenderers,
 	};

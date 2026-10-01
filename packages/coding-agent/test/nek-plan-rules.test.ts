@@ -14,11 +14,12 @@ import {
 	writePlanFile,
 } from "../src/extensions/nek/services/plan-store.ts";
 import { checkModeToolCall, isMarkdownPath, modeToolNames } from "../src/extensions/nek/state/mode-rules.ts";
-import { replayBranch } from "../src/extensions/nek/state/session-state.ts";
+import { replayBranch, todosAreActive } from "../src/extensions/nek/state/session-state.ts";
 import type { PlanRecord, Todo } from "../src/extensions/nek/types.ts";
 
 const plan: PlanRecord = {
 	name: "Add auth",
+	revision: 1,
 	path: "/repo/.pi/plans/add-auth_abc123.plan.md",
 	overview: "Add session auth.",
 	todos: [
@@ -91,8 +92,13 @@ describe("checkModeToolCall", () => {
 });
 
 describe("modeToolNames", () => {
-	it("adds create_plan and drops switch_mode in plan mode, keeping the rest", () => {
-		expect(modeToolNames(["read", "switch_mode", "write"], "plan")).toEqual(["read", "write", "create_plan"]);
+	it("adds create_plan and keeps switch_mode in plan mode, keeping the rest", () => {
+		expect(modeToolNames(["read", "switch_mode", "write"], "plan")).toEqual([
+			"read",
+			"switch_mode",
+			"write",
+			"create_plan",
+		]);
 	});
 
 	it("adds switch_mode and drops create_plan in agent mode", () => {
@@ -118,31 +124,68 @@ describe("modeReminder", () => {
 });
 
 describe("replayBranch with modes and plans", () => {
+	it("revokes plan todo continuation independently of preserving progress and the artifact", () => {
+		const owner = { path: plan.path, revision: 1 };
+		const entries = [
+			toolResultEntry("1", "create_plan", { plan: { ...plan }, markdown: "# Add auth" }),
+			customEntry("2", "nek.todos", { todos: [todo], owner }),
+			customEntry("3", "nek.plan", { status: "ready", execution: { ...owner, status: "active" } }),
+			customEntry("4", "nek.plan", { status: "ready", execution: { ...owner, status: "interrupted" } }),
+		];
+		expect(todosAreActive(replayBranch(entries.slice(0, 3)))).toBe(true);
+		const stopped = replayBranch(entries);
+		expect(todosAreActive(stopped)).toBe(false);
+		expect(stopped.todos).toEqual([todo]);
+		expect(stopped.planMarkdown).toBe("# Add auth");
+		expect(todosAreActive(replayBranch([...entries, customEntry("5", "nek.todos", { todos: [todo] })]))).toBe(true);
+	});
+
+	it("does not treat planning todos as approved execution after leaving Plan", () => {
+		const entries = [
+			customEntry("1", "nek.mode", { mode: "plan" }),
+			customEntry("2", "nek.todos", { todos: [todo], owner: "planning" }),
+			customEntry("3", "nek.mode", { mode: "agent" }),
+		];
+		expect(todosAreActive(replayBranch(entries.slice(0, 2)))).toBe(true);
+		expect(todosAreActive(replayBranch(entries))).toBe(false);
+	});
 	it("replays mode entries, plans, and todos in branch order", () => {
 		const entries = [
 			customEntry("1", "nek.mode", { mode: "plan" }),
-			toolResultEntry("2", "create_plan", { plan: { ...plan, overview: "First" } }),
-			toolResultEntry("3", "create_plan", { plan: { ...plan } }),
+			toolResultEntry("2", "create_plan", { plan: { ...plan, overview: "First" }, markdown: "# First" }),
+			toolResultEntry("3", "create_plan", { plan: { ...plan }, markdown: "# Add auth" }),
 			customEntry("4", "nek.mode", { mode: "agent" }),
 			customEntry("5", "nek.todos", { todos: [todo] }),
 		];
-		expect(replayBranch(entries)).toEqual({ mode: "agent", todos: [todo], plan });
+		expect(replayBranch(entries)).toEqual({
+			mode: "agent",
+			todos: [todo],
+			plan,
+			planMarkdown: "# Add auth",
+			planStatus: "ready",
+		});
 	});
 
 	it("rebuilds the state of a truncated branch", () => {
 		const entries = [
 			customEntry("1", "nek.mode", { mode: "plan" }),
-			toolResultEntry("2", "create_plan", { plan: { ...plan } }),
+			toolResultEntry("2", "create_plan", { plan: { ...plan }, markdown: "# Add auth" }),
 			customEntry("3", "nek.mode", { mode: "agent" }),
 			customEntry("4", "nek.todos", { todos: [todo] }),
 		];
-		expect(replayBranch(entries.slice(0, 2))).toEqual({ mode: "plan", todos: [], plan });
+		expect(replayBranch(entries.slice(0, 2))).toEqual({
+			mode: "plan",
+			todos: [],
+			plan,
+			planMarkdown: "# Add auth",
+			planStatus: "ready",
+		});
 		expect(replayBranch(entries.slice(0, 1))).toEqual({ mode: "plan", todos: [] });
 	});
 
 	it("ignores failed create_plan results and invalid mode entries", () => {
 		const entries = [
-			toolResultEntry("1", "create_plan", { plan: { ...plan } }, true),
+			toolResultEntry("1", "create_plan", { plan: { ...plan }, markdown: "# Add auth" }, true),
 			toolResultEntry("2", "create_plan", { plan: { name: "x" } }),
 			customEntry("3", "nek.mode", { mode: "debug" }),
 			customEntry("4", "nek.mode", undefined),

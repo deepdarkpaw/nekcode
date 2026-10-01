@@ -12,15 +12,11 @@ export function isMarkdownPath(path: string): boolean {
 	return MARKDOWN_EXTENSIONS.includes(extname(path.trim()).toLowerCase());
 }
 
-/**
- * Next active tool list for a mode (Cursor cursor-mode-tools-{plan,agent}.json): plan mode adds create_plan and drops
- * switch_mode, agent mode does the reverse. Every other name in `active` is kept, so a `--tools` selection survives.
- */
+/** Keep the approval-gated mode switch available in both modes; only Plan exposes create_plan. */
 export function modeToolNames(active: readonly string[], mode: Mode): string[] {
-	const own = mode === "plan" ? CREATE_PLAN_TOOL_NAME : SWITCH_MODE_TOOL_NAME;
-	const other = mode === "plan" ? SWITCH_MODE_TOOL_NAME : CREATE_PLAN_TOOL_NAME;
-	const next = active.filter((name) => name !== other);
-	if (!next.includes(own)) next.push(own);
+	const next = mode === "agent" ? active.filter((name) => name !== CREATE_PLAN_TOOL_NAME) : [...active];
+	if (!next.includes(SWITCH_MODE_TOOL_NAME)) next.push(SWITCH_MODE_TOOL_NAME);
+	if (mode === "plan" && !next.includes(CREATE_PLAN_TOOL_NAME)) next.push(CREATE_PLAN_TOOL_NAME);
 	return next;
 }
 

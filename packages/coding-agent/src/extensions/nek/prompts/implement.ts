@@ -19,6 +19,11 @@ export const IMPLEMENT_NO = "No, stay in Plan mode";
 /** Description of {@link IMPLEMENT_NO} (line 105). */
 export const IMPLEMENT_NO_DESCRIPTION = "Continue planning with the model";
 
+/** Fourth option: leave planning without approving implementation. */
+export const IMPLEMENT_EXIT = "Exit Plan mode";
+/** Description of {@link IMPLEMENT_EXIT}. */
+export const IMPLEMENT_EXIT_DESCRIPTION = "Switch to Agent without starting implementation";
+
 /** User message that starts implementation in the current session (line 13). */
 export const IMPLEMENT_PLAN_MESSAGE = "Implement the plan.";
 

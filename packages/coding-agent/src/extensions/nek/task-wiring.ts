@@ -12,6 +12,7 @@ import { completionNotice, taskDescription } from "./prompts/subagent.ts";
 import { BUILTIN_AGENT_TYPES, describeAgentTypes, discoverAgentTypes } from "./services/agent-types.ts";
 import { childToolNames, createChildSession, modelRef } from "./services/child-session.ts";
 import { TaskRegistry } from "./services/task-registry.ts";
+import { todosAreActive } from "./state/session-state.ts";
 import { createAwaitToolDefinition } from "./tools/await.ts";
 import { type BranchTask, type ChildSessionRequest, createTaskToolDefinition, TASK_TOOL_NAME } from "./tools/task.ts";
 import type { AgentType, TaskNoticeData, TaskRecord } from "./types.ts";
@@ -166,7 +167,11 @@ function noticeDraft(record: TaskRecord): CustomMessageEntryDraft {
 function settleNotices(wiring: SubagentWiring, event: AgentBeforeSettleEvent): BoundaryResult | undefined {
 	const done = wiring.registry?.drainUnobserved() ?? [];
 	if (done.length === 0) return undefined;
-	const proceed = event.outcome === "completed" && wiring.nek.session.mode !== "plan";
+	const proceed =
+		event.outcome === "completed" &&
+		wiring.nek.session.mode !== "plan" &&
+		wiring.nek.automaticWorkAllowed &&
+		todosAreActive(wiring.nek.session);
 	return { entries: [...event.entries, ...done.map(noticeDraft)], continue: event.continue || proceed };
 }
 
@@ -177,7 +182,8 @@ function settleNotices(wiring: SubagentWiring, event: AgentBeforeSettleEvent): B
 function deliverIdleNotices(wiring: SubagentWiring): void {
 	const ctx = wiring.ctx;
 	if (!wiring.registry || !ctx?.isIdle()) return;
-	const plan = wiring.nek.session.mode === "plan";
+	const defer =
+		wiring.nek.session.mode === "plan" || !wiring.nek.automaticWorkAllowed || !todosAreActive(wiring.nek.session);
 	for (const record of wiring.registry.drainUnobserved()) {
 		const message = {
 			customType: TASK_NOTICE_TYPE,
@@ -185,7 +191,7 @@ function deliverIdleNotices(wiring: SubagentWiring): void {
 			display: true,
 			details: noticeDetails(record),
 		};
-		wiring.pi.sendMessage<TaskNoticeData>(message, plan ? { deliverAs: "nextTurn" } : { triggerTurn: true });
+		wiring.pi.sendMessage<TaskNoticeData>(message, defer ? { deliverAs: "nextTurn" } : { triggerTurn: true });
 	}
 }
 

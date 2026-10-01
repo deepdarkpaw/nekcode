@@ -16,13 +16,34 @@ export interface Todo {
 	status: TodoStatus;
 }
 
-/** Persisted todo list: todo_write result details and `nek.todos` entry data. */
+/** Persisted todo list, optionally owned by one approved plan revision. */
 export interface TodoListData {
 	todos: Todo[];
+	owner?: PlanReference | "planning";
+}
+
+/** Identity of the exact plan revision being reviewed or implemented. */
+export interface PlanReference {
+	path: string;
+	revision: number;
+}
+
+/** Plan readiness, independent of the agent's interaction mode. */
+export type PlanStatus = "draft" | "ready";
+
+/** Execution authorization is revoked on interruption, never restored by changing modes. */
+export interface PlanExecution extends PlanReference {
+	status: "active" | "interrupted" | "completed";
+}
+
+/** Full lifecycle snapshot persisted separately from the plan artifact. */
+export interface PlanLifecycleData {
+	status: PlanStatus;
+	execution?: PlanExecution;
 }
 
 /** The current plan of a session, written by create_plan. */
-export interface PlanRecord {
+export interface PlanRecord extends PlanReference {
 	name: string;
 	/** Absolute path of the plan markdown file. */
 	path: string;
@@ -34,7 +55,11 @@ export interface PlanRecord {
 export interface NekSessionState {
 	mode: Mode;
 	todos: Todo[];
+	todoOwner?: PlanReference | "planning";
 	plan?: PlanRecord;
+	planMarkdown?: string;
+	planStatus?: PlanStatus;
+	execution?: PlanExecution;
 }
 
 /** Terminal and non-terminal states of a subagent run. */
@@ -95,6 +120,8 @@ export interface AgentType {
 /** create_plan result details; replayBranch() restores the current plan from them. */
 export interface PlanData {
 	plan: PlanRecord;
+	/** Immutable Markdown snapshot of this revision, also used when replaying older branches. */
+	markdown: string;
 }
 
 /** One answer option of an ask_question question (Cursor AskQuestion). */

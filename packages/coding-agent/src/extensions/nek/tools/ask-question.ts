@@ -63,11 +63,13 @@ export function createAskQuestionToolDefinition(): ToolDefinition<typeof askQues
 		description: ASK_QUESTION,
 		parameters: askQuestionSchema,
 		executionMode: "sequential",
-		async execute(_toolCallId, { questions, title }: AskQuestionToolInput, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, { questions, title }: AskQuestionToolInput, signal, _onUpdate, ctx) {
+			signal?.throwIfAborted();
 			if (!ctx.hasUI) return textResult(NO_UI_ANSWER_TEXT, []);
 			const answers: QuestionAnswer[] = [];
 			for (const question of questions) {
-				const answer = await askQuestion(ctx, question, title);
+				const answer = await askQuestion(ctx, question, title, signal);
+				signal?.throwIfAborted();
 				if (!answer) return textResult(DISMISSED_ANSWER_TEXT, answers, true);
 				answers.push(answer);
 			}

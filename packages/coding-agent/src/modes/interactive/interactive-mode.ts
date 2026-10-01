@@ -9,14 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
-import {
-	type AssistantMessage,
-	type ImageContent,
-	isRetryableAssistantError,
-	type Message,
-	type Model,
-	type Usage,
-} from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage, ImageContent, Message, Model, Usage } from "@earendil-works/pi-ai/compat";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -122,7 +115,6 @@ import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
-import { reportBug } from "./bug-report.ts";
 import { createChatViewport } from "./chat-viewport.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
@@ -487,6 +479,8 @@ export class InteractiveMode {
 
 	// Track if editor is in bash mode (text starts with !)
 	private isBashMode = false;
+	/** Plan mode is supplied by the nek extension's status channel, never inferred from input. */
+	private isPlanMode = false;
 
 	// Track current bash execution component
 	private bashComponent: BashExecutionComponent | undefined = undefined;
@@ -505,9 +499,6 @@ export class InteractiveMode {
 
 	// Shutdown state
 	private shutdownRequested = false;
-
-	/** The `/bug` hint is shown at most once per session so error output stays readable. */
-	private bugReportHintShown = false;
 
 	// Extension UI state
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
@@ -1127,9 +1118,7 @@ export class InteractiveMode {
 		const crash = takeUnnotifiedCrash();
 		if (crash) {
 			const when = new Date(crash.timestamp).toLocaleString();
-			this.showWarning(
-				`${APP_NAME} crashed on ${when} (${crash.message}). Run /bug to report it; the crash details are attached automatically.`,
-			);
+			this.showWarning(`${APP_NAME} crashed on ${when} (${crash.message}).`);
 		}
 
 		void this.maybeWarnAboutAnthropicSubscriptionAuth();
@@ -2029,7 +2018,7 @@ export class InteractiveMode {
 		}
 	}
 
-	/** Persist a crash so the next start can point the user at `/bug`. Returns false when nothing was written. */
+	/** Persist a crash for inspection on the next start. Returns false when nothing was written. */
 	private recordCrash(kind: "uncaught_exception" | "fatal_error", error: unknown): boolean {
 		try {
 			return (
@@ -2046,27 +2035,8 @@ export class InteractiveMode {
 	}
 
 	private crashReportInstructions(): string {
-		const resume = this.session.sessionFile ? `run \`${APP_NAME} -r\` to resume the session, then` : "start nek and";
-		return `To report this crash: ${resume} run /bug. The crash details are attached automatically.`;
-	}
-
-	private suggestBugReport(): void {
-		if (this.bugReportHintShown) return;
-		this.bugReportHintShown = true;
-		this.chatContainer.addChild(
-			new Text(
-				theme.fg("muted", `If this looks like a ${APP_NAME} bug, /bug sends a report to the developers.`),
-				this.outputPad,
-				0,
-			),
-		);
-		this.ui.requestRender();
-	}
-
-	private maybeSuggestBugReport(message: AssistantMessage): void {
-		if (message.stopReason !== "error" || isRetryableAssistantError(message)) return;
-		if (/\b(?:abort(?:ed)?|cancel(?:l?ed)?)\b/i.test(message.errorMessage ?? "")) return;
-		this.suggestBugReport();
+		const resume = this.session.sessionFile ? `run \`${APP_NAME} -r\` to resume the session.` : "restart nek.";
+		return `A crash occurred: ${resume}`;
 	}
 
 	private renderCurrentSessionState(): void {
@@ -2159,6 +2129,10 @@ export class InteractiveMode {
 	 */
 	private setExtensionStatus(key: string, text: string | undefined): void {
 		this.footerDataProvider.setExtensionStatus(key, text);
+		if (key === "nek.mode") {
+			this.isPlanMode = text === "plan";
+			this.updateEditorBorderColor();
+		}
 		this.ui.requestRender();
 	}
 
@@ -2325,6 +2299,8 @@ export class InteractiveMode {
 		this.setExtensionHeader(undefined);
 		this.clearExtensionWidgets();
 		this.footerDataProvider.clearExtensionStatuses();
+		this.isPlanMode = false;
+		this.updateEditorBorderColor();
 		this.footer.invalidate();
 		this.autocompleteProviderWrappers = [];
 		this.setCustomEditorComponent(undefined);
@@ -2787,6 +2763,7 @@ export class InteractiveMode {
 		}
 
 		this.editorContainer.addChild(this.editor as Component);
+		this.updateEditorBorderColor();
 		if (this.activeStatusIndicator) {
 			this.statusContainer.clear();
 			this.activeWorkingIndicatorEmbedded = this.setEditorWorkingStatusIndicator(this.activeStatusIndicator);
@@ -3072,12 +3049,6 @@ export class InteractiveMode {
 			if (text === "/share") {
 				await this.handleShareCommand();
 				this.editor.setText("");
-				return;
-			}
-			if (text === "/bug" || text.startsWith("/bug ")) {
-				const hint = text.slice("/bug".length).trim();
-				this.editor.setText("");
-				await this.handleBugCommand(hint ? hint : undefined);
 				return;
 			}
 			if (text === "/copy") {
@@ -3416,7 +3387,6 @@ export class InteractiveMode {
 							});
 						}
 						this.pendingTools.clear();
-						this.maybeSuggestBugReport(this.streamingMessage);
 					} else {
 						// Args are now complete - trigger diff computation for edit tools
 						for (const [, component] of this.pendingTools.entries()) {
@@ -4311,12 +4281,18 @@ export class InteractiveMode {
 	}
 
 	private updateEditorBorderColor(): void {
-		if (this.isBashMode) {
-			this.editor.borderColor = theme.getBashModeBorderColor();
-		} else {
-			const level = this.session.thinkingLevel || "off";
-			this.editor.borderColor = theme.getThinkingBorderColor(level);
+		this.defaultEditor.setPlanMode(this.isPlanMode);
+		if (this.editor !== this.defaultEditor && "setPlanMode" in this.editor) {
+			const setPlanMode = this.editor.setPlanMode;
+			if (typeof setPlanMode === "function") setPlanMode.call(this.editor, this.isPlanMode);
 		}
+		const color = this.isPlanMode
+			? (text: string) => theme.fg("borderAccent", text)
+			: this.isBashMode
+				? theme.getBashModeBorderColor()
+				: theme.getThinkingBorderColor(this.session.thinkingLevel || "off");
+		this.defaultEditor.borderColor = color;
+		this.editor.borderColor = color;
 		this.activeStatusIndicator?.invalidate();
 		this.ui.requestRender();
 	}
@@ -6267,21 +6243,6 @@ export class InteractiveMode {
 			showStatus: (message) => this.showStatus(message),
 			showError: (message) => this.showError(message),
 		});
-	}
-
-	private async handleBugCommand(hint: string | undefined): Promise<void> {
-		await reportBug(
-			{
-				session: this.session,
-				ui: this.ui,
-				editorContainer: this.editorContainer,
-				editor: this.editor,
-				keybindings: this.keybindings,
-				showStatus: (message) => this.showStatus(message),
-				showError: (message) => this.showError(message),
-			},
-			hint,
-		);
 	}
 
 	private async handleCopyCommand(

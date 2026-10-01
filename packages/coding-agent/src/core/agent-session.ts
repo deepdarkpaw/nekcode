@@ -169,7 +169,7 @@ export type AgentSessionEvent =
 			messages: AgentMessage[];
 			willRetry: boolean;
 	  }
-	| { type: "agent_settled" }
+	| { type: "agent_settled"; outcome: AgentActivityOutcome }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -380,7 +380,11 @@ export class AgentSession {
 	private _isBeforeSettle = false;
 	private _abortDuringBeforeSettle = false;
 	private _isEmittingAgentSettled = false;
-	private readonly _deferredSettledActions: Array<() => Promise<void>> = [];
+	private _isDrainingSettledActions = false;
+	private readonly _deferredSettledActions: Array<{
+		action: () => Promise<void>;
+		messageRole: "user" | "custom";
+	}> = [];
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -685,6 +689,7 @@ export class AgentSession {
 			this._boundaryDispatchedMessages.add(turn.message);
 			const extensionContinue = await this._dispatchTurnEndBoundary(turn.message, turn.toolResults);
 			const previousDecision = await previousFinishTurn?.(turn, signal);
+			if (this._agentRunAbortRequested || signal?.aborted) return { action: "end" };
 			if (previousDecision?.action === "end") return previousDecision;
 			if (extensionContinue || previousDecision?.action === "continue") return { action: "continue" };
 			return undefined;
@@ -865,7 +870,7 @@ export class AgentSession {
 	}
 
 	private _resolveIdleWaitIfIdle(): void {
-		if (!this.isIdle || !this._resolveIdleWait) {
+		if (!this.isIdle || this._isDrainingSettledActions || !this._resolveIdleWait) {
 			return;
 		}
 		const resolve = this._resolveIdleWait;
@@ -874,27 +879,50 @@ export class AgentSession {
 		resolve();
 	}
 
+	private _deferUntilAgentSettled(action: () => Promise<void>, messageRole: "user" | "custom"): boolean {
+		if (!this._isEmittingAgentSettled && !(this._isAgentRunActive && this._agentRunAbortRequested)) return false;
+		// Awaiting settlement here would deadlock submissions from an awaited boundary handler.
+		this._deferredSettledActions.push({ action, messageRole });
+		return true;
+	}
+
 	private async _emitAgentSettled(): Promise<void> {
+		const event = {
+			type: "agent_settled",
+			outcome: this._agentRunAbortRequested ? "aborted" : this._lastActivityOutcome,
+		} satisfies Extract<AgentSessionEvent, { type: "agent_settled" }>;
 		this._cacheWarmer?.onAgentSettled();
 		this._isAgentRunActive = false;
 		this._isEmittingAgentSettled = true;
 		try {
-			await this._extensionRunner.emit({ type: "agent_settled" });
-			this._emit({ type: "agent_settled" });
+			await this._extensionRunner.emit(event);
+			this._emit(event);
 		} finally {
 			this._isEmittingAgentSettled = false;
 		}
 
-		const deferred = this._deferredSettledActions.splice(0);
-		if (deferred.length > 0) {
-			try {
-				for (const action of deferred) await action();
-			} finally {
-				this._resolveIdleWaitIfIdle();
+		if (this._isDrainingSettledActions) return;
+		this._isDrainingSettledActions = true;
+		try {
+			// Keep later submissions visible to boundary handlers until their own dispatch.
+			while (this._deferredSettledActions.length > 0) {
+				const deferred = this._deferredSettledActions.shift()!;
+				try {
+					await deferred.action();
+				} catch (error) {
+					// Already accepted submissions cannot reject the interrupted run's prompt.
+					this._extensionRunner.emitError({
+						extensionPath: "<runtime>",
+						event: deferred.messageRole === "user" ? "send_user_message" : "send_message",
+						error: error instanceof Error ? error.message : String(error),
+						stack: error instanceof Error ? error.stack : undefined,
+					});
+				}
 			}
-			return;
+		} finally {
+			this._isDrainingSettledActions = false;
+			this._resolveIdleWaitIfIdle();
 		}
-		this._resolveIdleWaitIfIdle();
 	}
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
@@ -1474,6 +1502,7 @@ export class AgentSession {
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._agentRunAbortRequested = false;
+		this._lastActivityOutcome = "completed";
 		this._isAgentRunActive = true;
 		try {
 			await this.agent.prompt(messages);
@@ -1612,7 +1641,7 @@ export class AgentSession {
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
 		if (this._isEmittingAgentSettled) {
-			this._deferredSettledActions.push(async () => await this.prompt(text, options));
+			this._deferUntilAgentSettled(() => this.prompt(text, options), "user");
 			return;
 		}
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
@@ -1627,6 +1656,8 @@ export class AgentSession {
 				return;
 			}
 		}
+
+		if (this._deferUntilAgentSettled(() => this.prompt(text, options), "user")) return;
 
 		if (this._compactionAbortController !== undefined) {
 			throw new Error(
@@ -1645,7 +1676,19 @@ export class AgentSession {
 			preflightResult?.("handled");
 			return;
 		}
-		const { text: currentText, images: currentImages } = processedInput;
+		await this._promptWithInput(processedInput.text, processedInput.images, options);
+	}
+
+	private async _promptWithInput(
+		currentText: string,
+		currentImages: ImageContent[] | undefined,
+		options?: PromptOptions,
+	): Promise<void> {
+		if (this._deferUntilAgentSettled(() => this._promptWithInput(currentText, currentImages, options), "user")) {
+			return;
+		}
+		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		const preflightResult = options?.preflightResult;
 
 		// Expand skill commands (/skill:name args) and prompt templates (/template args)
 		let expandedText = currentText;
@@ -1825,6 +1868,9 @@ export class AgentSession {
 			this._throwIfExtensionCommand(text);
 		}
 
+		const options: PromptOptions = { images, streamingBehavior: behavior, source };
+		if (this._deferUntilAgentSettled(() => this.prompt(text, options), "user")) return "queued";
+
 		const processedInput = await this._runInputHandlers(
 			text,
 			images,
@@ -1832,6 +1878,14 @@ export class AgentSession {
 			this.isStreaming ? behavior : undefined,
 		);
 		if (!processedInput) return "handled";
+		if (
+			this._deferUntilAgentSettled(
+				() => this._promptWithInput(processedInput.text, processedInput.images, options),
+				"user",
+			)
+		) {
+			return "queued";
+		}
 
 		let expandedText = this._expandSkillCommand(processedInput.text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
@@ -1958,7 +2012,7 @@ export class AgentSession {
 			}
 		} else if (options?.triggerTurn) {
 			if (this._isEmittingAgentSettled) {
-				this._deferredSettledActions.push(async () => await this._runAgentPrompt(appMessage));
+				this._deferUntilAgentSettled(() => this._runAgentPrompt(appMessage), "custom");
 				return;
 			}
 			await this._runAgentPrompt(appMessage);
@@ -2054,9 +2108,13 @@ export class AgentSession {
 		return { steering, followUp };
 	}
 
-	/** Number of pending messages (includes both steering and follow-up) */
+	/** Number of pending user messages, including submissions deferred until settlement. */
 	get pendingMessageCount(): number {
-		return this._steeringMessages.length + this._followUpMessages.length;
+		return (
+			this._steeringMessages.length +
+			this._followUpMessages.length +
+			this._deferredSettledActions.filter((deferred) => deferred.messageRole === "user").length
+		);
 	}
 
 	/** Get pending steering messages (read-only) */

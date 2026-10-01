@@ -10,7 +10,7 @@ import { DEFAULT_NEK_CONFIG, loadNekConfig, type NekConfig } from "./config.ts";
 import { registerPlanMode } from "./plan-wiring.ts";
 import { openTodosReminder, TASK_MANAGEMENT } from "./prompts/task-management.ts";
 import { registerSubagentPrompts } from "./services/subagent-role.ts";
-import { createSessionState, replayBranch } from "./state/session-state.ts";
+import { createSessionState, replayBranch, todosAreActive } from "./state/session-state.ts";
 import { describeTodos, openTodos } from "./state/todos.ts";
 import { registerSubagents } from "./task-wiring.ts";
 import { createTodoWriteToolDefinition } from "./tools/todo-write.ts";
@@ -37,6 +37,8 @@ export interface NekRuntime {
 	session: NekSessionState;
 	/** The open-todos reminder already continued the current run; cleared when the run settles. */
 	settleReminderSent: boolean;
+	/** A user interruption blocks automatic work until a new explicit request starts. */
+	automaticWorkAllowed: boolean;
 }
 
 /** Custom message type of hidden nek reminders. */
@@ -54,12 +56,16 @@ export function createNekExtension(options: NekExtensionOptions): ExtensionFacto
 			config: options.config ?? DEFAULT_NEK_CONFIG,
 			session: createSessionState(),
 			settleReminderSent: false,
+			automaticWorkAllowed: true,
 		};
 		pi.on("session_start", (_event, ctx) => {
 			if (!options.config) nek.config = loadNekConfig(getAgentDir(), ctx.cwd, ctx.isProjectTrusted());
 			restoreSessionState(nek, ctx);
 		});
 		pi.on("session_tree", (_event, ctx) => restoreSessionState(nek, ctx));
+		pi.on("agent_settled", (event) => {
+			nek.automaticWorkAllowed = event.outcome === "completed";
+		});
 		if (options.role === "root") registerSubagents(pi, nek);
 		else registerSubagentPrompts(pi, options.instructions);
 		registerTodos(pi, nek);
@@ -75,9 +81,17 @@ function restoreSessionState(nek: NekRuntime, ctx: ExtensionContext): void {
 function registerTodos(pi: ExtensionAPI, nek: NekRuntime): void {
 	pi.registerTool(
 		createTodoWriteToolDefinition({
-			getTodos: () => nek.session.todos,
-			setTodos: (todos, ctx) => {
+			getTodos: () => (todosAreActive(nek.session) ? nek.session.todos : []),
+			getOwner: () =>
+				nek.session.mode === "plan"
+					? "planning"
+					: nek.session.execution?.status === "active"
+						? nek.session.todoOwner
+						: undefined,
+			setTodos: (todos, ctx, owner) => {
 				nek.session.todos = todos;
+				if (owner) nek.session.todoOwner = owner;
+				else delete nek.session.todoOwner;
 				syncTodoUi(ctx, todos, nek.config.todo.widgetMaxLines);
 			},
 		}),
@@ -98,7 +112,7 @@ function registerTodos(pi: ExtensionAPI, nek: NekRuntime): void {
 /** Continue a completed agent-mode run once when todos are still open (Cursor task_management). */
 function remindOpenTodos(nek: NekRuntime, event: AgentBeforeSettleEvent): BoundaryResult | undefined {
 	if (event.outcome !== "completed" || !nek.config.todo.settleReminder) return undefined;
-	if (nek.settleReminderSent || nek.session.mode !== "agent") return undefined;
+	if (nek.settleReminderSent || nek.session.mode !== "agent" || !todosAreActive(nek.session)) return undefined;
 	const open = openTodos(nek.session.todos);
 	if (open.length === 0) return undefined;
 	nek.settleReminderSent = true;

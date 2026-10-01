@@ -30,11 +30,17 @@ A new session activates `read`, `bash`, `edit`, `write`, `ast_grep`, and the `ne
 - **Agent mode** is the default.
 - **Plan mode** researches and writes a plan without changing code. In plan mode, `edit` and `write` may only target Markdown files, and subagents are read-only. The plan is saved under `.nek/plans/`.
 
-Toggle plan mode with `/plan` or the `alt+m` shortcut, or start in it with `nek --plan`. `/plan <text>` enters plan mode and submits the text. When the model finishes a plan, an approval panel offers to implement it in the current session or in a new one. `/nek-build` implements the current plan; `/nek-build --fresh` does so in a new session.
+Enter Plan with `/plan`, switch modes with `alt+m`, or start in it with `nek --plan`. Repeating `/plan` stays in Plan and displays the saved revision. `/plan <text>` submits a planning or revision request; `/agent` exits without implementing anything. The editor uses a distinct border color and a persistent `PLAN` badge.
+
+`create_plan` displays the complete Markdown document before approval. The review panel keeps its actions separate from the scrollable body: implement here, implement in a fresh session, keep planning, or exit Plan. Page Up/Down review long plans. The same saved body is returned in print/JSON modes.
+
+Implementation runs in Agent, not in a third Plan execution mode. Approval covers one plan revision and its immutable body. Escape interrupts execution and revokes that authorization; old todos and completed progress are retained but cannot automatically resume after a new request. `/nek-build` explicitly starts or resumes a reviewed revision; `--fresh` starts it in a new session.
+
+Re-entering Plan treats the previous plan as reference, following Claude Code's reentry rule: compare the latest request with the existing plan, replace it for a different task, or revise it for the same task. Ask new questions when a decision is genuinely unresolved, then save and review the revised plan. An older approval cannot execute a draft or a plan file changed after review.
 
 ## Subagents
 
-`task` runs a child session in the same process. The child shares the parent's model credentials, but it has its own tools, its own read history, and read-only settings, and it cannot start further subagents. Background tasks notify the parent once they finish, unless the parent already collected the result with `await`.
+`task` runs a child session in the same process. The child shares the parent's model credentials, but it has its own tools, its own read history, and read-only settings, and it cannot start further subagents. Background tasks notify the parent once they finish, unless the parent already collected the result with `await`. After a parent interruption, or while plan execution is no longer authorized, completion notices wait for the next explicit user request instead of restarting the old task. Background child cancellation itself remains controlled by `/tasks`.
 
 Built-in subagent types:
 
@@ -66,8 +72,9 @@ Use `/tasks` to list subagents, show a result, or cancel a running task.
 
 | Command | Action |
 |---|---|
-| `/plan [text]` | Toggle plan mode; with text, enter plan mode and submit the text |
-| `/nek-build [--fresh]` | Implement the current plan, optionally in a new session |
+| `/plan [text]` | Enter Plan or view the saved plan; with text, submit a planning request |
+| `/agent` | Exit Plan without implementing anything |
+| `/nek-build [--fresh]` | Start or resume the reviewed revision, optionally in a new session |
 | `/todos` | Show the todo list of the current branch |
 | `/tasks` | List, inspect, or cancel subagents |
 | `alt+m` | Toggle plan mode |

@@ -436,6 +436,151 @@ describe("AgentSession actionable boundaries", () => {
 		]);
 	});
 
+	it.each(["prompt", "steer", "followUp"] as const)(
+		"detects %s submitted while settled approval is pending instead of executing stale work",
+		async (submission) => {
+			const started = deferred();
+			const release = deferred();
+			const pendingAtApproval: boolean[] = [];
+			let handled = false;
+			const harness = await createHarness({
+				extensionFactories: [
+					(pi) => {
+						pi.on("agent_settled", async (_event, ctx) => {
+							if (handled) return;
+							handled = true;
+							started.resolve();
+							await release.promise;
+							pendingAtApproval.push(ctx.hasPendingMessages());
+							if (ctx.hasPendingMessages()) return;
+							await harness.session.sendCustomMessage(
+								{ customType: "stale-plan", content: "implement stale plan", display: false },
+								{ triggerTurn: true },
+							);
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			harness.setResponses([fauxAssistantMessage("plan ready"), fauxAssistantMessage("B response")]);
+
+			const prompt = harness.session.prompt("start");
+			await started.promise;
+			try {
+				if (submission === "prompt") await harness.session.prompt("B");
+				else expect(await harness.session[submission]("B")).toBe("queued");
+				expect(harness.session.pendingMessageCount).toBe(1);
+				expect(harness.faux.state.callCount).toBe(1);
+			} finally {
+				release.resolve();
+			}
+			await prompt;
+
+			expect(pendingAtApproval).toEqual([true]);
+			expect(harness.session.messages.filter((message) => message.role === "user").map(getMessageText)).toEqual([
+				"start",
+				"B",
+			]);
+			expect(harness.session.messages.some((message) => message.role === "custom")).toBe(false);
+			expect(harness.faux.state.callCount).toBe(2);
+			expect(harness.session.pendingMessageCount).toBe(0);
+		},
+	);
+
+	it("does not count a deferred automatic custom turn as pending user input", async () => {
+		const started = deferred();
+		const release = deferred();
+		const pendingAtApproval: boolean[] = [];
+		let handled = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_settled", async (_event, ctx) => {
+						if (handled) return;
+						handled = true;
+						await harness.session.sendCustomMessage(
+							{ customType: "automatic", content: "automatic work", display: false },
+							{ triggerTurn: true },
+						);
+						pendingAtApproval.push(ctx.hasPendingMessages());
+						started.resolve();
+						await release.promise;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("automatic response")]);
+
+		const prompt = harness.session.prompt("start");
+		await started.promise;
+		try {
+			expect(harness.session.pendingMessageCount).toBe(0);
+			expect(harness.faux.state.callCount).toBe(1);
+		} finally {
+			release.resolve();
+		}
+		await prompt;
+
+		expect(pendingAtApproval).toEqual([false]);
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.session.messages.filter((message) => message.role === "custom").map(getMessageText)).toEqual([
+			"automatic work",
+		]);
+	});
+
+	it("keeps later deferred user input visible during an earlier submission's pre-settlement approval", async () => {
+		const started = deferred();
+		const release = deferred();
+		const pendingAtApproval: boolean[] = [];
+		let submitted = false;
+		let approved = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_settled", async () => {
+						if (submitted) return;
+						submitted = true;
+						await harness.session.sendUserMessage("B");
+						await harness.session.sendUserMessage("C");
+					});
+					pi.on("agent_before_settle", async (_event, ctx) => {
+						if (!submitted || approved) return;
+						approved = true;
+						started.resolve();
+						await release.promise;
+						pendingAtApproval.push(ctx.hasPendingMessages());
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("first"),
+			fauxAssistantMessage("B response"),
+			fauxAssistantMessage("C response"),
+		]);
+
+		const prompt = harness.session.prompt("start");
+		await started.promise;
+		try {
+			expect(harness.session.pendingMessageCount).toBe(1);
+			expect(harness.faux.state.callCount).toBe(2);
+		} finally {
+			release.resolve();
+		}
+		await prompt;
+
+		expect(pendingAtApproval).toEqual([true]);
+		expect(harness.session.messages.filter((message) => message.role === "user").map(getMessageText)).toEqual([
+			"start",
+			"B",
+			"C",
+		]);
+		expect(harness.faux.state.callCount).toBe(3);
+		expect(harness.session.pendingMessageCount).toBe(0);
+	});
+
 	it("does not let an invalid explicit continuation suppress natural tool continuation", async () => {
 		const tool: AgentTool = {
 			name: "noop",
@@ -702,6 +847,76 @@ describe("AgentSession actionable boundaries", () => {
 		expect(harness.session.pendingMessageCount).toBe(1);
 	});
 
+	it.each(["stop", "aborted", "error"] as const)(
+		"reports the final %s outcome to both settled APIs",
+		async (stopReason) => {
+			const outcomes: string[] = [];
+			const harness = await createHarness({
+				extensionFactories: [
+					(pi) => {
+						pi.on("agent_settled", (event) => {
+							outcomes.push(event.outcome);
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			harness.setResponses([fauxAssistantMessage("answer", { stopReason })]);
+
+			await harness.session.prompt("start");
+
+			const outcome = stopReason === "stop" ? "completed" : stopReason;
+			expect(outcomes).toEqual([outcome]);
+			expect(harness.eventsOfType("agent_settled")).toEqual([{ type: "agent_settled", outcome }]);
+		},
+	);
+
+	it("hands off awaited user input after aborting pre-settlement without restarting its continuation", async () => {
+		const started = deferred();
+		const release = deferred();
+		const outcomes: string[] = [];
+		let handled = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_before_settle", async () => {
+						if (handled) return;
+						handled = true;
+						started.resolve();
+						await release.promise;
+						await harness.session.sendUserMessage("B", { deliverAs: "followUp" });
+						return {
+							entries: [{ type: "custom", customType: "cancelled-boundary", data: true }],
+							continue: true,
+						};
+					});
+					pi.on("agent_settled", (event) => {
+						outcomes.push(event.outcome);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("B response")]);
+
+		const prompt = harness.session.prompt("start");
+		await started.promise;
+		const abort = harness.session.abort();
+		release.resolve();
+		await Promise.all([prompt, abort]);
+
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.session.messages.filter((message) => message.role === "user").map(getMessageText)).toEqual([
+			"start",
+			"B",
+		]);
+		expect(harness.sessionManager.getEntries()).toContainEqual(
+			expect.objectContaining({ type: "custom", customType: "cancelled-boundary", data: true }),
+		);
+		expect(outcomes).toEqual(["aborted", "completed"]);
+		expect(harness.eventsOfType("agent_settled").map((event) => event.outcome)).toEqual(outcomes);
+	});
+
 	it("commits pre-settlement drafts but suppresses continuation when aborted during the hook", async () => {
 		const started = deferred();
 		const release = deferred();
@@ -732,7 +947,7 @@ describe("AgentSession actionable boundaries", () => {
 		expect(harness.sessionManager.getEntries()).toContainEqual(
 			expect.objectContaining({ type: "custom", customType: "committed-after-abort", data: true }),
 		);
-		expect(harness.eventsOfType("agent_settled")).toHaveLength(1);
+		expect(harness.eventsOfType("agent_settled")).toEqual([{ type: "agent_settled", outcome: "aborted" }]);
 	});
 });
 

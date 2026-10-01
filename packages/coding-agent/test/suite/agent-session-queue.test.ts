@@ -1,6 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, InputEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionError, InputEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
@@ -65,6 +65,213 @@ describe("AgentSession queue characterization", () => {
 			harnesses.pop()?.cleanup();
 		}
 	});
+
+	it.each(["prompt", "prompt-steer", "prompt-followUp", "steer", "followUp", "plan-steer", "plan-followUp"] as const)(
+		"starts %s input once after an interrupted tool run settles",
+		async (submission) => {
+			const inputs: string[] = [];
+			const errors: string[] = [];
+			const waiting = await createWaitingHarness({
+				extensionFactories: [
+					(pi) => {
+						pi.on("input", (event) => {
+							inputs.push(event.text);
+							return { action: "transform", text: `processed: ${event.text}` };
+						});
+						pi.registerCommand("plan", {
+							handler: async (args) => {
+								pi.sendUserMessage(args, {
+									deliverAs: submission === "plan-followUp" ? "followUp" : "steer",
+								});
+							},
+						});
+					},
+				],
+			});
+			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+			harnesses.push(harness);
+			harness.session.extensionRunner.onError((event) => errors.push(event.error));
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("B response"),
+			]);
+
+			await waitForToolStart;
+			const abort = harness.session.abort();
+			const submitted =
+				submission === "steer" || submission === "followUp"
+					? harness.session[submission]("B")
+					: harness.session.prompt(submission.startsWith("plan-") ? "/plan B" : "B", {
+							streamingBehavior:
+								submission === "prompt-steer"
+									? "steer"
+									: submission === "prompt-followUp"
+										? "followUp"
+										: undefined,
+						});
+			const accepted = submitted.then(
+				() => undefined,
+				(error: unknown) => (error instanceof Error ? error.message : String(error)),
+			);
+			try {
+				expect(harness.faux.state.callCount).toBe(1);
+				expect(harness.eventsOfType("agent_settled")).toEqual([]);
+			} finally {
+				releaseToolExecution();
+			}
+			await Promise.all([promptPromise, abort]);
+			expect(await accepted).toBeUndefined();
+			await harness.session.waitForIdle();
+
+			expect(errors).toEqual([]);
+			expect(inputs).toEqual(["start", "B"]);
+			expect(getUserTexts(harness)).toEqual(["processed: start", "processed: B"]);
+			expect(getAssistantTexts(harness)).toEqual(["", "B response"]);
+			expect(harness.faux.state.callCount).toBe(2);
+			expect(harness.session.pendingMessageCount).toBe(0);
+			expect(
+				harness.events
+					.filter((event) => event.type === "agent_start" || event.type === "agent_settled")
+					.map((event) => event.type),
+			).toEqual(["agent_start", "agent_settled", "agent_start", "agent_settled"]);
+		},
+	);
+
+	it.each(["prompt", "steer", "followUp"] as const)(
+		"hands off %s input already being transformed when cancellation starts without processing it twice",
+		async (submission) => {
+			let startInput = () => {};
+			const inputStarted = new Promise<void>((resolve) => {
+				startInput = resolve;
+			});
+			let releaseInput = () => {};
+			const inputRelease = new Promise<void>((resolve) => {
+				releaseInput = resolve;
+			});
+			const inputs: string[] = [];
+			const waiting = await createWaitingHarness({
+				extensionFactories: [
+					(pi) => {
+						pi.on("input", async (event) => {
+							inputs.push(event.text);
+							if (event.text === "B") {
+								startInput();
+								await inputRelease;
+							}
+							return { action: "transform", text: `processed: ${event.text}` };
+						});
+					},
+				],
+			});
+			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+			harnesses.push(harness);
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("B response"),
+			]);
+
+			await waitForToolStart;
+			const submitted =
+				submission === "prompt"
+					? harness.session.prompt("B", { streamingBehavior: "followUp" })
+					: harness.session[submission]("B");
+			await inputStarted;
+			const abort = harness.session.abort();
+			releaseInput();
+			try {
+				await submitted;
+			} finally {
+				releaseToolExecution();
+			}
+			await Promise.all([promptPromise, abort]);
+
+			expect(inputs).toEqual(["start", "B"]);
+			expect(getUserTexts(harness)).toEqual(["processed: start", "processed: B"]);
+			expect(getAssistantTexts(harness)).toEqual(["", "B response"]);
+			expect(harness.session.pendingMessageCount).toBe(0);
+		},
+	);
+
+	it("retains later user submissions when an earlier deferred submission fails", async () => {
+		const errors: ExtensionError[] = [];
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		harness.session.extensionRunner.onError((event) => errors.push(event));
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("B response"),
+			fauxAssistantMessage("C response"),
+		]);
+
+		await waitForToolStart;
+		const abort = harness.session.abort();
+		await harness.session.prompt("bad input", {
+			preflightResult: () => {
+				throw new Error("deferred input rejected");
+			},
+		});
+		await harness.session.prompt("B");
+		await harness.session.sendUserMessage("C");
+		expect(harness.session.pendingMessageCount).toBe(3);
+		const original = promptPromise.then(
+			() => undefined,
+			(error: unknown) => (error instanceof Error ? error.message : String(error)),
+		);
+		releaseToolExecution();
+		await abort;
+
+		expect(await original).toBeUndefined();
+		expect(errors).toEqual([
+			expect.objectContaining({
+				extensionPath: "<runtime>",
+				event: "send_user_message",
+				error: "deferred input rejected",
+				stack: expect.stringContaining("deferred input rejected"),
+			}),
+		]);
+		expect(getUserTexts(harness)).toEqual(["start", "B", "C"]);
+		expect(getAssistantTexts(harness)).toEqual(["", "B response", "C response"]);
+		expect(harness.faux.state.callCount).toBe(3);
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.eventsOfType("agent_settled").map((event) => event.outcome)).toEqual([
+			"aborted",
+			"completed",
+			"completed",
+		]);
+	});
+
+	it.each(["steer", "followUp"] as const)(
+		"preserves automatic %s custom work queued during cancellation without restarting the run",
+		async (deliverAs) => {
+			const waiting = await createWaitingHarness();
+			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+			harnesses.push(harness);
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("must not run"),
+			]);
+
+			await waitForToolStart;
+			const abort = harness.session.abort();
+			try {
+				await harness.session.sendCustomMessage(
+					{ customType: "automatic", content: "automatic work", display: false },
+					{ triggerTurn: true, deliverAs },
+				);
+				expect(harness.session.pendingMessageCount).toBe(0);
+			} finally {
+				releaseToolExecution();
+			}
+			await Promise.all([promptPromise, abort]);
+
+			expect(harness.faux.state.callCount).toBe(1);
+			expect(harness.session.agent.peekQueuedMessages()).toEqual([
+				expect.objectContaining({ role: "custom", customType: "automatic", content: "automatic work" }),
+			]);
+			expect(harness.eventsOfType("agent_settled")).toEqual([{ type: "agent_settled", outcome: "aborted" }]);
+		},
+	);
 
 	it("dispatches extension commands immediately when prompted while idle", async () => {
 		const commandRuns: string[] = [];

@@ -4,6 +4,7 @@ import { join, parse } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AgentSessionEvent } from "../../src/core/agent-session.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -191,8 +192,13 @@ describe("AgentSessionRuntime characterization", () => {
 
 		faux.setResponses([fauxAssistantMessage(fauxToolCall("block", {}), { stopReason: "toolUse" })]);
 		const outgoingSession = runtime.session;
+		const settled: AgentSessionEvent[] = [];
+		outgoingSession.subscribe((event) => {
+			if (event.type === "agent_settled") settled.push(event);
+		});
 		const promptPromise = outgoingSession.prompt("start blocking tool");
 		await toolStartedPromise;
+		const callCountAtAbort = faux.state.callCount;
 
 		const switchResult = await runtime.switchSession(firstSessionFile);
 		await promptPromise;
@@ -204,13 +210,11 @@ describe("AgentSessionRuntime characterization", () => {
 		const outgoingEntries = SessionManager.open(outgoingSession.sessionFile!)
 			.getEntries()
 			.filter((entry) => entry.type === "message");
-		expect(outgoingEntries.map((entry) => entry.message.role)).toEqual([
-			"system",
-			"user",
-			"assistant",
-			"toolResult",
-			"assistant",
-		]);
+		// Explicit abort ends at the persisted tool-result boundary without another model turn.
+		expect(outgoingEntries.map((entry) => entry.message.role)).toEqual(["system", "user", "assistant", "toolResult"]);
+		expect(outgoingEntries.at(-1)?.message).toMatchObject({ content: [{ type: "text", text: "tool aborted" }] });
+		expect(settled).toEqual([{ type: "agent_settled", outcome: "aborted" }]);
+		expect(faux.state.callCount).toBe(callCountAtAbort);
 	});
 
 	it("preserves an existing session when importing a file with the same name", async () => {

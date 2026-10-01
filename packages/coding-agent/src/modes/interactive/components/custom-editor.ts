@@ -1,5 +1,13 @@
-import { Editor, type EditorOptions, type EditorTheme, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	Editor,
+	type EditorOptions,
+	type EditorTheme,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
+import { theme } from "../theme/theme.ts";
 import type { StatusIndicator } from "./status-indicator.ts";
 
 export type CustomEditorOptions = EditorOptions & {
@@ -13,6 +21,7 @@ export type CustomEditorOptions = EditorOptions & {
 export class CustomEditor extends Editor {
 	private keybindings: KeybindingsManager;
 	private workingStatusIndicator: StatusIndicator | undefined;
+	private planMode = false;
 	public readonly embedWorkingStatus: boolean;
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
 
@@ -33,7 +42,42 @@ export class CustomEditor extends Editor {
 		this.workingStatusIndicator = indicator;
 	}
 
+	/** Set by the nek.mode status channel, independently of editor text and working status. */
+	setPlanMode(enabled: boolean): void {
+		this.planMode = enabled;
+	}
+
+	protected override renderBottomBorder(width: number, hiddenLineCount: number): string {
+		if (!this.planMode) return super.renderBottomBorder(width, hiddenLineCount);
+		const label = hiddenLineCount > 0 ? ` ↓ ${hiddenLineCount} more ` : "";
+		const fitted = truncateToWidth(label, width, "");
+		return theme.fg("borderAccent", fitted + "─".repeat(Math.max(0, width - visibleWidth(fitted))));
+	}
+
+	private renderPlanTopBorder(width: number, hiddenLineCount: number): string {
+		if (width <= 0) return "";
+		const badge = theme.style(width >= 6 ? " PLAN " : "PLAN".slice(0, width), {
+			fg: "borderAccent",
+			bold: true,
+			inverse: true,
+		});
+		const prefix = width >= 8 ? "─ " : "";
+		let remaining = width - visibleWidth(badge) - visibleWidth(prefix);
+		const overflowLabels = hiddenLineCount > 0 ? [` ↑ ${hiddenLineCount} more `, ` ↑${hiddenLineCount}`] : [];
+		const overflow = overflowLabels.find((label) => visibleWidth(label) <= remaining) ?? "";
+		remaining -= visibleWidth(overflow);
+		const indicator = this.embedWorkingStatus ? this.workingStatusIndicator : undefined;
+		let status = indicator && remaining >= 3 ? indicator.renderInBorder(remaining - 2) : "";
+		if (indicator && visibleWidth(status) > 0 && remaining < 16) {
+			status = indicator.renderSpinnerInBorder(Math.max(0, remaining - 2));
+		}
+		const statusBlock = status ? ` ${status} ` : "";
+		const fill = "─".repeat(Math.max(0, remaining - visibleWidth(statusBlock)));
+		return theme.fg("borderAccent", prefix) + badge + statusBlock + theme.fg("borderAccent", fill + overflow);
+	}
+
 	protected override renderTopBorder(width: number, hiddenLineCount: number): string {
+		if (this.planMode) return this.renderPlanTopBorder(width, hiddenLineCount);
 		if (!this.embedWorkingStatus || !this.workingStatusIndicator || width <= 0) {
 			return super.renderTopBorder(width, hiddenLineCount);
 		}

@@ -39,27 +39,45 @@ export async function askQuestion(
 	ctx: ExtensionContext,
 	question: Question,
 	title: string | undefined,
+	signal?: AbortSignal,
 ): Promise<QuestionAnswer | undefined> {
+	if (signal?.aborted) return undefined;
 	if (ctx.mode === "tui") {
-		return ctx.ui.custom<QuestionAnswer | undefined>((tui, theme, keybindings, done) =>
-			createQuestionView(question, title, { tui, theme, keybindings }, done),
-		);
+		return ctx.ui.custom<QuestionAnswer | undefined>((tui, theme, keybindings, done) => {
+			let closed = false;
+			const finish = (answer: QuestionAnswer | undefined) => {
+				if (closed) return;
+				closed = true;
+				signal?.removeEventListener("abort", abort);
+				done(answer);
+			};
+			const abort = () => finish(undefined);
+			signal?.addEventListener("abort", abort, { once: true });
+			if (signal?.aborted) abort();
+			const view = createQuestionView(question, title, { tui, theme, keybindings }, finish);
+			return { ...view, dispose: () => signal?.removeEventListener("abort", abort) };
+		});
 	}
-	if (question.allow_multiple) return askMultipleByConfirm(ctx, question);
+	if (question.allow_multiple) return askMultipleByConfirm(ctx, question, signal);
 	const labels = question.options.map((option) => option.label);
-	const choice = await ctx.ui.select(question.prompt, [...labels, OTHER_LABEL]);
-	if (choice === undefined) return undefined;
+	const choice = await ctx.ui.select(question.prompt, [...labels, OTHER_LABEL], { signal });
+	if (choice === undefined || signal?.aborted) return undefined;
 	if (choice !== OTHER_LABEL) return buildAnswer(question, [question.options[labels.indexOf(choice)].id]);
-	const text = (await ctx.ui.input(question.prompt))?.trim();
-	return text ? buildAnswer(question, [], text) : undefined;
+	const text = (await ctx.ui.input(question.prompt, undefined, { signal }))?.trim();
+	return text && !signal?.aborted ? buildAnswer(question, [], text) : undefined;
 }
 
-async function askMultipleByConfirm(ctx: ExtensionContext, question: Question): Promise<QuestionAnswer> {
+async function askMultipleByConfirm(
+	ctx: ExtensionContext,
+	question: Question,
+	signal?: AbortSignal,
+): Promise<QuestionAnswer | undefined> {
 	const chosen: string[] = [];
 	for (const option of question.options) {
-		if (await ctx.ui.confirm(question.prompt, option.label)) chosen.push(option.id);
+		if (signal?.aborted) return undefined;
+		if (await ctx.ui.confirm(question.prompt, option.label, { signal })) chosen.push(option.id);
 	}
-	return buildAnswer(question, chosen);
+	return signal?.aborted ? undefined : buildAnswer(question, chosen);
 }
 
 function dialogRows(question: Question): Row[] {

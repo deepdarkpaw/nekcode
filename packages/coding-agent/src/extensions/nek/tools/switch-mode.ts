@@ -43,11 +43,17 @@ export function createSwitchModeToolDefinition(
 		description: SWITCH_MODE,
 		parameters: switchModeSchema,
 		executionMode: "sequential",
-		async execute(_toolCallId, { explanation, target_mode_id }: SwitchModeToolInput, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, { explanation, target_mode_id }: SwitchModeToolInput, signal, _onUpdate, ctx) {
+			signal?.throwIfAborted();
 			const current = options.getMode();
 			if (target_mode_id === current) return textResult(`Already in ${modeLabel(current)} mode.`);
 			if (!ctx.hasUI) throw new Error("Mode switch requires user approval, which is unavailable in this run mode.");
-			const approved = await ctx.ui.confirm(`Switch to ${modeLabel(target_mode_id)} mode?`, explanation ?? "");
+			const approved = await ctx.ui.confirm(`Switch to ${modeLabel(target_mode_id)} mode?`, explanation ?? "", {
+				signal,
+			});
+			signal?.throwIfAborted();
+			if (options.getMode() !== current)
+				throw new Error("The mode changed while this approval was pending. Request a new approval.");
 			if (!approved) return textResult(`User declined the mode switch. Stay in ${modeLabel(current)} mode.`);
 			options.setMode(target_mode_id, ctx);
 			return textResult(switchModeResult(target_mode_id));
