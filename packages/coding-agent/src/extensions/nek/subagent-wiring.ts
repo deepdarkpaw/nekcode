@@ -8,15 +8,20 @@ import type {
 	ExtensionContext,
 } from "../../core/extensions/types.ts";
 import { createNekExtension, type NekRuntime } from "./index.ts";
-import { completionNotice, taskDescription } from "./prompts/subagent.ts";
+import { completionNotice, subagentDescription } from "./prompts/subagent.ts";
 import { BUILTIN_AGENT_TYPES, describeAgentTypes, discoverAgentTypes } from "./services/agent-types.ts";
 import { childToolNames, createChildSession, modelRef } from "./services/child-session.ts";
-import { TaskRegistry } from "./services/task-registry.ts";
+import { SubagentRegistry } from "./services/subagent-registry.ts";
 import { todosAreActive } from "./state/session-state.ts";
 import { createAwaitToolDefinition } from "./tools/await.ts";
-import { type BranchTask, type ChildSessionRequest, createTaskToolDefinition, TASK_TOOL_NAME } from "./tools/task.ts";
-import type { AgentType, TaskNoticeData, TaskRecord } from "./types.ts";
-import { renderTaskNotice, showTasks, TASK_NOTICE_TYPE, TASK_STATUS_KEY, taskStatusText } from "./ui/task-view.ts";
+import {
+	type BranchSubagent,
+	type ChildSessionRequest,
+	createSubagentToolDefinition,
+	SUBAGENT_TOOL_NAME,
+} from "./tools/subagent.ts";
+import type { AgentType, SubagentNoticeData, SubagentRecord } from "./types.ts";
+import { applySubagentWidget, renderSubagentNotice, SUBAGENT_NOTICE_TYPE, showSubagents } from "./ui/subagent-view.ts";
 
 /** Subagent wiring of one root nek instance. */
 export interface SubagentWiring {
@@ -25,24 +30,24 @@ export interface SubagentWiring {
 	/** Built-in, user, and project types; rediscovered on every session_start. */
 	agentTypes: readonly AgentType[];
 	/** Created on first use with the loaded config; process-scoped, disposed on session_shutdown. */
-	registry: TaskRegistry | undefined;
+	registry: SubagentRegistry | undefined;
 	/** Latest context, used by background completions that arrive outside any event. */
 	ctx: ExtensionContext | undefined;
 }
 
 /**
- * Wire Cursor-style subagents into a root session (plan.md section 7): the task and await tools, the background
- * completion notice (idle: new turn, or next submission in plan mode; running: `agent_before_settle`), `/tasks`, the
- * `nek.task_notice` renderer, the running-task status, and disposal on shutdown. Register before the todo guard so
+ * Wire Cursor-style subagents into a root session (plan.md section 7): the subagent and await tools, the background
+ * completion notice (idle: new turn, or next submission in plan mode; running: `agent_before_settle`), `/subagents`, the
+ * `nek.subagent_notice` renderer, the running-subagent status, and disposal on shutdown. Register before the todo guard so
  * notices are appended before the open-todos reminder.
  */
 export function registerSubagents(pi: ExtensionAPI, nek: NekRuntime): void {
 	const wiring: SubagentWiring = { pi, nek, agentTypes: BUILTIN_AGENT_TYPES, registry: undefined, ctx: undefined };
-	registerTaskTools(wiring, []);
-	pi.registerMessageRenderer<TaskNoticeData>(TASK_NOTICE_TYPE, renderTaskNotice);
-	pi.registerCommand("tasks", {
+	registerSubagentTools(wiring, []);
+	pi.registerMessageRenderer<SubagentNoticeData>(SUBAGENT_NOTICE_TYPE, renderSubagentNotice);
+	pi.registerCommand("subagents", {
 		description: "List subagents; cancel one or show its result",
-		handler: (_args, ctx) => showTasks(ctx, getRegistry(wiring)),
+		handler: (_args, ctx) => showSubagents(ctx, getRegistry(wiring)),
 	});
 	pi.on("session_start", (_event, ctx) => onSessionStart(wiring, ctx));
 	pi.on("agent_before_settle", (event, ctx) => {
@@ -68,23 +73,23 @@ function onSessionStart(wiring: SubagentWiring, ctx: ExtensionContext): void {
 	if (discovery.errors.length > 0 && ctx.hasUI) {
 		ctx.ui.notify(`Some subagent definitions could not be loaded:\n${discovery.errors.join("\n")}`, "warning");
 	}
-	registerTaskTools(
+	registerSubagentTools(
 		wiring,
 		ctx.scopedModels.map((scoped) => modelRef(scoped.model)),
 	);
 }
 
-/** (Re)register task and await; re-registering task refreshes its description with the current types and models. */
-function registerTaskTools(wiring: SubagentWiring, models: readonly string[]): void {
+/** (Re)register subagent and await; re-registering subagent refreshes its description with current types and models. */
+function registerSubagentTools(wiring: SubagentWiring, models: readonly string[]): void {
 	const { pi, nek } = wiring;
 	pi.registerTool(
-		createTaskToolDefinition({
-			description: taskDescription(describeAgentTypes(wiring.agentTypes), models),
+		createSubagentToolDefinition({
+			description: subagentDescription(describeAgentTypes(wiring.agentTypes), models),
 			agentTypes: wiring.agentTypes,
 			getRegistry: () => getRegistry(wiring),
 			getMode: () => nek.session.mode,
 			createSession: (request, ctx) => createSubagentSession(wiring, request, ctx),
-			findBranchTask,
+			findBranchSubagent,
 			restrictTools: (session, type, forceReadonly) =>
 				session.setActiveToolsByName(childToolNames(type, forceReadonly)),
 		}),
@@ -92,11 +97,11 @@ function registerTaskTools(wiring: SubagentWiring, models: readonly string[]): v
 	pi.registerTool(createAwaitToolDefinition({ getRegistry: () => getRegistry(wiring) }));
 }
 
-function getRegistry(wiring: SubagentWiring): TaskRegistry {
-	wiring.registry ??= new TaskRegistry(
+function getRegistry(wiring: SubagentWiring): SubagentRegistry {
+	wiring.registry ??= new SubagentRegistry(
 		wiring.nek.config.subagent,
 		() => deliverIdleNotices(wiring),
-		() => syncTaskStatus(wiring),
+		() => syncSubagentStatus(wiring),
 	);
 	return wiring.registry;
 }
@@ -123,37 +128,37 @@ function createSubagentSession(
 	});
 }
 
-/** The last task result on the current branch for `id` that names a session file (resume after eviction/restart). */
-function findBranchTask(id: string, ctx: ExtensionContext): BranchTask | undefined {
+/** The last subagent result on the current branch for `id` that names a session file (resume after eviction/restart). */
+function findBranchSubagent(id: string, ctx: ExtensionContext): BranchSubagent | undefined {
 	const branch = ctx.sessionManager.getBranch();
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index];
 		if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
-		if (entry.message.toolName !== TASK_TOOL_NAME) continue;
-		const task = readTaskDetails(entry.message.details);
-		if (task?.id === id && task.sessionFile) {
-			return { description: task.description, type: task.type, sessionFile: task.sessionFile };
+		if (entry.message.toolName !== SUBAGENT_TOOL_NAME) continue;
+		const subagent = readSubagentDetails(entry.message.details);
+		if (subagent?.id === id && subagent.sessionFile) {
+			return { description: subagent.description, type: subagent.type, sessionFile: subagent.sessionFile };
 		}
 	}
 	return undefined;
 }
 
-function readTaskDetails(details: unknown): TaskRecord | undefined {
-	if (typeof details !== "object" || details === null || !("task" in details)) return undefined;
-	const task = details.task as Partial<TaskRecord> | undefined;
-	if (typeof task?.id !== "string" || typeof task.type !== "string") return undefined;
-	return task as TaskRecord;
+function readSubagentDetails(details: unknown): SubagentRecord | undefined {
+	if (typeof details !== "object" || details === null || !("subagent" in details)) return undefined;
+	const subagent = details.subagent as Partial<SubagentRecord> | undefined;
+	if (typeof subagent?.id !== "string" || typeof subagent.type !== "string") return undefined;
+	return subagent as SubagentRecord;
 }
 
-function noticeDetails(record: TaskRecord): TaskNoticeData {
-	return { task: { ...record, progress: [...record.progress] } };
+function noticeDetails(record: SubagentRecord): SubagentNoticeData {
+	return { subagent: { ...record } };
 }
 
-function noticeDraft(record: TaskRecord): CustomMessageEntryDraft {
+function noticeDraft(record: SubagentRecord): CustomMessageEntryDraft {
 	const content = completionNotice(record);
 	return {
 		type: "custom_message",
-		customType: TASK_NOTICE_TYPE,
+		customType: SUBAGENT_NOTICE_TYPE,
 		content,
 		display: true,
 		details: noticeDetails(record),
@@ -161,7 +166,7 @@ function noticeDraft(record: TaskRecord): CustomMessageEntryDraft {
 }
 
 /**
- * `agent_before_settle`: append a notice per unobserved finished task. The run continues only in agent mode after a
+ * `agent_before_settle`: append a notice per unobserved finished subagent. The run continues only in agent mode after a
  * completed run; plan mode never starts automatic work (Codex), and an aborted run stays stopped.
  */
 function settleNotices(wiring: SubagentWiring, event: AgentBeforeSettleEvent): BoundaryResult | undefined {
@@ -186,17 +191,18 @@ function deliverIdleNotices(wiring: SubagentWiring): void {
 		wiring.nek.session.mode === "plan" || !wiring.nek.automaticWorkAllowed || !todosAreActive(wiring.nek.session);
 	for (const record of wiring.registry.drainUnobserved()) {
 		const message = {
-			customType: TASK_NOTICE_TYPE,
+			customType: SUBAGENT_NOTICE_TYPE,
 			content: completionNotice(record),
 			display: true,
 			details: noticeDetails(record),
 		};
-		wiring.pi.sendMessage<TaskNoticeData>(message, defer ? { deliverAs: "nextTurn" } : { triggerTurn: true });
+		wiring.pi.sendMessage<SubagentNoticeData>(message, defer ? { deliverAs: "nextTurn" } : { triggerTurn: true });
 	}
 }
 
-function syncTaskStatus(wiring: SubagentWiring): void {
+/** Refresh the running-subagent widget above the editor; removes it when nothing is running in the background. */
+function syncSubagentStatus(wiring: SubagentWiring): void {
 	const ctx = wiring.ctx;
 	if (!ctx?.hasUI || !wiring.registry) return;
-	ctx.ui.setStatus(TASK_STATUS_KEY, taskStatusText(wiring.registry.list()));
+	applySubagentWidget(ctx.ui, wiring.registry.list(), ctx.ui.theme);
 }

@@ -12,12 +12,12 @@ import { openTodosReminder, TASK_MANAGEMENT } from "./prompts/task-management.ts
 import { registerSubagentPrompts } from "./services/subagent-role.ts";
 import { createSessionState, replayBranch, todosAreActive } from "./state/session-state.ts";
 import { describeTodos, openTodos } from "./state/todos.ts";
-import { registerSubagents } from "./task-wiring.ts";
+import { registerSubagents } from "./subagent-wiring.ts";
 import { createTodoWriteToolDefinition } from "./tools/todo-write.ts";
 import type { NekSessionState } from "./types.ts";
 import { showTodoList, syncTodoUi } from "./ui/todo-widget.ts";
 
-/** `root` wires the main session; `subagent` wires a child session (no task/await, so no nesting). */
+/** `root` wires the main session; `subagent` wires a child session (no subagent/await, so no nesting). */
 export type NekRole = "root" | "subagent";
 
 /** Options for one nek extension instance. */

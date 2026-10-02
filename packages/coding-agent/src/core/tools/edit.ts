@@ -27,7 +27,7 @@ const editSchema = Type.Object({
 
 export const editToolSystemPromptContribution = {
 	snippet: "Make precise file edits with exact string replacement",
-	guidelines: ["Use edit for exact string replacements after reading the target file."],
+	guidelines: ["Use edit for exact string replacements; old_string must match the current file content."],
 } as const;
 
 export type EditToolInput = Static<typeof editSchema>;
@@ -62,7 +62,7 @@ const defaultEditOperations: EditOperations = {
 export interface EditToolOptions {
 	/** Custom filesystem operations. */
 	operations?: EditOperations;
-	/** Read state that must contain the file before it can be edited. */
+	/** Read state updated after successful edits and shared with write. */
 	readState?: ReadStateStore;
 }
 
@@ -80,7 +80,7 @@ function restoreContent(content: string, bom: string, lineEnding: "\r\n" | "\n")
 }
 
 function getEditDescription(): string {
-	return `Performs exact string replacements in files.\n\nUsage:\n- You must use your \`read\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.\n- When editing text from read output, preserve exact indentation after the line number prefix. The line number prefix format is: line number + |. Everything after that is the actual file content to match. Never include any part of the line number prefix in old_string or new_string.\n- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n- The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.\n- Use \`replace_all\` for replacing and renaming strings across the file.\n- The file_path must be a file path, not a directory path. If the path resolves to an existing directory, the tool will reject it.`;
+	return `Performs exact string replacements in files.\n\nUsage:\n- When editing text from read output, preserve exact indentation after the line number prefix. The line number prefix format is: line number + |. Everything after that is the actual file content to match. Never include any part of the line number prefix in old_string or new_string.\n- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n- The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.\n- Use \`replace_all\` for replacing and renaming strings across the file.\n- The file_path must be a file path, not a directory path. If the path resolves to an existing directory, the tool will reject it.`;
 }
 
 export function createEditToolDefinition(
@@ -145,21 +145,10 @@ export function createEditToolDefinition(
 				}
 				if (filePath.toLowerCase().endsWith(".ipynb"))
 					throw new Error("File is a Jupyter Notebook, which this tool cannot edit.");
-				if (!readState.get(absolutePath))
-					throw new Error("File has not been read yet. Read it first before editing it.");
 				await ops.access(absolutePath);
 				const buffer = await ops.readFile(absolutePath);
 				if (signal?.aborted) throw new Error("Operation aborted");
 				const metadata = decodeFileText(buffer);
-				const record = readState.get(absolutePath);
-				if (!record) throw new Error("File has not been read yet. Read it first before editing it.");
-				const currentTimestamp = Math.floor(fileStat.mtimeMs);
-				const fullRead = record.offset === undefined && record.limit === undefined;
-				if (currentTimestamp > record.timestamp && (!fullRead || metadata.content !== record.content)) {
-					throw new Error(
-						"File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.",
-					);
-				}
 				const validated = validateEditText(metadata.content, {
 					filePath,
 					oldString: input.old_string,

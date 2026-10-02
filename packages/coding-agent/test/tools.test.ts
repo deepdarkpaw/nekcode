@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +15,6 @@ import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
 import { createLsToolDefinition } from "../src/core/tools/ls.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import { createReadStateStore } from "../src/core/tools/read-state.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
 import * as shellModule from "../src/utils/shell.ts";
@@ -770,17 +769,10 @@ describe("tool cwd resolution", () => {
 		expect(content).toBe("written via ctx.cwd");
 	});
 
-	it("edit uses ctx.cwd when provided", async () => {
+	it("edit uses ctx.cwd when provided without a prior read", async () => {
 		const testFile = join(testDir, "ctx-cwd-edit.txt");
 		writeFileSync(testFile, "old text");
-		const readState = createReadStateStore();
-		readState.set(testFile, {
-			content: "old text",
-			timestamp: Math.floor(statSync(testFile).mtimeMs),
-			offset: undefined,
-			limit: undefined,
-		});
-		const tool = createEditToolDefinition("/", { readState });
+		const tool = createEditToolDefinition("/");
 		await tool.execute(
 			"test-edit-ctx-cwd",
 			{ file_path: "ctx-cwd-edit.txt", old_string: "old text", new_string: "new text" },

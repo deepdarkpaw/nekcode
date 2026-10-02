@@ -2,25 +2,26 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "../../../core/agent-session.ts";
 import { truncateHead } from "../../../core/tools/truncate.ts";
 import type { NekConfig } from "../config.ts";
-import type { TaskRecord, TaskStatus } from "../types.ts";
+import type { SubagentRecord, SubagentStatus } from "../types.ts";
+import { modelRef } from "./child-session.ts";
 
 /** Registry limits and timeouts (NekConfig.subagent). */
 export type SubagentConfig = NekConfig["subagent"];
 
 /** Arguments of `start()`: the record fields and a factory for the child session. */
-export interface StartTaskInput {
+export interface StartSubagentInput {
 	description: string;
 	/** Agent type name, stored on the record. */
 	type: string;
 	prompt: string;
 	background: boolean;
-	/** Parent abort signal of a foreground task; background tasks survive the parent's Esc. */
+	/** Parent abort signal of a foreground subagent; background subagents survive the parent's Esc. */
 	signal?: AbortSignal;
 	createSession: () => Promise<AgentSession>;
 }
 
 /** Arguments of `resume()`. `reopen` restores a child that is no longer retained (e.g. after a restart). */
-export interface ResumeTaskInput {
+export interface ResumeSubagentInput {
 	id: string;
 	prompt: string;
 	interrupt: boolean;
@@ -32,25 +33,25 @@ export interface ResumeTaskInput {
 }
 
 /** Result of `await()`: the finished records it returned (now observed) and whether the wait timed out. */
-export interface AwaitTasksResult {
-	done: TaskRecord[];
+export interface AwaitSubagentsResult {
+	done: SubagentRecord[];
 	timedOut: boolean;
 }
 
-/** Elements of Map<id, TaskEntry>. */
-interface TaskEntry {
-	record: TaskRecord;
+/** Elements of Map<id, SubagentEntry>. */
+interface SubagentEntry {
+	record: SubagentRecord;
 	session: AgentSession;
 	done: Promise<void>;
 	unsubscribe: () => void;
-	/** Progress listener of the foreground task call waiting on this entry. */
-	onProgress?: (record: TaskRecord) => void;
+	/** Progress listener of the foreground subagent call waiting on this entry. */
+	onProgress?: (record: SubagentRecord) => void;
 	/** Abort requested for the current run; re-applied on `agent_start` when it arrived before the run was active. */
 	abortRequested: boolean;
 }
 
-/** Characters of streamed assistant text kept on the record (plan.md section 7.6). */
-export const PROGRESS_TAIL_CHARS = 80;
+/** Maximum characters retained for the latest streamed activity text. */
+export const ACTIVITY_MAX_CHARS = 80;
 
 /** Lower bound of a blocking await (Codex clamp). */
 export const MIN_AWAIT_MS = 1000;
@@ -67,23 +68,27 @@ export function clampAwaitTimeout(requested: number | undefined, config: Subagen
 
 /**
  * In-memory registry of subagent runs (plan.md section 7.6), the only class of the extension. It owns the child
- * sessions, their run promises, and the "settled" broadcast that `await` listens to. Running tasks are bounded by
+ * sessions, their run promises, and the "settled" broadcast that `await` listens to. Running subagents are bounded by
  * `maxConcurrent`; retained records by `maxRetained` (finished, observed records are evicted oldest first).
  */
-export class TaskRegistry {
+export class SubagentRegistry {
 	private readonly config: SubagentConfig;
-	private readonly notify: (record: TaskRecord) => void;
-	private readonly onChange: (record: TaskRecord) => void;
-	private readonly entries = new Map<string, TaskEntry>();
+	private readonly notify: (record: SubagentRecord) => void;
+	private readonly onChange: (record: SubagentRecord) => void;
+	private readonly entries = new Map<string, SubagentEntry>();
 	private readonly settled = new EventTarget();
-	/** Starts that passed the limit check but have no session yet; parallel task calls must not overshoot. */
+	/** Starts that passed the limit check but have no session yet; parallel subagent calls must not overshoot. */
 	private pendingStarts = 0;
 
 	/**
 	 * `notify` receives a background record that finished unobserved; `onChange` receives every progress and status
 	 * change (UI refresh).
 	 */
-	constructor(config: SubagentConfig, notify: (record: TaskRecord) => void, onChange?: (record: TaskRecord) => void) {
+	constructor(
+		config: SubagentConfig,
+		notify: (record: SubagentRecord) => void,
+		onChange?: (record: SubagentRecord) => void,
+	) {
 		this.config = config;
 		this.notify = notify;
 		this.onChange = onChange ?? (() => {});
@@ -98,7 +103,7 @@ export class TaskRegistry {
 	private assertCapacity(): void {
 		if (this.runningCount() + this.pendingStarts < this.config.maxConcurrent) return;
 		throw new Error(
-			`Subagent limit reached (${this.config.maxConcurrent} running). Wait for one to finish or cancel one with /tasks.`,
+			`Subagent limit reached (${this.config.maxConcurrent} running). Wait for one to finish or cancel one with /subagents.`,
 		);
 	}
 
@@ -114,7 +119,7 @@ export class TaskRegistry {
 	}
 
 	/** Create a child session and run its first prompt without waiting; returns the running record. */
-	async start(input: StartTaskInput): Promise<TaskRecord> {
+	async start(input: StartSubagentInput): Promise<SubagentRecord> {
 		const session = await this.createWithSlot(input.createSession);
 		const entry = this.adopt(session, input.description, input.type, input.background);
 		this.launch(entry, input.prompt, input.signal);
@@ -122,7 +127,7 @@ export class TaskRegistry {
 	}
 
 	/** Send a follow-up prompt to a finished child, or to a running one when `interrupt` is set (Cursor resume). */
-	async resume(input: ResumeTaskInput): Promise<TaskRecord> {
+	async resume(input: ResumeSubagentInput): Promise<SubagentRecord> {
 		const entry = this.entries.get(input.id) ?? (await this.reopen(input));
 		if (entry.record.status === "running") {
 			if (!input.interrupt) {
@@ -135,11 +140,12 @@ export class TaskRegistry {
 		this.assertCapacity();
 		input.prepare?.(entry.session);
 		entry.record.background = input.background;
+		entry.record.model ??= sessionModelRef(entry.session);
 		this.launch(entry, input.prompt, input.signal);
 		return entry.record;
 	}
 
-	private async reopen(input: ResumeTaskInput): Promise<TaskEntry> {
+	private async reopen(input: ResumeSubagentInput): Promise<SubagentEntry> {
 		if (!input.reopen) throw new Error(`Unknown subagent ${input.id}.`);
 		const session = await this.createWithSlot(input.reopen.createSession);
 		const entry = this.adopt(session, input.reopen.description, input.reopen.type, input.background);
@@ -148,8 +154,8 @@ export class TaskRegistry {
 		return entry;
 	}
 
-	/** Wait for one task's current run and return its record, marked observed (foreground task result). */
-	async wait(id: string, onProgress?: (record: TaskRecord) => void): Promise<TaskRecord> {
+	/** Wait for one subagent's current run and return its record, marked observed (foreground subagent result). */
+	async wait(id: string, onProgress?: (record: SubagentRecord) => void): Promise<SubagentRecord> {
 		const entry = this.entries.get(id);
 		if (!entry) throw new Error(`Unknown subagent ${id}.`);
 		entry.onProgress = onProgress;
@@ -163,14 +169,14 @@ export class TaskRegistry {
 	}
 
 	/**
-	 * Wait until one of `ids` (default: every background task) finishes or the clamped timeout elapses. Returns the
+	 * Wait until one of `ids` (default: every background subagent) finishes or the clamped timeout elapses. Returns the
 	 * finished records and marks them observed. Explicit ids return finished records even when already observed.
 	 */
 	async await(
 		ids: string[] | undefined,
 		timeoutMs: number | undefined,
 		signal?: AbortSignal,
-	): Promise<AwaitTasksResult> {
+	): Promise<AwaitSubagentsResult> {
 		const explicit = ids !== undefined && ids.length > 0;
 		const targets = this.targets(ids);
 		const finished = takeFinished(targets, explicit);
@@ -183,9 +189,9 @@ export class TaskRegistry {
 
 	/**
 	 * Take the finished background records that were never delivered to the model and mark them observed; idempotent.
-	 * Foreground records are delivered by their own task call.
+	 * Foreground records are delivered by their own subagent call.
 	 */
-	drainUnobserved(): TaskRecord[] {
+	drainUnobserved(): SubagentRecord[] {
 		const drained = this.list().filter(
 			(record) => record.background && record.status !== "running" && !record.observed,
 		);
@@ -194,12 +200,12 @@ export class TaskRegistry {
 	}
 
 	/** All retained records, oldest first. */
-	list(): TaskRecord[] {
+	list(): SubagentRecord[] {
 		return [...this.entries.values()].map((entry) => entry.record);
 	}
 
 	/** One retained record. */
-	get(id: string): TaskRecord | undefined {
+	get(id: string): SubagentRecord | undefined {
 		return this.entries.get(id)?.record;
 	}
 
@@ -220,9 +226,9 @@ export class TaskRegistry {
 		}
 	}
 
-	private adopt(session: AgentSession, description: string, type: string, background: boolean): TaskEntry {
+	private adopt(session: AgentSession, description: string, type: string, background: boolean): SubagentEntry {
 		const record = createRecord(session, description, type, background);
-		const entry: TaskEntry = {
+		const entry: SubagentEntry = {
 			record,
 			session,
 			done: Promise.resolve(),
@@ -235,21 +241,20 @@ export class TaskRegistry {
 		return entry;
 	}
 
-	private launch(entry: TaskEntry, prompt: string, signal: AbortSignal | undefined): void {
+	private launch(entry: SubagentEntry, prompt: string, signal: AbortSignal | undefined): void {
 		const record = entry.record;
 		record.status = "running";
 		record.observed = false;
 		record.error = undefined;
 		record.endedAt = undefined;
-		record.progress = [];
-		record.tail = undefined;
+		record.activity = undefined;
 		entry.abortRequested = false;
 		this.onChange(record);
 		entry.done = this.run(entry, prompt, signal);
 	}
 
 	/** Run one prompt on the child and derive the outcome from its last assistant message. */
-	private async run(entry: TaskEntry, prompt: string, signal: AbortSignal | undefined): Promise<void> {
+	private async run(entry: SubagentEntry, prompt: string, signal: AbortSignal | undefined): Promise<void> {
 		const onAbort = () => void requestAbort(entry);
 		if (signal?.aborted) onAbort();
 		else signal?.addEventListener("abort", onAbort, { once: true });
@@ -272,10 +277,14 @@ export class TaskRegistry {
 	 * Resolve with the first non-empty `take()` after a settle, or with [] on timeout or abort. `take()` runs inside the
 	 * settle broadcast, so the records are observed before the registry decides whether to send a notice.
 	 */
-	private waitForSettle(take: () => TaskRecord[], timeoutMs: number, signal?: AbortSignal): Promise<TaskRecord[]> {
+	private waitForSettle(
+		take: () => SubagentRecord[],
+		timeoutMs: number,
+		signal?: AbortSignal,
+	): Promise<SubagentRecord[]> {
 		if (signal?.aborted) return Promise.resolve([]);
 		return new Promise((resolve) => {
-			const finish = (done: TaskRecord[]) => {
+			const finish = (done: SubagentRecord[]) => {
 				clearTimeout(timer);
 				this.settled.removeEventListener("settled", listener);
 				signal?.removeEventListener("abort", onAbort);
@@ -293,7 +302,7 @@ export class TaskRegistry {
 	}
 
 	/** Explicit ids must exist; without ids every background record is a target (foreground calls wait themselves). */
-	private targets(ids: string[] | undefined): TaskRecord[] {
+	private targets(ids: string[] | undefined): SubagentRecord[] {
 		if (!ids || ids.length === 0) return this.list().filter((record) => record.background);
 		return ids.map((id) => {
 			const record = this.get(id);
@@ -302,16 +311,15 @@ export class TaskRegistry {
 		});
 	}
 
-	/** Keep the last `progressMaxLines` tool lines, the assistant text tail, and the token count. */
-	private trackProgress(entry: TaskEntry, event: AgentSessionEvent): void {
+	/** Keep the latest tool call or assistant text, and the token count. */
+	private trackProgress(entry: SubagentEntry, event: AgentSessionEvent): void {
 		const record = entry.record;
 		if (event.type === "agent_start" && entry.abortRequested) void entry.session.abort();
 		if (event.type === "tool_execution_start") {
-			record.progress.push(`→ ${event.toolName} ${summarizeArgs(event.args)}`.trimEnd());
-			record.progress.splice(0, Math.max(0, record.progress.length - this.config.progressMaxLines));
+			record.activity = `${event.toolName} ${summarizeArgs(event.args)}`.trimEnd();
 		} else if (event.type === "message_update" && event.message.role === "assistant") {
 			const text = assistantText(event.message);
-			record.tail = text ? text.slice(-PROGRESS_TAIL_CHARS) : record.tail;
+			record.activity = text ? text.slice(-ACTIVITY_MAX_CHARS) : record.activity;
 		} else if (event.type === "message_end" && event.message.role === "assistant") {
 			record.tokens += event.message.usage.totalTokens;
 		} else {
@@ -342,12 +350,12 @@ export class TaskRegistry {
 }
 
 /** Abort the child's run; the flag covers an abort that lands before the run is active (AgentSession ignores it). */
-function requestAbort(entry: TaskEntry): Promise<void> {
+function requestAbort(entry: SubagentEntry): Promise<void> {
 	entry.abortRequested = true;
 	return entry.session.abort();
 }
 
-function createRecord(session: AgentSession, description: string, type: string, background: boolean): TaskRecord {
+function createRecord(session: AgentSession, description: string, type: string, background: boolean): SubagentRecord {
 	return {
 		id: session.sessionId,
 		description,
@@ -357,13 +365,17 @@ function createRecord(session: AgentSession, description: string, type: string, 
 		sessionFile: session.sessionFile,
 		startedAt: Date.now(),
 		observed: false,
-		progress: [],
+		model: sessionModelRef(session),
 		tokens: 0,
 	};
 }
 
+function sessionModelRef(session: AgentSession): string | undefined {
+	return session.model ? modelRef(session.model) : undefined;
+}
+
 /** Derive the final status from the last assistant message (plan.md section 7.6 step 2). */
-function finishRecord(record: TaskRecord, session: AgentSession, maxBytes: number): void {
+function finishRecord(record: SubagentRecord, session: AgentSession, maxBytes: number): void {
 	const last = lastAssistant(session);
 	const text = session.getLastAssistantText();
 	record.finalText = text ? truncateHead(text, { maxBytes, maxLines: Number.MAX_SAFE_INTEGER }).content : undefined;
@@ -371,7 +383,7 @@ function finishRecord(record: TaskRecord, session: AgentSession, maxBytes: numbe
 	if (record.status === "errored") record.error = last?.errorMessage ?? "The subagent run failed.";
 }
 
-function statusFromStopReason(message: AssistantMessage): TaskStatus {
+function statusFromStopReason(message: AssistantMessage): SubagentStatus {
 	if (message.stopReason === "aborted") return "aborted";
 	if (message.stopReason === "error") return "errored";
 	return "completed";
@@ -386,7 +398,7 @@ function lastAssistant(session: AgentSession): AssistantMessage | undefined {
 }
 
 /** Finished targets to return; implicit waits skip records that were already observed. Marks them observed. */
-function takeFinished(targets: TaskRecord[], includeObserved: boolean): TaskRecord[] {
+function takeFinished(targets: SubagentRecord[], includeObserved: boolean): SubagentRecord[] {
 	const finished = targets.filter((record) => record.status !== "running" && (includeObserved || !record.observed));
 	for (const record of finished) record.observed = true;
 	return finished;

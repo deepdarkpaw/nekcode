@@ -27,6 +27,7 @@ import { openTodos } from "./state/todos.ts";
 import { createAskQuestionToolDefinition } from "./tools/ask-question.ts";
 import { createCreatePlanToolDefinition } from "./tools/create-plan.ts";
 import { createSwitchModeToolDefinition } from "./tools/switch-mode.ts";
+import { createUpdatePlanToolDefinition } from "./tools/update-plan.ts";
 import type {
 	Mode,
 	ModeEntryData,
@@ -94,20 +95,29 @@ function registerPlanTools(wiring: PlanWiring): void {
 			},
 		}),
 	);
+	const setPlan = (plan: PlanRecord, markdown: string, ctx: ExtensionContext): void => {
+		nek.session.plan = plan;
+		nek.session.planMarkdown = markdown;
+		nek.session.planStatus = "ready";
+		delete nek.session.execution;
+		wiring.planCreated = { path: plan.path, revision: plan.revision };
+		wiring.epoch++;
+		syncPlanUi(ctx, nek.session, nek.config.plan.shortcut);
+	};
 	pi.registerTool(
 		createCreatePlanToolDefinition({
 			getMode: () => nek.session.mode,
 			getPlan: () => nek.session.plan,
 			getPlanDir: () => nek.config.plan.dir,
-			setPlan: (plan, markdown, ctx) => {
-				nek.session.plan = plan;
-				nek.session.planMarkdown = markdown;
-				nek.session.planStatus = "ready";
-				delete nek.session.execution;
-				wiring.planCreated = { path: plan.path, revision: plan.revision };
-				wiring.epoch++;
-				syncPlanUi(ctx, nek.session, nek.config.plan.shortcut);
-			},
+			setPlan,
+		}),
+	);
+	pi.registerTool(
+		createUpdatePlanToolDefinition({
+			getMode: () => nek.session.mode,
+			getPlan: () => nek.session.plan,
+			getPlanMarkdown: () => nek.session.planMarkdown,
+			setPlan,
 		}),
 	);
 	pi.registerTool(createAskQuestionToolDefinition());

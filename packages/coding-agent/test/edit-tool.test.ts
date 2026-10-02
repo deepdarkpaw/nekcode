@@ -24,24 +24,14 @@ afterEach(() => {
 });
 
 describe("M7 edit tool", () => {
-	it("rejects an unread file and edits after a seeded read", async () => {
+	it("edits an unread file and records the resulting content", async () => {
 		const dir = tempDir();
 		const path = join(dir, "file.txt");
 		writeFileSync(path, "before\n");
 		const store = createReadStateStore();
 		const tool = createEditToolDefinition(dir, { readState: store });
-		await expect(
-			tool.execute(
-				"unread",
-				{ file_path: path, old_string: "before", new_string: "after" },
-				undefined,
-				undefined,
-				{} as never,
-			),
-		).rejects.toThrow("File has not been read yet");
-		seed(store, path, "before\n");
 		const result = await tool.execute(
-			"read",
+			"unread",
 			{ file_path: path, old_string: "before", new_string: "after" },
 			undefined,
 			undefined,
@@ -49,6 +39,7 @@ describe("M7 edit tool", () => {
 		);
 		expect(text(result)).toContain("updated successfully");
 		expect(readFileSync(path, "utf8")).toBe("after\n");
+		expect(store.get(path)?.content).toBe("after\n");
 	});
 
 	it("rejects write overwrite until the existing file is read", async () => {
@@ -135,7 +126,7 @@ describe("M7 edit tool", () => {
 		expect(bytes.toString("utf16le")).toContain("TWO");
 	});
 
-	it("rejects stale content but tolerates an unchanged full read mtime", async () => {
+	it("matches the current file content instead of a prior read timestamp", async () => {
 		const dir = tempDir();
 		const path = join(dir, "stale.txt");
 		writeFileSync(path, "before\n");
@@ -144,26 +135,14 @@ describe("M7 edit tool", () => {
 		const tool = createEditToolDefinition(dir, { readState: store });
 		writeFileSync(path, "changed\n");
 		utimesSync(path, new Date(), new Date(Date.now() + 2000));
-		await expect(
-			tool.execute(
-				"stale",
-				{ file_path: path, old_string: "changed", new_string: "new" },
-				undefined,
-				undefined,
-				{} as never,
-			),
-		).rejects.toThrow("modified since read");
-		writeFileSync(path, "before\n");
-		seed(store, path, "before\n");
-		utimesSync(path, new Date(), new Date(Date.now() + 2000));
 		await tool.execute(
-			"mtime",
-			{ file_path: path, old_string: "before", new_string: "after" },
+			"stale",
+			{ file_path: path, old_string: "changed", new_string: "new" },
 			undefined,
 			undefined,
 			{} as never,
 		);
-		expect(readFileSync(path, "utf8")).toBe("after\n");
+		expect(readFileSync(path, "utf8")).toBe("new\n");
 	});
 
 	it("rejects directories and supports new files", async () => {

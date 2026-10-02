@@ -41,6 +41,7 @@ export function syncPlanUi(ctx: ExtensionContext, state: NekSessionState, shortc
 	}
 	ctx.ui.setWidget("nek.plan", () => ({
 		invalidate: () => {},
+		dispose: () => {},
 		render: (width) => {
 			const theme = ctx.ui.theme;
 			const status = planning

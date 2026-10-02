@@ -63,16 +63,16 @@ export interface NekSessionState {
 }
 
 /** Terminal and non-terminal states of a subagent run. */
-export type TaskStatus = "running" | "completed" | "errored" | "aborted";
+export type SubagentStatus = "running" | "completed" | "errored" | "aborted";
 
 /** Registry record of one subagent. */
-export interface TaskRecord {
+export interface SubagentRecord {
 	/** Equals the child session id. */
 	id: string;
 	description: string;
 	type: string;
 	background: boolean;
-	status: TaskStatus;
+	status: SubagentStatus;
 	sessionFile?: string;
 	startedAt: number;
 	endedAt?: number;
@@ -80,28 +80,28 @@ export interface TaskRecord {
 	error?: string;
 	/** Result already delivered to the parent (await or foreground return); suppresses the completion notice. */
 	observed: boolean;
-	/** Latest `→ tool args` lines of the current run, at most `subagent.progressMaxLines`. */
-	progress: string[];
-	/** Tail of the assistant text being streamed, at most 80 characters. */
-	tail?: string;
+	/** Most recent tool call or streamed assistant text, at most 80 characters. */
+	activity?: string;
+	/** Actual model used by the child, in `provider/id` form. */
+	model?: string;
 	/** Tokens used by the child session so far (sum of assistant usage totals). */
 	tokens: number;
 }
 
-/** task result details: a snapshot of the record when the call returned. */
-export interface TaskToolData {
-	task: TaskRecord;
+/** Subagent result details: a snapshot of the record when the call returned. */
+export interface SubagentToolData {
+	subagent: SubagentRecord;
 }
 
-/** await result details: finished records returned by this call, and whether the wait timed out. */
+/** Await result details: finished records returned by this call, and whether the wait timed out. */
 export interface AwaitToolData {
-	tasks: TaskRecord[];
+	subagents: SubagentRecord[];
 	timedOut: boolean;
 }
 
-/** Details of a `nek.task_notice` message: the finished record the notice reports. */
-export interface TaskNoticeData {
-	task: TaskRecord;
+/** Details of a `nek.subagent_notice` message: the finished record the notice reports. */
+export interface SubagentNoticeData {
+	subagent: SubagentRecord;
 }
 
 /** Subagent type: built-in (Cursor) or discovered from agent markdown files. */

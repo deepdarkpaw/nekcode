@@ -16,6 +16,7 @@ import { TODO_STATUSES } from "./todos.ts";
 /** Tool names of the built-in planning and task tools. */
 export const TODO_WRITE_TOOL_NAME = "todo_write";
 export const CREATE_PLAN_TOOL_NAME = "create_plan";
+export const UPDATE_PLAN_TOOL_NAME = "update_plan";
 export const SWITCH_MODE_TOOL_NAME = "switch_mode";
 export const ASK_QUESTION_TOOL_NAME = "ask_question";
 
@@ -93,7 +94,7 @@ function planFromEntry(entry: SessionEntry): PlanData | undefined {
 	const details =
 		entry.type === "custom" && entry.customType === NEK_PLAN_SNAPSHOT_ENTRY_TYPE
 			? entry.data
-			: successfulToolDetails(entry, CREATE_PLAN_TOOL_NAME);
+			: (successfulToolDetails(entry, CREATE_PLAN_TOOL_NAME) ?? successfulToolDetails(entry, UPDATE_PLAN_TOOL_NAME));
 	if (typeof details !== "object" || details === null || !("plan" in details) || !("markdown" in details))
 		return undefined;
 	if (!isPlanRecord(details.plan) || typeof details.markdown !== "string") return undefined;

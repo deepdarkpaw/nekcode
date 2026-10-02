@@ -1,4 +1,11 @@
-import { type Component, Input, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Input,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import type { ExtensionContext } from "../../../core/extensions/types.ts";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
@@ -146,12 +153,43 @@ function toggle(checked: Set<string>, id: string): void {
 	if (!checked.delete(id)) checked.add(id);
 }
 
-function rowLabel(row: Row, state: DialogState, multiple: boolean): string {
+/** Plain label of a row, without the selection/cursor prefix. */
+function rowLabel(row: Row, state: DialogState): string {
 	if (row.kind === "submit") return SUBMIT_LABEL;
-	const label = row.kind === "option" ? row.label : state.other ? `${OTHER_LABEL} ${state.other}` : OTHER_LABEL;
-	if (!multiple) return label;
-	const checked = row.kind === "option" ? state.checked.has(row.id) : state.other !== undefined;
-	return `${checked ? "[x]" : "[ ]"} ${label}`;
+	if (row.kind === "option") return row.label;
+	return state.other ? `${OTHER_LABEL} ${state.other}` : OTHER_LABEL;
+}
+
+/**
+ * Prefix shown before a row label: `> ` when selected else `  `, plus `[x] `/`[ ] ` for multi-select rows.
+ * The prefix is never wrapped; the label wraps into the remaining width so continuation lines align under it.
+ */
+function rowPrefix(row: Row, state: DialogState, multiple: boolean, selected: boolean): string {
+	let prefix = selected ? "> " : "  ";
+	if (multiple && row.kind !== "submit") {
+		const checked = row.kind === "option" ? state.checked.has(row.id) : state.other !== undefined;
+		prefix += `${checked ? "[x]" : "[ ]"} `;
+	}
+	return prefix;
+}
+
+/** Push one styled option row, wrapping its label into `width - prefixWidth` columns. */
+function pushRow(
+	lines: string[],
+	row: Row,
+	state: DialogState,
+	multiple: boolean,
+	selected: boolean,
+	theme: Theme,
+	width: number,
+): void {
+	const prefix = truncateToWidth(rowPrefix(row, state, multiple, selected), width, "");
+	const labelWidth = Math.max(1, width - visibleWidth(prefix));
+	const indent = " ".repeat(visibleWidth(prefix));
+	const color = selected ? "accent" : "text";
+	for (const [index, line] of wrapTextWithAnsi(rowLabel(row, state), labelWidth).entries()) {
+		lines.push(`${index === 0 ? prefix : indent}${theme.fg(color, line)}`);
+	}
 }
 
 function renderQuestion(
@@ -165,17 +203,19 @@ function renderQuestion(
 ): string[] {
 	const inner = Math.max(1, width - 2);
 	const lines = [theme.fg("accent", "─".repeat(Math.max(1, width)))];
-	if (title) lines.push(` ${theme.fg("accent", theme.bold(title))}`);
-	for (const line of wrapTextWithAnsi(question.prompt, inner)) lines.push(` ${theme.fg("text", line)}`);
+	if (title) lines.push(` ${truncateToWidth(theme.fg("accent", theme.bold(title)), inner, "")}`);
+	for (const line of wrapTextWithAnsi(question.prompt, inner)) {
+		lines.push(` ${truncateToWidth(theme.fg("text", line), inner, "")}`);
+	}
 	lines.push("");
-	rows.forEach((row, index) => {
-		const selected = index === state.cursor;
-		const label = rowLabel(row, state, question.allow_multiple === true);
-		lines.push(`${selected ? theme.fg("accent", "> ") : "  "}${theme.fg(selected ? "accent" : "text", label)}`);
-	});
+	const multiple = question.allow_multiple === true;
+	for (const [index, row] of rows.entries()) {
+		pushRow(lines, row, state, multiple, index === state.cursor, theme, inner);
+	}
 	if (state.editing) lines.push("", ...input.render(inner).map((line) => ` ${line}`));
 	const hint = state.editing ? keyHint("tui.input.submit", "submit") : keyHint("tui.select.confirm", "select");
-	lines.push("", ` ${hint}  ${keyHint("tui.select.cancel", state.editing ? "back" : "dismiss")}`);
+	const hintLine = ` ${hint}  ${keyHint("tui.select.cancel", state.editing ? "back" : "dismiss")}`;
+	lines.push("", truncateToWidth(hintLine, width, ""));
 	lines.push(theme.fg("accent", "─".repeat(Math.max(1, width))));
 	return lines;
 }

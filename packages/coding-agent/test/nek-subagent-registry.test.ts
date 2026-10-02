@@ -1,8 +1,12 @@
 import { type FauxResponseStep, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_NEK_CONFIG } from "../src/extensions/nek/config.ts";
-import { clampAwaitTimeout, type SubagentConfig, TaskRegistry } from "../src/extensions/nek/services/task-registry.ts";
-import type { TaskRecord } from "../src/extensions/nek/types.ts";
+import {
+	clampAwaitTimeout,
+	type SubagentConfig,
+	SubagentRegistry,
+} from "../src/extensions/nek/services/subagent-registry.ts";
+import type { SubagentRecord } from "../src/extensions/nek/types.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 interface Gate {
@@ -34,7 +38,7 @@ function config(overrides: Partial<SubagentConfig>): SubagentConfig {
 	return { ...DEFAULT_NEK_CONFIG.subagent, ...overrides };
 }
 
-describe("TaskRegistry", () => {
+describe("SubagentRegistry", () => {
 	const harnesses: Harness[] = [];
 
 	afterEach(() => {
@@ -71,7 +75,7 @@ describe("TaskRegistry", () => {
 
 	it("rejects starts beyond maxConcurrent, including parallel starts", async () => {
 		const gate = createGate();
-		const registry = new TaskRegistry(config({ maxConcurrent: 2 }), () => {});
+		const registry = new SubagentRegistry(config({ maxConcurrent: 2 }), () => {});
 		const children = await Promise.all([1, 2, 3].map(() => child([gatedReply(gate, "ok")])));
 
 		const results = await Promise.allSettled(
@@ -81,7 +85,7 @@ describe("TaskRegistry", () => {
 		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(2);
 		const rejected = results.find((result) => result.status === "rejected");
 		expect(String(rejected?.status === "rejected" ? rejected.reason : "")).toContain(
-			"Subagent limit reached (2 running). Wait for one to finish or cancel one with /tasks.",
+			"Subagent limit reached (2 running). Wait for one to finish or cancel one with /subagents.",
 		);
 		gate.open();
 		await registry.await(undefined, 5_000);
@@ -89,7 +93,7 @@ describe("TaskRegistry", () => {
 	});
 
 	it("evicts the earliest finished observed record beyond maxRetained and disposes its session", async () => {
-		const registry = new TaskRegistry(config({ maxRetained: 2 }), () => {});
+		const registry = new SubagentRegistry(config({ maxRetained: 2 }), () => {});
 		const first = await child([fauxAssistantMessage("one")]);
 		const disposeFirst = vi.spyOn(first.session, "dispose");
 		const a = await registry.start(startInput(first, "a", false));
@@ -107,7 +111,7 @@ describe("TaskRegistry", () => {
 
 	it("never evicts running or unobserved records", async () => {
 		const gate = createGate();
-		const registry = new TaskRegistry(config({ maxRetained: 1 }), () => {});
+		const registry = new SubagentRegistry(config({ maxRetained: 1 }), () => {});
 		await registry.start(startInput(await child([gatedReply(gate, "a")]), "a"));
 		await registry.start(startInput(await child([gatedReply(gate, "b")]), "b"));
 		expect(registry.list()).toHaveLength(2);
@@ -116,10 +120,10 @@ describe("TaskRegistry", () => {
 		expect(registry.list()).toHaveLength(2);
 	});
 
-	it("await returns the first task that finishes and marks it observed", async () => {
+	it("await returns the first subagent that finishes and marks it observed", async () => {
 		const slow = createGate();
 		const fast = createGate();
-		const registry = new TaskRegistry(config({}), () => {});
+		const registry = new SubagentRegistry(config({}), () => {});
 		await registry.start(startInput(await child([gatedReply(slow, "slow result")]), "slow"));
 		const fastRecord = await registry.start(startInput(await child([gatedReply(fast, "fast result")]), "fast"));
 
@@ -135,7 +139,7 @@ describe("TaskRegistry", () => {
 
 	it("await with a non-positive timeout is a non-blocking status check", async () => {
 		const gate = createGate();
-		const registry = new TaskRegistry(config({}), () => {});
+		const registry = new SubagentRegistry(config({}), () => {});
 		await registry.start(startInput(await child([gatedReply(gate, "later")]), "pending"));
 		const startedAt = Date.now();
 		expect(await registry.await(undefined, 0)).toEqual({ done: [], timedOut: false });
@@ -146,7 +150,7 @@ describe("TaskRegistry", () => {
 
 	it("await clamps tiny timeouts up to one second and reports timed_out", async () => {
 		const gate = createGate();
-		const registry = new TaskRegistry(config({}), () => {});
+		const registry = new SubagentRegistry(config({}), () => {});
 		await registry.start(startInput(await child([gatedReply(gate, "later")]), "pending"));
 		const startedAt = Date.now();
 
@@ -157,10 +161,10 @@ describe("TaskRegistry", () => {
 		gate.open();
 	});
 
-	it("resume of a running task fails without interrupt and replaces the run with interrupt", async () => {
+	it("resume of a running subagent fails without interrupt and replaces the run with interrupt", async () => {
 		const gate = createGate();
 		const harness = await child([gatedReply(gate, "first"), fauxAssistantMessage("second answer")]);
-		const registry = new TaskRegistry(config({}), () => {});
+		const registry = new SubagentRegistry(config({}), () => {});
 		const record = await registry.start(startInput(harness, "job", false));
 
 		await expect(
@@ -176,8 +180,8 @@ describe("TaskRegistry", () => {
 	});
 
 	it("notifies once for an unobserved background finish, and drainUnobserved is idempotent", async () => {
-		const notified: TaskRecord[] = [];
-		const registry = new TaskRegistry(config({}), (record) => notified.push(record));
+		const notified: SubagentRecord[] = [];
+		const registry = new SubagentRegistry(config({}), (record) => notified.push(record));
 		const record = await registry.start(startInput(await child([fauxAssistantMessage("bg done")]), "bg"));
 		await vi.waitFor(() => expect(notified).toHaveLength(1));
 
@@ -186,10 +190,10 @@ describe("TaskRegistry", () => {
 		expect(await registry.await(undefined, 0)).toEqual({ done: [], timedOut: false });
 	});
 
-	it("does not notify for a background task observed by await before it finishes", async () => {
+	it("does not notify for a background subagent observed by await before it finishes", async () => {
 		const gate = createGate();
-		const notified: TaskRecord[] = [];
-		const registry = new TaskRegistry(config({}), (record) => notified.push(record));
+		const notified: SubagentRecord[] = [];
+		const registry = new SubagentRegistry(config({}), (record) => notified.push(record));
 		await registry.start(startInput(await child([gatedReply(gate, "done")]), "bg"));
 
 		const waiting = registry.await(undefined, 10_000);
@@ -200,10 +204,10 @@ describe("TaskRegistry", () => {
 		expect(registry.drainUnobserved()).toEqual([]);
 	});
 
-	it("abort cancels a running task without a notice", async () => {
+	it("abort cancels a running subagent without a notice", async () => {
 		const gate = createGate();
-		const notified: TaskRecord[] = [];
-		const registry = new TaskRegistry(config({}), (record) => notified.push(record));
+		const notified: SubagentRecord[] = [];
+		const registry = new SubagentRegistry(config({}), (record) => notified.push(record));
 		const record = await registry.start(startInput(await child([gatedReply(gate, "never")]), "cancel me"));
 
 		await registry.abort(record.id);

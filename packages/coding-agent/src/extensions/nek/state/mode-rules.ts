@@ -1,6 +1,6 @@
 import { extname } from "node:path";
 import type { Mode } from "../types.ts";
-import { CREATE_PLAN_TOOL_NAME, SWITCH_MODE_TOOL_NAME } from "./session-state.ts";
+import { CREATE_PLAN_TOOL_NAME, SWITCH_MODE_TOOL_NAME, UPDATE_PLAN_TOOL_NAME } from "./session-state.ts";
 
 /** File-editing tools that plan mode restricts to markdown targets (Cursor `<plan_mode_guardrails>`). */
 export const PLAN_MODE_EDIT_TOOLS: readonly string[] = ["edit", "write"];
@@ -12,11 +12,14 @@ export function isMarkdownPath(path: string): boolean {
 	return MARKDOWN_EXTENSIONS.includes(extname(path.trim()).toLowerCase());
 }
 
-/** Keep the approval-gated mode switch available in both modes; only Plan exposes create_plan. */
+/** Keep the approval-gated mode switch available in both modes; only Plan exposes plan authoring tools. */
 export function modeToolNames(active: readonly string[], mode: Mode): string[] {
-	const next = mode === "agent" ? active.filter((name) => name !== CREATE_PLAN_TOOL_NAME) : [...active];
+	const planTools = [CREATE_PLAN_TOOL_NAME, UPDATE_PLAN_TOOL_NAME];
+	const next = mode === "agent" ? active.filter((name) => !planTools.includes(name)) : [...active];
 	if (!next.includes(SWITCH_MODE_TOOL_NAME)) next.push(SWITCH_MODE_TOOL_NAME);
-	if (mode === "plan" && !next.includes(CREATE_PLAN_TOOL_NAME)) next.push(CREATE_PLAN_TOOL_NAME);
+	if (mode === "plan") {
+		for (const toolName of planTools) if (!next.includes(toolName)) next.push(toolName);
+	}
 	return next;
 }
 

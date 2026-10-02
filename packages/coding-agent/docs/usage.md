@@ -39,7 +39,7 @@ You can send more input while nekcode is working:
 
 ## Change the model or settings
 
-Type `/` to search available commands. Common commands are `/model`, `/thinking`, `/login`, `/logout`, and `/settings`. Plan mode and the built-in `nek` extension add `/plan`, `/todos`, and `/tasks`.
+Type `/` to search available commands. Common commands are `/model`, `/thinking`, `/login`, `/logout`, and `/settings`. Plan mode and the built-in `nek` extension add `/plan`, `/todos`, and `/subagents`.
 
 See [Choose a Model](models.md), [Configuration](configuration.md), and the [Slash Commands reference](slash-commands.md).
 

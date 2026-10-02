@@ -45,8 +45,8 @@ describe("loadNekConfig", () => {
 
 	it("rejects unknown keys, wrong types, and invalid YAML with the file path", () => {
 		const path = join(agentDir, "nek.yaml");
-		writeFileSync(path, "subagent:\n  maxThreads: 3\n");
-		expect(() => loadNekConfig(agentDir, cwd, true)).toThrow(`${path}: unknown key "subagent.maxThreads"`);
+		writeFileSync(path, "subagent:\n  progressMaxLines: 5\n");
+		expect(() => loadNekConfig(agentDir, cwd, true)).toThrow(`${path}: unknown key "subagent.progressMaxLines"`);
 
 		writeFileSync(path, "todo:\n  settleReminder: yes please\n");
 		expect(() => loadNekConfig(agentDir, cwd, true)).toThrow('"todo.settleReminder" must be a boolean');

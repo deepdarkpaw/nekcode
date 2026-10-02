@@ -315,8 +315,8 @@ function hasDefaultModelProvider(providerId: string): providerId is keyof typeof
 
 function llamaCppPostLoginGuidance(actionLabel: string, loadedModelCount: number): string {
 	return loadedModelCount === 0
-		? `${actionLabel}. No llama.cpp models are loaded. Use /llama to load a model, then /model to select it.`
-		: `${actionLabel}. Use /model to select a loaded llama.cpp model, or /llama to manage models.`;
+		? `${actionLabel}. No llama.cpp models are loaded. Load a model on the llama.cpp server, then use /model to select it.`
+		: `${actionLabel}. Use /model to select a loaded llama.cpp model.`;
 }
 
 type LoginProviderCompletionOption = {
@@ -2125,14 +2125,17 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Set extension status text in the footer.
+	 * Set extension status text in the footer. `nek.mode` is a signal, not footer text: it updates the editor border
+	 * and never reaches the footer.
 	 */
 	private setExtensionStatus(key: string, text: string | undefined): void {
-		this.footerDataProvider.setExtensionStatus(key, text);
 		if (key === "nek.mode") {
 			this.isPlanMode = text === "plan";
 			this.updateEditorBorderColor();
+			this.ui.requestRender();
+			return;
 		}
+		this.footerDataProvider.setExtensionStatus(key, text);
 		this.ui.requestRender();
 	}
 

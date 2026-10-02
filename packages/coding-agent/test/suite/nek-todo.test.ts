@@ -6,10 +6,12 @@ import { DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/config.ts";
 import { createNekExtension } from "../../src/extensions/nek/index.ts";
 import type { Todo } from "../../src/extensions/nek/types.ts";
 import { initTheme, type Theme, theme } from "../../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../../src/utils/ansi.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 interface UiRecord {
-	widget: string[] | undefined;
+	/** Plain text of the `nek.todos` widget; undefined when the widget was removed. */
+	widget: string | undefined;
 	status: string | undefined;
 }
 
@@ -28,7 +30,21 @@ function createRecordingUiContext(record: UiRecord): ExtensionUIContext {
 		setWorkingIndicator: () => {},
 		setHiddenThinkingLabel: () => {},
 		setWidget: (key: string, content: unknown) => {
-			if (key === "nek.todos") record.widget = Array.isArray(content) ? content : undefined;
+			if (key !== "nek.todos") return;
+			if (content === undefined) {
+				record.widget = undefined;
+				return;
+			}
+			if (typeof content !== "function") throw new Error("the todo widget must be a component factory");
+			const component = (content as (tui: unknown, th: Theme) => { render(width: number): string[] })(
+				undefined,
+				theme,
+			);
+			// Text pads every line with one space on each side; compare against the content without that padding.
+			record.widget = stripAnsi(component.render(80).join("\n"))
+				.split("\n")
+				.map((line) => (line.trim() === "" ? "" : line.replace(/^ /, "").trimEnd()))
+				.join("\n");
 		},
 		setFooter: () => {},
 		setHeader: () => {},
@@ -106,15 +122,17 @@ describe("nek todo_write", () => {
 		await harness.session.prompt("first");
 		const firstLeaf = harness.sessionManager.getLeafId();
 		expect(todoWriteDetails(harness)).toEqual([{ todos: first }]);
-		expect(record.status).toBe("1/2");
+		expect(record.status).toBeUndefined();
+		// First has one completed and one cancelled item: nothing open, so no widget.
+		expect(record.widget).toBeUndefined();
 
 		harness.setResponses([todoWriteCall(false, second), fauxAssistantMessage("second done")]);
 		await harness.session.prompt("second");
-		expect(record.status).toBe("2/2");
+		expect(record.widget).toBeUndefined();
 
 		if (!firstLeaf) throw new Error("expected a leaf after the first prompt");
 		await harness.session.navigateTree(firstLeaf);
-		expect(record.status).toBe("1/2");
+		expect(record.widget).toBeUndefined();
 
 		const added: Todo[] = [
 			{ id: "b", content: "Second", status: "completed" },
@@ -123,8 +141,25 @@ describe("nek todo_write", () => {
 		harness.setResponses([todoWriteCall(true, added), fauxAssistantMessage("merged")]);
 		await harness.session.prompt("third");
 		expect(todoWriteDetails(harness).at(-1)).toEqual({ todos: [first[0], added[0], added[1]] });
-		expect(record.status).toBe("3/3");
 		expect(record.widget).toBeUndefined();
+	});
+
+	it("puts the progress in the dim widget title instead of the status bar", async () => {
+		const record: UiRecord = { widget: undefined, status: undefined };
+		const harness = await createNekHarness(record);
+		const todos: Todo[] = [
+			{ id: "a", content: "First", status: "completed" },
+			{ id: "b", content: "Second", status: "in_progress" },
+			{ id: "c", content: "Third", status: "pending" },
+		];
+		harness.setResponses([todoWriteCall(false, todos), fauxAssistantMessage("stopping")]);
+
+		await harness.session.prompt("work");
+
+		const lines = record.widget?.split("\n") ?? [];
+		expect(lines[0]).toBe("Todos 1/3");
+		expect(lines.slice(1)).toEqual(["✓ First", "▶ Second", "○ Third"]);
+		expect(record.status).toBeUndefined();
 	});
 
 	it("shows open todos above the editor, collapsed to widgetMaxLines", async () => {
@@ -143,9 +178,12 @@ describe("nek todo_write", () => {
 
 		await harness.session.prompt("plan");
 
-		expect(record.status).toBe("0/10");
-		expect(record.widget).toHaveLength(DEFAULT_NEK_CONFIG.todo.widgetMaxLines);
-		expect(record.widget?.at(-1)).toContain("... +3 more");
+		const lines = record.widget?.split("\n") ?? [];
+		expect(lines[0]).toBe("Todos 0/10");
+		expect(lines[1]).toBe("▶ Task 0");
+		expect(lines).toHaveLength(DEFAULT_NEK_CONFIG.todo.widgetMaxLines + 1);
+		expect(lines.at(-1)).toContain("... +3 more");
+		expect(record.status).toBeUndefined();
 	});
 
 	it("continues a run with open todos exactly once, and again in the next run", async () => {

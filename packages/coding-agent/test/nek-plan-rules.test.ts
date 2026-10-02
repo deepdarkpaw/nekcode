@@ -92,17 +92,18 @@ describe("checkModeToolCall", () => {
 });
 
 describe("modeToolNames", () => {
-	it("adds create_plan and keeps switch_mode in plan mode, keeping the rest", () => {
+	it("adds plan authoring tools and keeps switch_mode in plan mode, keeping the rest", () => {
 		expect(modeToolNames(["read", "switch_mode", "write"], "plan")).toEqual([
 			"read",
 			"switch_mode",
 			"write",
 			"create_plan",
+			"update_plan",
 		]);
 	});
 
-	it("adds switch_mode and drops create_plan in agent mode", () => {
-		expect(modeToolNames(["read", "create_plan"], "agent")).toEqual(["read", "switch_mode"]);
+	it("adds switch_mode and drops plan authoring tools in agent mode", () => {
+		expect(modeToolNames(["read", "create_plan", "update_plan"], "agent")).toEqual(["read", "switch_mode"]);
 		expect(modeToolNames(["switch_mode"], "agent")).toEqual(["switch_mode"]);
 	});
 });

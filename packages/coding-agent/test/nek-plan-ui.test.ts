@@ -264,4 +264,38 @@ describe("Plan documents and mode presentation", () => {
 		view.handleInput?.("\r");
 		expect(await result).toBeUndefined();
 	});
+
+	/** The crash from ~/.nek/agent/pi-tui-crash.log: a 239-column option line in a 179-column terminal. */
+	it.each([
+		{ name: "single choice", multiple: false },
+		{ name: "multiple choice", multiple: true },
+	])("wraps a long mixed-script option in 40 columns ($name)", async ({ multiple }) => {
+		initTheme("dark");
+		const tui = new TuiMainScreen(new VirtualTerminal());
+		const ui = captureUi(tui, new KeybindingsManager());
+		const result = askQuestion(
+			ui.ctx,
+			{
+				id: "update_plan",
+				prompt: "要不要新增 update_plan 工具？",
+				allow_multiple: multiple,
+				options: [
+					{
+						id: "add",
+						label: "新增 update_plan 工具：参数是一组 old_string/new_string 编辑，只改计划正文里需要改的地方",
+					},
+					{ id: "skip", label: "保持现状" },
+				],
+			},
+			"计划修订方式",
+		);
+		const view = await ui.opened.promise;
+		for (const width of [40, 80]) {
+			const lines = view.render(width);
+			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+		}
+		expect(stripAnsi(view.render(40).join("\n"))).toContain("update_plan");
+		view.handleInput?.("\x1b");
+		expect(await result).toBeUndefined();
+	});
 });

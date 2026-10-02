@@ -33,12 +33,25 @@ export function renderTodoLines(todos: readonly Todo[], theme: Theme, maxLines =
 	return lines;
 }
 
-/** Show the list above the editor while todos are open, and `done/total` in the status bar while the list is non-empty. */
+/** Title line of the widget, e.g. `Todos 1/2`; undefined while there is nothing to show. */
+function todoTitle(todos: readonly Todo[]): string | undefined {
+	return openTodos(todos).length > 0 ? `Todos ${todoProgress(todos)}` : undefined;
+}
+
+/**
+ * Show the list above the editor while todos are open. Progress lives in the widget title (`Todos 1/2`, dim) instead
+ * of the status bar, which stays free for session-level statuses.
+ */
 export function syncTodoUi(ctx: ExtensionContext, todos: readonly Todo[], maxLines: number): void {
 	if (!ctx.hasUI) return;
-	const lines = openTodos(todos).length > 0 ? renderTodoLines(todos, ctx.ui.theme, maxLines) : undefined;
-	ctx.ui.setWidget(TODO_UI_KEY, lines);
-	ctx.ui.setStatus(TODO_UI_KEY, todos.length > 0 ? todoProgress(todos) : undefined);
+	if (!todoTitle(todos)) {
+		ctx.ui.setWidget(TODO_UI_KEY, undefined);
+		return;
+	}
+	ctx.ui.setWidget(TODO_UI_KEY, (_tui, theme) => {
+		const body = renderTodoLines(todos, theme, maxLines).join("\n");
+		return new Text(`${theme.fg("dim", `Todos ${todoProgress(todos)}`)}\n${body}`, 1, 0);
+	});
 }
 
 /** `/todos`: show the full list of the current branch until the user closes it. */

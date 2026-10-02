@@ -189,6 +189,77 @@ describe("nek plan mode", () => {
 		expect(readFileSync(plan.path, "utf-8")).toContain("# Add auth v2");
 	});
 
+	it("update_plan submits an edited plan body as a new revision and invalidates the old review", async () => {
+		const record = createRecord();
+		const harness = await createNekHarness(record);
+		const opened = Promise.withResolvers<void>();
+		const oldApproval = Promise.withResolvers<PlanApprovalChoice>();
+		record.onApproval = async () => {
+			if (record.approvalShown > 1) return undefined;
+			opened.resolve();
+			return oldApproval.promise;
+		};
+		await harness.session.prompt("/plan");
+		harness.setResponses([createPlanCall({ name: "Add auth" })]);
+		const originalPrompt = harness.session.prompt("plan auth");
+		await opened.promise;
+		const firstPlan = currentState(harness).plan;
+		if (!firstPlan) throw new Error("Expected saved plan");
+
+		harness.setResponses([
+			toolCallMessage("read", { path: firstPlan.path }),
+			toolCallMessage("edit", {
+				file_path: firstPlan.path,
+				old_string: "# Add auth",
+				new_string: "# Add auth v2",
+			}),
+			toolCallMessage("update_plan", { explanation: "Refresh the plan body" }),
+		]);
+		await harness.session.prompt("revise the plan before implementing");
+		oldApproval.resolve("implement");
+		await originalPrompt;
+
+		const [updated] = toolResults(harness, "update_plan");
+		expect(updated.isError).toBe(false);
+		expect(updated.details).toMatchObject({
+			markdown: "# Add auth v2\n\n- Add the schema",
+			plan: { path: firstPlan.path, revision: 2 },
+		});
+		expect(currentState(harness)).toMatchObject({
+			mode: "plan",
+			planStatus: "ready",
+			plan: { path: firstPlan.path, revision: 2 },
+		});
+		expect(currentState(harness).execution).toBeUndefined();
+		expect(record.approvalShown).toBe(2);
+		expect(readFileSync(firstPlan.path, "utf-8")).toContain("# Add auth v2");
+	});
+
+	it("update_plan keeps the revision when the document is unchanged", async () => {
+		const harness = await createNekHarness(undefined);
+		await harness.session.prompt("/plan");
+		harness.setResponses([createPlanCall({ name: "Add auth" })]);
+		await harness.session.prompt("plan auth");
+		const firstPlan = currentState(harness).plan;
+		if (!firstPlan) throw new Error("Expected saved plan");
+
+		harness.setResponses([
+			toolCallMessage("read", { path: firstPlan.path }),
+			toolCallMessage("update_plan", { explanation: "Review the existing plan again" }),
+		]);
+		await harness.session.prompt("review the plan again");
+
+		const [updated] = toolResults(harness, "update_plan");
+		expect(updated.isError).toBe(false);
+		expect(updated.details).toMatchObject({
+			markdown: "# Add auth\n\n- Add the schema",
+			plan: { revision: 1 },
+			diff: "",
+		});
+		expect(JSON.stringify(updated.content)).toContain("No changes to the plan.");
+		expect(currentState(harness).plan).toMatchObject({ path: firstPlan.path, revision: 1 });
+	});
+
 	it("/plan <text> enters plan mode and submits the text", async () => {
 		const harness = await createNekHarness(undefined);
 		const requests: string[] = [];

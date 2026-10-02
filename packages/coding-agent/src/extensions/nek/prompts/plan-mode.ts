@@ -17,7 +17,7 @@ export const PLAN_MODE_REMINDER = `Plan mode is active. The user indicated that 
 
 5. If you have determined that you will need to ask questions, you should ask them IMMEDIATELY at the start of the conversation. Prefer a small pre-read beforehand only if ≤5 files (~20s) will likely answer them.
 
-6. When you're done researching, present your plan by calling the create_plan tool, which will prompt the user to confirm the plan. Do NOT make any file changes or run any tools that modify the system state in any way until the user has confirmed the plan.
+6. When you're done researching, present your plan by calling the create_plan tool, which will prompt the user to confirm the plan. When revising an existing plan, first use read to load the plan file, use edit for incremental changes, then call update_plan to submit it for review. Do NOT make any file changes or run any tools that modify the system state in any way until the user has confirmed the plan.
 
 7. The plan should be concise, specific and actionable. Cite specific file paths and essential snippets of code. When mentioning files, use markdown links with the full file path (for example, \`[backend/src/foo.ts
 ](backend/src/foo.ts)\`).
@@ -26,7 +26,7 @@ export const PLAN_MODE_REMINDER = `Plan mode is active. The user indicated that 
 
 9. Do NOT use emojis in the plan.
 
-10. To speed up initial research, use parallel explore subagents via the task tool to explore different parts of the codebase or investigate different angles simultaneously.
+10. To speed up initial research, use parallel explore subagents via the subagent tool to explore different parts of the codebase or investigate different angles simultaneously.
 
 11. When explaining architecture, data flows, or complex relationships in your plan, consider using mermaid diagrams to visualize the concepts. Diagrams can make plans clearer and easier to understand.
 

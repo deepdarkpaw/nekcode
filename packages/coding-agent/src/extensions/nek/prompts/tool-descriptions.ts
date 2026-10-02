@@ -82,8 +82,8 @@ Use 'todos' for organizing implementation tasks:
 
 UPDATING THE PLAN:
 - The plan file URI will be returned in the tool result
-- If a current plan already exists, call this tool with the complete revised plan and omit the name field
-- Only the first create_plan call may include name; later calls must not include name and must not use name to rename or create a separate plan
+- To revise the same task, first read the current plan file, then use edit for incremental changes (including overview and todos in the file's frontmatter), and call update_plan to submit it for review. Only call create_plan again for a different task or when the user explicitly asks to rewrite the entire plan, and then provide the complete plan body
+- Only the first create_plan call may include name; later same-task revisions use update_plan and must not use name to rename or create a separate plan
 - If the user asks for a separate new plan while a current plan exists, explain the limitation or ask how to proceed before calling create_plan again
 
 Additional guidelines:
@@ -91,6 +91,14 @@ Additional guidelines:
 - Todos help break down complex plans into manageable, trackable tasks
 - Focus on high-level meaningful decisions rather than low-level implementation details
 - A good plan is glanceable, not a wall of text.`;
+
+/** Description of the incremental plan submission tool. */
+export const UPDATE_PLAN = `Use this tool to submit the current plan file for review after making incremental edits.
+
+- This is the only submission entry point for revising an existing plan. First read the plan file, then use edit to change the file before calling update_plan.
+- Edit the markdown body or the overview and todos in the same file's frontmatter; do not rewrite the plan through this tool.
+- The plan body must be non-empty. Submit only the changes made since the current reviewed snapshot.
+- The tool reads the edited file, records a new revision when its document changed, and ends the turn for user review.`;
 
 /** Cursor AskQuestion description, verbatim from reference/cursor/cursor-tools-2026.json line 7. */
 export const ASK_QUESTION = `Collect structured multiple-choice answers from the user. Use this tool only when you are blocked on a decision that is genuinely the user's to make: one you cannot resolve from the request, the code, or sensible defaults.

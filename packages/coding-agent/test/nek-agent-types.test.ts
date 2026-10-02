@@ -112,7 +112,7 @@ describe("discoverAgentTypes", () => {
 		expect(findAgentType(discoverAgentTypes(agentDir, cwd, true).types, "local")).toBeDefined();
 	});
 
-	it("describes the available types for the task description", () => {
+	it("describes the available types for the subagent description", () => {
 		const text = describeAgentTypes(BUILTIN_AGENT_TYPES);
 		expect(text.startsWith("Available subagent_type values\n\n- generalPurpose: ")).toBe(true);
 		expect(text).toContain("- explore: ");

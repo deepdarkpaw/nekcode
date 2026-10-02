@@ -23,7 +23,7 @@ export interface ChildSessionSpec {
 	/** Plan mode and readonly agent types force the explore tool allowlist. */
 	forceReadonly: boolean;
 	agentDir: string;
-	/** The nek extension in subagent role (todo_write and the subagent prompts; never task/await). */
+	/** The nek extension in subagent role (todo_write and the subagent prompts; never subagent/await). */
 	extension: ExtensionFactory;
 	/** Session file of a previous child run to continue. */
 	resumeFile?: string;
@@ -89,7 +89,7 @@ function readOnlySettingsStorage(cwd: string, agentDir: string): SettingsStorage
 	};
 }
 
-/** Model reference as the task tool and the error messages spell it. */
+/** Model reference as the subagent tool and the error messages spell it. */
 export function modelRef(model: Model<Api>): string {
 	return `${model.provider}/${model.id}`;
 }

@@ -14,8 +14,9 @@ export interface ReadStateRecord {
 }
 
 /**
- * Read state shared by read, write, and edit. An edit requires a prior read of the same file so that a
- * stale view cannot overwrite someone else's changes.
+ * Read state shared by read, write, and edit. Edit does not require a prior read; its exact old_string match
+ * protects against stale content. Overwriting an existing file with write still requires a prior read. A successful
+ * edit records the resulting content so a subsequent write can use that record.
  */
 export interface ReadStateStore {
 	get(absolutePath: string): ReadStateRecord | undefined;

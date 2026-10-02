@@ -66,7 +66,7 @@ nek --mode json -p "List the files that need attention"
 - Trusted project settings and resources: `.nek/`
 - Project plan files: `.nek/plans/`
 - Environment variable prefix: `NEK_`
-- `/plan`, `/todos`, `/tasks`, and `/nek-build` are provided by the built-in `nek` extension.
+- `/plan`, `/todos`, `/subagents`, and `/nek-build` are provided by the built-in `nek` extension.
 
 Read the [coding-agent documentation](packages/coding-agent/docs/index.md) for setup, configuration, providers, sessions, terminal integration, and extension APIs. The nekcode-specific behavior is documented in [docs/nek.md](packages/coding-agent/docs/nek.md).
 

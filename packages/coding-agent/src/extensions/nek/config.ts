@@ -24,7 +24,6 @@ export interface NekConfig {
 		awaitDefaultMs: number;
 		awaitMaxMs: number;
 		finalTextMaxBytes: number;
-		progressMaxLines: number;
 	};
 }
 
@@ -38,7 +37,6 @@ export const DEFAULT_NEK_CONFIG: NekConfig = {
 		awaitDefaultMs: 30_000,
 		awaitMaxMs: 7_140_000,
 		finalTextMaxBytes: 32_768,
-		progressMaxLines: 5,
 	},
 };
 
