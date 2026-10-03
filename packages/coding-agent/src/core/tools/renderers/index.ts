@@ -15,6 +15,7 @@ import { findRenderers } from "./find.ts";
 import { grepRenderers } from "./grep.ts";
 import { lsRenderers } from "./ls.ts";
 import { readRenderers } from "./read.ts";
+import { webSearchRenderers } from "./web-search.ts";
 import { writeRenderers } from "./write.ts";
 
 export type ToolRenderers = Pick<ToolDefinition<any, any>, "renderCall" | "renderResult">;
@@ -28,6 +29,7 @@ export {
 	lsRenderers,
 	readRenderers,
 	writeRenderers,
+	webSearchRenderers,
 };
 
 /** Renderers for every built-in tool, keyed by tool name. */
@@ -42,6 +44,7 @@ export function createAllToolRenderers(): Record<ToolName, ToolRenderers> {
 		find: findRenderers,
 		ls: lsRenderers,
 		ast_grep: astGrepRenderers,
+		web_search: webSearchRenderers,
 	};
 }
 

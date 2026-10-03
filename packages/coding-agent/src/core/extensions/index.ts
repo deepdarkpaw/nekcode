@@ -103,6 +103,7 @@ export type {
 	// Events - Input
 	InputEvent,
 	InputEventResult,
+	InputQueuedEvent,
 	InputSource,
 	KeybindingsManager,
 	LoadExtensionsResult,

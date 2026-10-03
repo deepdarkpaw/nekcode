@@ -1,6 +1,6 @@
 import {
 	type Component,
-	Input,
+	Editor,
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
@@ -9,7 +9,7 @@ import {
 import type { ExtensionContext } from "../../../core/extensions/types.ts";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
-import type { Theme } from "../../../modes/interactive/theme/theme.ts";
+import { getEditorTheme, type Theme } from "../../../modes/interactive/theme/theme.ts";
 import type { Question, QuestionAnswer } from "../types.ts";
 
 /** Label of the free-text row that every question offers (Cursor: users can always select "Other"). */
@@ -21,7 +21,9 @@ type Row = { kind: "option"; id: string; label: string } | { kind: "other" } | {
 interface DialogState {
 	cursor: number;
 	checked: Set<string>;
+	/** Last submitted free-text value, retained separately from the active draft. */
 	other?: string;
+	otherDraft: string;
 	editing: boolean;
 }
 
@@ -108,27 +110,33 @@ function createQuestionView(
 ): Component {
 	const { tui, theme, keybindings } = env;
 	const rows = dialogRows(question);
-	const state: DialogState = { cursor: 0, checked: new Set(), editing: false };
-	const input = new Input();
-	input.onEscape = () => stopEditing(state, input);
+	const state: DialogState = { cursor: 0, checked: new Set(), otherDraft: "", editing: false };
+	const input = new Editor(tui, getEditorTheme(), { borders: false });
+	input.onChange = (value) => {
+		state.otherDraft = value;
+	};
 	input.onSubmit = (value) => {
 		const text = value.trim();
 		if (text && !question.allow_multiple) return done(buildAnswer(question, [], text));
 		state.other = text || undefined;
+		state.otherDraft = value;
 		stopEditing(state, input);
 	};
 	const activate = (row: Row) => {
 		if (row.kind === "other") return startEditing(state, input);
 		if (row.kind === "option" && !question.allow_multiple) return done(buildAnswer(question, [row.id]));
 		if (row.kind === "option") return toggle(state.checked, row.id);
-		if (state.checked.size > 0 || state.other) done(buildAnswer(question, [...state.checked], state.other));
+		const other = (state.otherDraft || state.other)?.trim();
+		if (state.checked.size > 0 || other) done(buildAnswer(question, [...state.checked], other));
 	};
 	return {
 		render: (width) => renderQuestion(question, title, rows, state, input, theme, width),
 		invalidate: () => input.invalidate(),
 		handleInput: (data) => {
-			if (state.editing) input.handleInput(data);
-			else if (keybindings.matches(data, "tui.select.up")) state.cursor = Math.max(0, state.cursor - 1);
+			if (state.editing) {
+				if (keybindings.matches(data, "tui.select.cancel")) stopEditing(state, input);
+				else input.handleInput(data);
+			} else if (keybindings.matches(data, "tui.select.up")) state.cursor = Math.max(0, state.cursor - 1);
 			else if (keybindings.matches(data, "tui.select.down"))
 				state.cursor = Math.min(rows.length - 1, state.cursor + 1);
 			else if (keybindings.matches(data, "tui.select.confirm")) activate(rows[state.cursor]);
@@ -138,13 +146,14 @@ function createQuestionView(
 	};
 }
 
-function startEditing(state: DialogState, input: Input): void {
+function startEditing(state: DialogState, input: Editor): void {
 	state.editing = true;
-	input.setValue(state.other ?? "");
+	const value = state.otherDraft || state.other || "";
+	if (input.getText() !== value) input.setText(value);
 	input.focused = true;
 }
 
-function stopEditing(state: DialogState, input: Input): void {
+function stopEditing(state: DialogState, input: Editor): void {
 	state.editing = false;
 	input.focused = false;
 }
@@ -157,7 +166,8 @@ function toggle(checked: Set<string>, id: string): void {
 function rowLabel(row: Row, state: DialogState): string {
 	if (row.kind === "submit") return SUBMIT_LABEL;
 	if (row.kind === "option") return row.label;
-	return state.other ? `${OTHER_LABEL} ${state.other}` : OTHER_LABEL;
+	const draft = (state.otherDraft || state.other || "").replace(/\s+/g, " ").trim();
+	return draft ? `${OTHER_LABEL} ${draft}` : OTHER_LABEL;
 }
 
 /**
@@ -167,7 +177,8 @@ function rowLabel(row: Row, state: DialogState): string {
 function rowPrefix(row: Row, state: DialogState, multiple: boolean, selected: boolean): string {
 	let prefix = selected ? "> " : "  ";
 	if (multiple && row.kind !== "submit") {
-		const checked = row.kind === "option" ? state.checked.has(row.id) : state.other !== undefined;
+		const checked =
+			row.kind === "option" ? state.checked.has(row.id) : Boolean((state.otherDraft || state.other)?.trim());
 		prefix += `${checked ? "[x]" : "[ ]"} `;
 	}
 	return prefix;
@@ -183,7 +194,7 @@ function pushRow(
 	theme: Theme,
 	width: number,
 ): void {
-	const prefix = truncateToWidth(rowPrefix(row, state, multiple, selected), width, "");
+	const prefix = truncateToWidth(rowPrefix(row, state, multiple, selected), Math.max(0, width - 1), "");
 	const labelWidth = Math.max(1, width - visibleWidth(prefix));
 	const indent = " ".repeat(visibleWidth(prefix));
 	const color = selected ? "accent" : "text";
@@ -192,12 +203,31 @@ function pushRow(
 	}
 }
 
+/** Push the active Other editor into its row, keeping wrapped continuations under the label. */
+function pushEditorRow(
+	lines: string[],
+	row: Row,
+	state: DialogState,
+	multiple: boolean,
+	selected: boolean,
+	editor: Editor,
+	theme: Theme,
+	width: number,
+): void {
+	const prefix = truncateToWidth(rowPrefix(row, state, multiple, selected), width, "");
+	const editorWidth = Math.max(1, width - visibleWidth(prefix));
+	const indent = " ".repeat(visibleWidth(prefix));
+	for (const [index, line] of editor.render(editorWidth).entries()) {
+		lines.push(`${index === 0 ? prefix : indent}${theme.fg("accent", line)}`);
+	}
+}
+
 function renderQuestion(
 	question: Question,
 	title: string | undefined,
 	rows: readonly Row[],
 	state: DialogState,
-	input: Input,
+	input: Editor,
 	theme: Theme,
 	width: number,
 ): string[] {
@@ -210,9 +240,13 @@ function renderQuestion(
 	lines.push("");
 	const multiple = question.allow_multiple === true;
 	for (const [index, row] of rows.entries()) {
-		pushRow(lines, row, state, multiple, index === state.cursor, theme, inner);
+		const selected = index === state.cursor;
+		if (state.editing && row.kind === "other") {
+			pushEditorRow(lines, row, state, multiple, selected, input, theme, inner);
+		} else {
+			pushRow(lines, row, state, multiple, selected, theme, inner);
+		}
 	}
-	if (state.editing) lines.push("", ...input.render(inner).map((line) => ` ${line}`));
 	const hint = state.editing ? keyHint("tui.input.submit", "submit") : keyHint("tui.select.confirm", "select");
 	const hintLine = ` ${hint}  ${keyHint("tui.select.cancel", state.editing ? "back" : "dismiss")}`;
 	lines.push("", truncateToWidth(hintLine, width, ""));

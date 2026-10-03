@@ -36,6 +36,7 @@ export interface ResumeSubagentInput {
 export interface AwaitSubagentsResult {
 	done: SubagentRecord[];
 	timedOut: boolean;
+	interrupted?: boolean;
 }
 
 /** Elements of Map<id, SubagentEntry>. */
@@ -48,6 +49,8 @@ interface SubagentEntry {
 	onProgress?: (record: SubagentRecord) => void;
 	/** Abort requested for the current run; re-applied on `agent_start` when it arrived before the run was active. */
 	abortRequested: boolean;
+	/** Removes the parent abort listener when a foreground wait is detached. */
+	detachAbort?: () => void;
 }
 
 /** Maximum characters retained for the latest streamed activity text. */
@@ -77,6 +80,7 @@ export class SubagentRegistry {
 	private readonly onChange: (record: SubagentRecord) => void;
 	private readonly entries = new Map<string, SubagentEntry>();
 	private readonly settled = new EventTarget();
+	private readonly waitInterrupted = new EventTarget();
 	/** Starts that passed the limit check but have no session yet; parallel subagent calls must not overshoot. */
 	private pendingStarts = 0;
 
@@ -159,11 +163,23 @@ export class SubagentRegistry {
 		const entry = this.entries.get(id);
 		if (!entry) throw new Error(`Unknown subagent ${id}.`);
 		entry.onProgress = onProgress;
+		let detached = false;
+		let removeInterruptListener = () => {};
+		const interrupted = new Promise<void>((resolve) => {
+			const listener = () => {
+				detached = entry.record.background && entry.record.status === "running";
+				resolve();
+			};
+			removeInterruptListener = () => this.waitInterrupted.removeEventListener("interrupted", listener);
+			this.waitInterrupted.addEventListener("interrupted", listener, { once: true });
+		});
 		try {
-			await entry.done;
+			await Promise.race([entry.done, interrupted]);
 		} finally {
+			removeInterruptListener();
 			entry.onProgress = undefined;
 		}
+		if (detached) return entry.record;
 		entry.record.observed = true;
 		return entry.record;
 	}
@@ -182,9 +198,15 @@ export class SubagentRegistry {
 		const finished = takeFinished(targets, explicit);
 		if (finished.length > 0) return { done: finished, timedOut: false };
 		const timeout = clampAwaitTimeout(timeoutMs, this.config);
-		if (timeout === 0 || !targets.some((record) => record.status === "running")) return { done: [], timedOut: false };
-		const done = await this.waitForSettle(() => takeFinished(targets, explicit), timeout, signal);
-		return { done, timedOut: done.length === 0 && !signal?.aborted };
+		if (timeout === 0 || !targets.some((record) => record.status === "running")) {
+			return { done: [], timedOut: false };
+		}
+		const result = await this.waitForSettle(() => takeFinished(targets, explicit), timeout, signal);
+		return {
+			done: result.done,
+			timedOut: result.done.length === 0 && !result.interrupted && !signal?.aborted,
+			...(result.interrupted ? { interrupted: true } : {}),
+		};
 	}
 
 	/**
@@ -207,6 +229,14 @@ export class SubagentRegistry {
 	/** One retained record. */
 	get(id: string): SubagentRecord | undefined {
 		return this.entries.get(id)?.record;
+	}
+
+	/** End active waits after a user message without aborting the child sessions. */
+	interruptWaits(): void {
+		for (const entry of this.entries.values()) {
+			if (entry.record.status === "running" && !entry.record.background) this.detachEntry(entry);
+		}
+		this.waitInterrupted.dispatchEvent(new Event("interrupted"));
 	}
 
 	/** Cancel a running child; its record stays (status aborted, observed so no notice is sent). */
@@ -257,7 +287,10 @@ export class SubagentRegistry {
 	private async run(entry: SubagentEntry, prompt: string, signal: AbortSignal | undefined): Promise<void> {
 		const onAbort = () => void requestAbort(entry);
 		if (signal?.aborted) onAbort();
-		else signal?.addEventListener("abort", onAbort, { once: true });
+		else if (signal) {
+			signal.addEventListener("abort", onAbort, { once: true });
+			entry.detachAbort = () => signal.removeEventListener("abort", onAbort);
+		}
 		try {
 			await entry.session.prompt(prompt, { expandPromptTemplates: false });
 			finishRecord(entry.record, entry.session, this.config.finalTextMaxBytes);
@@ -265,7 +298,8 @@ export class SubagentRegistry {
 			entry.record.status = "errored";
 			entry.record.error = error instanceof Error ? error.message : String(error);
 		} finally {
-			signal?.removeEventListener("abort", onAbort);
+			entry.detachAbort?.();
+			delete entry.detachAbort;
 			entry.record.endedAt = Date.now();
 			this.onChange(entry.record);
 			this.settled.dispatchEvent(new Event("settled"));
@@ -281,22 +315,25 @@ export class SubagentRegistry {
 		take: () => SubagentRecord[],
 		timeoutMs: number,
 		signal?: AbortSignal,
-	): Promise<SubagentRecord[]> {
-		if (signal?.aborted) return Promise.resolve([]);
+	): Promise<{ done: SubagentRecord[]; interrupted: boolean }> {
+		if (signal?.aborted) return Promise.resolve({ done: [], interrupted: false });
 		return new Promise((resolve) => {
-			const finish = (done: SubagentRecord[]) => {
+			const finish = (done: SubagentRecord[], interrupted: boolean) => {
 				clearTimeout(timer);
 				this.settled.removeEventListener("settled", listener);
+				this.waitInterrupted.removeEventListener("interrupted", onInterrupted);
 				signal?.removeEventListener("abort", onAbort);
-				resolve(done);
+				resolve({ done, interrupted });
 			};
 			const listener = () => {
 				const done = take();
-				if (done.length > 0) finish(done);
+				if (done.length > 0) finish(done, false);
 			};
-			const onAbort = () => finish([]);
-			const timer = setTimeout(onAbort, timeoutMs);
+			const onAbort = () => finish([], false);
+			const onInterrupted = () => finish([], true);
+			const timer = setTimeout(() => finish([], false), timeoutMs);
 			this.settled.addEventListener("settled", listener);
+			this.waitInterrupted.addEventListener("interrupted", onInterrupted, { once: true });
 			signal?.addEventListener("abort", onAbort, { once: true });
 		});
 	}
@@ -338,6 +375,16 @@ export class SubagentRegistry {
 			if (!victim) return;
 			this.dispose(victim.id);
 		}
+	}
+
+	/** Detach a foreground child without stopping its run. */
+	private detachEntry(entry: SubagentEntry): void {
+		if (entry.record.status !== "running" || entry.record.background) return;
+		entry.record.background = true;
+		entry.record.observed = false;
+		entry.detachAbort?.();
+		delete entry.detachAbort;
+		this.onChange(entry.record);
 	}
 
 	private dispose(id: string): void {

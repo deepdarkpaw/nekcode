@@ -2,16 +2,21 @@ import { relative } from "node:path";
 import { type Static, Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../../../core/extensions/types.ts";
 import { CREATE_PLAN } from "../prompts/tool-descriptions.ts";
-import { planName, planPath, writePlanFile } from "../services/plan-store.ts";
+import { planId, planName, planPath, writePlanFile } from "../services/plan-store.ts";
 import { CREATE_PLAN_TOOL_NAME } from "../state/session-state.ts";
 import type { Mode, PlanData, PlanRecord } from "../types.ts";
 import { createPlanRenderers, formatPlanDocument } from "../ui/renderers.ts";
 
 const createPlanSchema = Type.Object({
-	name: Type.Optional(
+	plan_id: Type.Optional(
 		Type.String({
 			description:
-				"A short 3-4 word name for the plan. IMPORTANT: Provide this only on the first create_plan call when no current plan exists. If a current plan already exists, omit this field entirely; do not use it to rename or create a separate plan.",
+				"Stable id of an existing plan to rewrite. Omit this field to always create a new plan. Rewriting keeps the existing path and name and increments its revision.",
+		}),
+	),
+	name: Type.Optional(
+		Type.String({
+			description: "A short 3-4 word name for a new plan. Omit when rewriting an existing plan with plan_id.",
 		}),
 	),
 	overview: Type.String({
@@ -32,10 +37,10 @@ const createPlanSchema = Type.Object({
 /** Validated create_plan arguments. */
 export type CreatePlanToolInput = Static<typeof createPlanSchema>;
 
-/** Access to the mode and current plan owned by the extension. */
+/** Access to plan mode and the saved plan snapshots of the branch. */
 export interface CreatePlanToolOptions {
 	getMode(): Mode;
-	getPlan(): PlanRecord | undefined;
+	getPlans(): readonly PlanData[];
 	/** Plan directory relative to cwd (config `plan.dir`). */
 	getPlanDir(): string;
 	/** Store the written plan as the current plan of the branch. */
@@ -44,16 +49,23 @@ export interface CreatePlanToolOptions {
 
 function nextPlanRecord(options: CreatePlanToolOptions, params: CreatePlanToolInput, cwd: string): PlanRecord {
 	const todos = (params.todos ?? []).map((todo) => ({ id: todo.id, content: todo.content }));
-	const current = options.getPlan();
-	if (current) return { ...current, revision: current.revision + 1, overview: params.overview, todos };
+	if (params.plan_id !== undefined) {
+		const existing = options.getPlans().find((snapshot) => planId(snapshot.plan) === params.plan_id);
+		if (!existing) throw new Error(`Unknown plan_id "${params.plan_id}". Choose an id from the saved plans list.`);
+		return {
+			...existing.plan,
+			revision: existing.plan.revision + 1,
+			overview: params.overview,
+			todos,
+		};
+	}
 	const name = planName(params.name, params.overview);
 	return { name, path: planPath(cwd, options.getPlanDir(), name), revision: 1, overview: params.overview, todos };
 }
 
 /**
- * Cursor CreatePlan as `create_plan` (description and schema from reference/cursor/cursor-tools-2026.json). The first
- * call creates `<plan.dir>/<slug>_<id>.plan.md`; later calls revise the same file and ignore `name`. The result ends
- * the run so the user can review the plan; details restores its metadata and immutable body snapshot.
+ * Create a new plan when `plan_id` is omitted, or rewrite the identified plan in place when it is supplied. The result
+ * ends the run so the user can review the saved revision; details restores its metadata and immutable body snapshot.
  */
 export function createCreatePlanToolDefinition(
 	options: CreatePlanToolOptions,

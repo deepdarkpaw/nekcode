@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { stringify } from "yaml";
 import type { PlanRecord, Todo } from "../types.ts";
 
@@ -26,6 +26,13 @@ export function planName(name: string | undefined, overview: string): string {
 	const trimmed = name?.trim();
 	if (trimmed) return trimmed;
 	return overview.trim().split(/\s+/).slice(0, NAME_FALLBACK_WORDS).join(" ");
+}
+
+/** Stable id derived from a plan filename, without the `.plan.md` suffix. */
+export function planId(plan: PlanRecord | string): string {
+	const path = typeof plan === "string" ? plan : plan.path;
+	const file = basename(path.replaceAll("\\", "/"));
+	return file.endsWith(PLAN_FILE_SUFFIX) ? file.slice(0, -PLAN_FILE_SUFFIX.length) : file;
 }
 
 /** Random 6-character hex id that keeps plan file names unique. */

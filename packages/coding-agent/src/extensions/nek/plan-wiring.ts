@@ -14,9 +14,11 @@ import { freshImplementMessage } from "./prompts/implement.ts";
 import { MODE_SELECTION } from "./prompts/mode-selection.ts";
 import { modeReminder } from "./prompts/plan-mode.ts";
 import { approvedPlanMessage, planWorkflowReminder } from "./prompts/plan-workflow.ts";
-import { planTodos, readPlanBody } from "./services/plan-store.ts";
+import { planId, planTodos, readPlanBody } from "./services/plan-store.ts";
 import { checkModeToolCall, modeToolNames } from "./state/mode-rules.ts";
 import {
+	activePlan,
+	findPlan,
 	NEK_MODE_ENTRY_TYPE,
 	NEK_PLAN_ENTRY_TYPE,
 	NEK_PLAN_SNAPSHOT_ENTRY_TYPE,
@@ -96,8 +98,13 @@ function registerPlanTools(wiring: PlanWiring): void {
 		}),
 	);
 	const setPlan = (plan: PlanRecord, markdown: string, ctx: ExtensionContext): void => {
-		nek.session.plan = plan;
-		nek.session.planMarkdown = markdown;
+		const snapshot = { plan: { ...plan, todos: plan.todos.map((todo) => ({ ...todo })) }, markdown };
+		const index = nek.session.plans.findIndex((item) => item.plan.path === plan.path);
+		nek.session.plans =
+			index < 0
+				? [...nek.session.plans, snapshot]
+				: nek.session.plans.map((item, itemIndex) => (itemIndex === index ? snapshot : item));
+		nek.session.activePlan = plan.path;
 		nek.session.planStatus = "ready";
 		delete nek.session.execution;
 		wiring.planCreated = { path: plan.path, revision: plan.revision };
@@ -107,7 +114,7 @@ function registerPlanTools(wiring: PlanWiring): void {
 	pi.registerTool(
 		createCreatePlanToolDefinition({
 			getMode: () => nek.session.mode,
-			getPlan: () => nek.session.plan,
+			getPlans: () => nek.session.plans,
 			getPlanDir: () => nek.config.plan.dir,
 			setPlan,
 		}),
@@ -115,8 +122,11 @@ function registerPlanTools(wiring: PlanWiring): void {
 	pi.registerTool(
 		createUpdatePlanToolDefinition({
 			getMode: () => nek.session.mode,
-			getPlan: () => nek.session.plan,
-			getPlanMarkdown: () => nek.session.planMarkdown,
+			getPlans: () => nek.session.plans,
+			getActivePlanId: () => {
+				const selected = activePlan(nek.session);
+				return selected ? planId(selected.plan) : undefined;
+			},
 			setPlan,
 		}),
 	);
@@ -126,8 +136,12 @@ function registerPlanTools(wiring: PlanWiring): void {
 function registerPlanCommands(wiring: PlanWiring): void {
 	const { pi } = wiring;
 	pi.registerCommand("plan", {
-		description: "Enter Plan, show the current plan, or submit a planning request",
+		description: "Enter Plan or submit a planning request",
 		handler: (args, ctx) => planCommand(wiring, args, ctx),
+	});
+	pi.registerCommand("plans", {
+		description: "Select a saved plan and preview it",
+		handler: (_args, ctx) => plansCommand(wiring, ctx),
 	});
 	pi.registerCommand("agent", {
 		description: "Exit Plan without implementing the plan",
@@ -137,7 +151,7 @@ function registerPlanCommands(wiring: PlanWiring): void {
 		},
 	});
 	pi.registerCommand(NEK_BUILD_COMMAND, {
-		description: "Implement the reviewed plan (--fresh: in a new session)",
+		description: "Implement a saved plan ([plan_id] --fresh: in a new session)",
 		handler: (args, ctx) => buildCommand(wiring, args, ctx),
 	});
 	pi.registerFlag(PLAN_FLAG, { description: "Start in plan mode", type: "boolean" });
@@ -193,6 +207,7 @@ function persistLifecycle(wiring: PlanWiring, ctx: ExtensionContext): void {
 	const state = wiring.nek.session;
 	wiring.pi.appendEntry<PlanLifecycleData>(NEK_PLAN_ENTRY_TYPE, {
 		status: state.planStatus ?? "draft",
+		...(state.activePlan ? { active: state.activePlan } : {}),
 		...(state.execution ? { execution: { ...state.execution } } : {}),
 	});
 	syncPlanUi(ctx, state, wiring.nek.config.plan.shortcut);
@@ -222,7 +237,7 @@ function onPlanInput(wiring: PlanWiring, event: InputEvent, ctx: ExtensionContex
 	const pending = wiring.pendingImplementation;
 	if (pending && event.source === "extension" && event.text === pending.text) {
 		delete wiring.pendingImplementation;
-		if (pending.cancelled || !samePlanRevision(pending.reference, wiring.nek.session.plan))
+		if (pending.cancelled || !samePlanRevision(pending.reference, activePlan(wiring.nek.session)?.plan))
 			return { action: "handled" };
 		return undefined;
 	}
@@ -243,22 +258,54 @@ async function planCommand(wiring: PlanWiring, args: string, ctx: ExtensionComma
 	const text = args.trim();
 	changeUserMode(wiring, ctx, "plan");
 	await ctx.waitForIdle();
-	if (text) {
-		markDraft(wiring, ctx);
-		wiring.pi.sendUserMessage(text);
+	if (!text) return;
+	markDraft(wiring, ctx);
+	wiring.pi.sendUserMessage(text);
+}
+
+async function plansCommand(wiring: PlanWiring, ctx: ExtensionCommandContext): Promise<void> {
+	const snapshots = wiring.nek.session.plans;
+	if (snapshots.length === 0) {
+		ctx.ui.notify("No saved plans on this branch.", "warning");
 		return;
 	}
-	const state = wiring.nek.session;
-	if (!state.plan || state.planMarkdown === undefined) return;
+	if (!ctx.hasUI) {
+		ctx.ui.notify("The /plans picker requires an interactive UI.", "warning");
+		return;
+	}
+	const labels = snapshots.map((snapshot) => planLabel(wiring, snapshot));
+	const selectedLabel = await ctx.ui.select("Select a plan", labels);
+	const selected = snapshots[labels.indexOf(selectedLabel ?? "")];
+	if (!selected) return;
+	activatePlan(wiring, ctx, selected);
 	wiring.pi.sendMessage<PlanData>(
 		{
 			customType: PLAN_PREVIEW_TYPE,
-			content: state.planMarkdown,
+			content: selected.markdown,
 			display: true,
-			details: { plan: state.plan, markdown: state.planMarkdown },
+			details: selected,
 		},
 		{ triggerTurn: false },
 	);
+}
+
+function planLabel(wiring: PlanWiring, snapshot: PlanData): string {
+	const active = snapshot.plan.path === wiring.nek.session.activePlan ? " active" : "";
+	return `${planId(snapshot.plan)} | ${snapshot.plan.name} | ${snapshot.plan.path} | revision ${snapshot.plan.revision}${active}`;
+}
+
+function activatePlan(wiring: PlanWiring, ctx: ExtensionContext, snapshot: PlanData): void {
+	const state = wiring.nek.session;
+	if (state.activePlan === snapshot.plan.path && activePlan(state)) return;
+	wiring.epoch++;
+	if (wiring.pendingImplementation) wiring.pendingImplementation.cancelled = true;
+	if (state.execution?.path !== snapshot.plan.path) {
+		if (state.execution?.status === "active") interruptExecution(wiring, ctx);
+		delete state.execution;
+	}
+	state.activePlan = snapshot.plan.path;
+	state.planStatus = "ready";
+	persistLifecycle(wiring, ctx);
 }
 
 async function onPlanSettled(wiring: PlanWiring, event: AgentSettledEvent, ctx: ExtensionContext): Promise<void> {
@@ -279,10 +326,11 @@ async function offerPlanApproval(wiring: PlanWiring, ctx: ExtensionContext): Pro
 	const created = wiring.planCreated;
 	delete wiring.planCreated;
 	const state = wiring.nek.session;
-	const plan = state.plan;
+	const selected = activePlan(state);
+	const plan = selected?.plan;
 	if (
 		!plan ||
-		state.planMarkdown === undefined ||
+		selected?.markdown === undefined ||
 		!samePlanRevision(created, plan) ||
 		state.planStatus !== "ready" ||
 		state.mode !== "plan" ||
@@ -291,7 +339,7 @@ async function offerPlanApproval(wiring: PlanWiring, ctx: ExtensionContext): Pro
 		return;
 	if (ctx.ui.getEditorText().trim() || ctx.hasPendingMessages()) return;
 	const epoch = wiring.epoch;
-	const choice = await showPlanApproval(ctx, { plan, markdown: state.planMarkdown });
+	const choice = await showPlanApproval(ctx, selected);
 	if (
 		epoch !== wiring.epoch ||
 		state !== wiring.nek.session ||
@@ -302,7 +350,7 @@ async function offerPlanApproval(wiring: PlanWiring, ctx: ExtensionContext): Pro
 		return;
 	if (choice === "implement") implementPlan(wiring, ctx, plan);
 	else if (choice === "fresh") {
-		const text = `/${NEK_BUILD_COMMAND} --fresh`;
+		const text = `/${NEK_BUILD_COMMAND} ${planId(plan)} --fresh`;
 		wiring.pendingImplementation = { text, reference: plan, cancelled: false };
 		wiring.pi.sendUserMessage(text, { expandPromptTemplates: true });
 	} else if (choice === "stay") markDraft(wiring, ctx);
@@ -310,14 +358,13 @@ async function offerPlanApproval(wiring: PlanWiring, ctx: ExtensionContext): Pro
 }
 
 function reviewedMarkdown(wiring: PlanWiring, plan: PlanRecord): string {
-	const state = wiring.nek.session;
-	if (state.planStatus !== "ready" || !samePlanRevision(state.plan, plan) || state.planMarkdown === undefined) {
+	const selected = activePlan(wiring.nek.session);
+	if (wiring.nek.session.planStatus !== "ready" || !selected || !samePlanRevision(selected.plan, plan)) {
 		throw new Error("This plan is being revised. Save and review the updated plan before implementation.");
 	}
-	if (readPlanBody(plan) !== state.planMarkdown.trim()) {
+	if (readPlanBody(plan) !== selected.markdown.trim())
 		throw new Error("The plan file changed after review. Revise and review it again before implementation.");
-	}
-	return state.planMarkdown;
+	return selected.markdown;
 }
 
 /** Approve only this snapshot; unrelated subsequent user input cancels any deferred implementation. */
@@ -342,34 +389,62 @@ export function implementPlan(wiring: PlanWiring, ctx: ExtensionContext, plan: P
 	pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 }
 
+function buildArguments(args: string): { planId?: string; fresh: boolean } | undefined {
+	const tokens = args.trim() ? args.trim().split(/\s+/) : [];
+	const fresh = tokens.includes("--fresh");
+	const ids = tokens.filter((token) => token !== "--fresh");
+	return ids.length <= 1 ? { planId: ids[0], fresh } : undefined;
+}
+
 async function buildCommand(wiring: PlanWiring, args: string, ctx: ExtensionCommandContext): Promise<void> {
 	const pending = wiring.pendingImplementation;
-	if (pending?.text === `/${NEK_BUILD_COMMAND} --fresh`) {
+	const pendingArgs = pending?.text.startsWith(`/${NEK_BUILD_COMMAND}`)
+		? pending.text.slice(NEK_BUILD_COMMAND.length + 1).trim()
+		: undefined;
+	if (pendingArgs !== undefined && pendingArgs === args.trim()) {
 		delete wiring.pendingImplementation;
-		if (pending.cancelled || !samePlanRevision(pending.reference, wiring.nek.session.plan)) return;
+		if (pending?.cancelled) return;
 	}
-	const plan = wiring.nek.session.plan;
-	if (!plan) {
-		ctx.ui.notify("No plan on this branch. Create one in Plan first.", "warning");
+	const parsed = buildArguments(args);
+	if (!parsed) {
+		ctx.ui.notify("Usage: /nek-build [plan_id] [--fresh]", "warning");
 		return;
 	}
+	const selected = parsed.planId ? findPlan(wiring.nek.session, parsed.planId) : activePlan(wiring.nek.session);
+	if (!selected) {
+		ctx.ui.notify(
+			parsed.planId
+				? `Unknown plan_id "${parsed.planId}". Choose an id from /plans.`
+				: "No active plan. Select one with /plans or create one in Plan mode.",
+			"warning",
+		);
+		return;
+	}
+	if (
+		pending &&
+		pendingArgs === args.trim() &&
+		(pending.cancelled || !samePlanRevision(pending.reference, selected.plan))
+	)
+		return;
+	if (wiring.nek.session.activePlan !== selected.plan.path) activatePlan(wiring, ctx, selected);
 	if (!ctx.isIdle()) {
 		ctx.ui.notify("Interrupt the current run before starting plan implementation.", "warning");
 		return;
 	}
-	if (args.trim() !== "--fresh") return implementPlan(wiring, ctx, plan);
-	const markdown = reviewedMarkdown(wiring, plan);
+	if (!parsed.fresh) return implementPlan(wiring, ctx, selected.plan);
+	const markdown = reviewedMarkdown(wiring, selected.plan);
 	const message = freshImplementMessage(markdown);
-	const owner = { path: plan.path, revision: plan.revision };
-	const todos = planTodos(plan);
+	const owner = { path: selected.plan.path, revision: selected.plan.revision };
+	const todos = planTodos(selected.plan);
 	await ctx.newSession({
 		parentSession: ctx.sessionManager.getSessionFile(),
 		setup: async (manager) => {
 			manager.appendCustomEntry(NEK_MODE_ENTRY_TYPE, { mode: "agent" } satisfies ModeEntryData);
-			manager.appendCustomEntry(NEK_PLAN_SNAPSHOT_ENTRY_TYPE, { plan, markdown } satisfies PlanData);
+			manager.appendCustomEntry(NEK_PLAN_SNAPSHOT_ENTRY_TYPE, { plan: selected.plan, markdown } satisfies PlanData);
 			manager.appendCustomEntry(NEK_TODOS_ENTRY_TYPE, { todos, owner } satisfies TodoListData);
 			manager.appendCustomEntry(NEK_PLAN_ENTRY_TYPE, {
 				status: "ready",
+				active: owner.path,
 				execution: { ...owner, status: "active" },
 			} satisfies PlanLifecycleData);
 		},

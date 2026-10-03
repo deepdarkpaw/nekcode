@@ -1,4 +1,11 @@
-import { type Component, type TUI, TuiAltScreen, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	setKeybindings,
+	type TUI,
+	TuiAltScreen,
+	TuiMainScreen,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type { ExtensionContext, ExtensionUIContext, ToolRenderContext } from "../src/core/extensions/types.ts";
@@ -75,7 +82,10 @@ function captureUi(tui: TUI, keybindings: KeybindingsManager) {
 	return { ctx, opened };
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+	vi.useRealTimers();
+	setKeybindings(new KeybindingsManager());
+});
 
 describe("Plan documents and mode presentation", () => {
 	it.each(["dark", "light"])(
@@ -297,5 +307,90 @@ describe("Plan documents and mode presentation", () => {
 		expect(stripAnsi(view.render(40).join("\n"))).toContain("update_plan");
 		view.handleInput?.("\x1b");
 		expect(await result).toBeUndefined();
+	});
+
+	it("renders Other editing in place, wraps CJK text, and preserves it across Escape", async () => {
+		initTheme("dark");
+		const tui = new TuiMainScreen(new VirtualTerminal());
+		const ui = captureUi(tui, new KeybindingsManager());
+		const result = askQuestion(
+			ui.ctx,
+			{
+				id: "free_text",
+				prompt: "Describe the change.",
+				options: [{ id: "skip", label: "Skip it" }],
+			},
+			"Question",
+		);
+		const view = await ui.opened.promise;
+		view.handleInput?.("\x1b[B");
+		view.handleInput?.("\r");
+		for (const character of "你好世界 and a narrow wrapped answer") view.handleInput?.(character);
+
+		for (const width of [8, 12, 20]) {
+			const lines = view.render(width);
+			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+		}
+		const editingLines = view.render(20).map((line) => stripAnsi(line));
+		const textLineIndex = editingLines.findIndex((line) => line.includes("你好"));
+		expect(textLineIndex).toBeGreaterThan(0);
+		expect(editingLines[textLineIndex - 1]).toContain("Skip it");
+		const continuation = editingLines.find((line, index) => index > textLineIndex && line.includes("wrapped"));
+		expect(continuation?.startsWith("  ")).toBe(true);
+
+		view.handleInput?.("\x1b");
+		const afterEscape = stripAnsi(view.render(20).join("\n"));
+		expect(afterEscape).toContain("Other... 你好世");
+		view.handleInput?.("\r");
+		view.handleInput?.("\r");
+		expect(await result).toEqual({
+			questionId: "free_text",
+			optionIds: [],
+			labels: [],
+			other: "你好世界 and a narrow wrapped answer",
+		});
+	});
+
+	it("uses the configured newline in the in-place Other editor and keeps multi-select", async () => {
+		initTheme("dark");
+		const keybindings = new KeybindingsManager({ "tui.input.newLine": "ctrl+n" });
+		setKeybindings(keybindings);
+		const tui = new TuiMainScreen(new VirtualTerminal());
+		const ui = captureUi(tui, keybindings);
+		const result = askQuestion(
+			ui.ctx,
+			{
+				id: "multi",
+				prompt: "Choose changes.",
+				allow_multiple: true,
+				options: [
+					{ id: "one", label: "One" },
+					{ id: "two", label: "Two" },
+				],
+			},
+			undefined,
+		);
+		const view = await ui.opened.promise;
+		view.handleInput?.("\r");
+		view.handleInput?.("\x1b[B");
+		view.handleInput?.("\x1b[B");
+		view.handleInput?.("\r");
+		view.handleInput?.("o");
+		view.handleInput?.("n");
+		view.handleInput?.("e");
+		view.handleInput?.("\x0e");
+		view.handleInput?.("t");
+		view.handleInput?.("w");
+		view.handleInput?.("o");
+		view.handleInput?.("\r");
+		view.handleInput?.("\x1b[B");
+		view.handleInput?.("\r");
+
+		expect(await result).toEqual({
+			questionId: "multi",
+			optionIds: ["one"],
+			labels: ["One"],
+			other: "one\ntwo",
+		});
 	});
 });

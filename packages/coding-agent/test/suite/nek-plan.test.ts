@@ -12,7 +12,8 @@ import { SessionManager } from "../../src/core/session-manager.ts";
 import { DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/config.ts";
 import { createNekExtension } from "../../src/extensions/nek/index.ts";
 import { IMPLEMENT_FRESH_PREFIX } from "../../src/extensions/nek/prompts/implement.ts";
-import { replayBranch } from "../../src/extensions/nek/state/session-state.ts";
+import { planId } from "../../src/extensions/nek/services/plan-store.ts";
+import { activePlan, replayBranch } from "../../src/extensions/nek/state/session-state.ts";
 import type { PlanApprovalChoice } from "../../src/extensions/nek/ui/plan-approval.ts";
 import { initTheme, type Theme, theme } from "../../src/modes/interactive/theme/theme.ts";
 import { createHarness, type Harness } from "./harness.ts";
@@ -23,11 +24,12 @@ interface UiRecord {
 	approvalShown: number;
 	confirmResult: boolean;
 	onApproval?: () => Promise<PlanApprovalChoice | undefined>;
+	selectResult?: string;
 }
 
 function createUiContext(record: UiRecord): ExtensionUIContext {
 	return {
-		select: async () => undefined,
+		select: async (_title, options) => record.selectResult ?? options[0],
 		confirm: async () => record.confirmResult,
 		input: async () => undefined,
 		notify: () => {},
@@ -103,6 +105,14 @@ function currentState(harness: Harness) {
 	return replayBranch(harness.sessionManager.getBranch());
 }
 
+function currentSnapshot(harness: Harness) {
+	return activePlan(currentState(harness));
+}
+
+function currentPlan(harness: Harness) {
+	return currentSnapshot(harness)?.plan;
+}
+
 describe("nek plan mode", () => {
 	const harnesses: Harness[] = [];
 
@@ -172,24 +182,61 @@ describe("nek plan mode", () => {
 
 		expect(harness.faux.state.callCount).toBe(1);
 		expect(harness.getPendingResponseCount()).toBe(1);
-		const plan = currentState(harness).plan;
+		const plan = currentPlan(harness);
 		if (!plan) throw new Error("expected a plan after create_plan");
 		expect(plan.path).toContain(join(CONFIG_DIR_NAME, "plans"));
 		expect(plan.path).toMatch(/[\\/]add-auth_[0-9a-f]{6}\.plan\.md$/);
 		expect(readFileSync(plan.path, "utf-8")).toContain("# Add auth\n\n- Add the schema");
 
 		harness.setResponses([
-			createPlanCall({ name: "Other name", overview: "Revised.", plan: "# Add auth v2", todos: [] }),
+			createPlanCall({
+				plan_id: planId(plan),
+				name: "Other name",
+				overview: "Revised.",
+				plan: "# Add auth v2",
+				todos: [],
+			}),
 		]);
 		await harness.session.prompt("revise");
 
-		const revised = currentState(harness).plan;
+		const revised = currentPlan(harness);
 		expect(revised).toEqual({ ...plan, revision: 2, overview: "Revised.", todos: [] });
-		expect(currentState(harness).planMarkdown).toBe("# Add auth v2");
+		expect(currentSnapshot(harness)?.markdown).toBe("# Add auth v2");
 		expect(readFileSync(plan.path, "utf-8")).toContain("# Add auth v2");
 	});
 
-	it("update_plan submits an edited plan body as a new revision and invalidates the old review", async () => {
+	it("omitting plan_id always creates a separate saved plan", async () => {
+		const harness = await createNekHarness(undefined);
+		await harness.session.prompt("/plan");
+		harness.setResponses([createPlanCall({ name: "Add auth" })]);
+		await harness.session.prompt("plan auth");
+		harness.setResponses([createPlanCall({ name: "Cache", overview: "Add caching.", plan: "# Cache" })]);
+		await harness.session.prompt("plan cache");
+
+		const state = currentState(harness);
+		expect(state.plans).toHaveLength(2);
+		expect(state.plans.map((snapshot) => snapshot.plan.name)).toEqual(["Add auth", "Cache"]);
+		expect(activePlan(state)?.plan.name).toBe("Cache");
+	});
+
+	it("reports an explicit unknown plan_id from plan tools", async () => {
+		const harness = await createNekHarness(undefined);
+		await harness.session.prompt("/plan");
+		harness.setResponses([
+			toolCallMessage("create_plan", {
+				plan_id: "missing",
+				overview: "Unknown.",
+				plan: "# Unknown",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("rewrite missing");
+		const [result] = toolResults(harness, "create_plan");
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result.content)).toContain('Unknown plan_id \\"missing\\"');
+	});
+
+	it("update_plan uses the active plan by default", async () => {
 		const record = createRecord();
 		const harness = await createNekHarness(record);
 		const opened = Promise.withResolvers<void>();
@@ -203,7 +250,7 @@ describe("nek plan mode", () => {
 		harness.setResponses([createPlanCall({ name: "Add auth" })]);
 		const originalPrompt = harness.session.prompt("plan auth");
 		await opened.promise;
-		const firstPlan = currentState(harness).plan;
+		const firstPlan = currentPlan(harness);
 		if (!firstPlan) throw new Error("Expected saved plan");
 
 		harness.setResponses([
@@ -228,7 +275,8 @@ describe("nek plan mode", () => {
 		expect(currentState(harness)).toMatchObject({
 			mode: "plan",
 			planStatus: "ready",
-			plan: { path: firstPlan.path, revision: 2 },
+			activePlan: firstPlan.path,
+			plans: [{ plan: { path: firstPlan.path, revision: 2 } }],
 		});
 		expect(currentState(harness).execution).toBeUndefined();
 		expect(record.approvalShown).toBe(2);
@@ -240,7 +288,7 @@ describe("nek plan mode", () => {
 		await harness.session.prompt("/plan");
 		harness.setResponses([createPlanCall({ name: "Add auth" })]);
 		await harness.session.prompt("plan auth");
-		const firstPlan = currentState(harness).plan;
+		const firstPlan = currentPlan(harness);
 		if (!firstPlan) throw new Error("Expected saved plan");
 
 		harness.setResponses([
@@ -257,7 +305,7 @@ describe("nek plan mode", () => {
 			diff: "",
 		});
 		expect(JSON.stringify(updated.content)).toContain("No changes to the plan.");
-		expect(currentState(harness).plan).toMatchObject({ path: firstPlan.path, revision: 1 });
+		expect(currentPlan(harness)).toMatchObject({ path: firstPlan.path, revision: 1 });
 	});
 
 	it("/plan <text> enters plan mode and submits the text", async () => {
@@ -411,9 +459,18 @@ describe("nek plan mode", () => {
 		await harness.session.prompt("/plan");
 		harness.setResponses([createPlanCall({ name: "Add auth" })]);
 		await harness.session.prompt("design auth");
+		const savedPlan = currentPlan(harness);
+		if (!savedPlan) throw new Error("Expected saved plan");
+		record.selectResult = `${planId(savedPlan)} | ${savedPlan.name} | ${savedPlan.path} | revision ${savedPlan.revision} active`;
 		await harness.session.prompt("/plan");
 		expect(harness.faux.state.callCount).toBe(1);
 		expect(currentState(harness).mode).toBe("plan");
+		expect(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "nek.plan_preview",
+			),
+		).toHaveLength(0);
+		await harness.session.prompt("/plans");
 		expect(harness.session.messages).toContainEqual(
 			expect.objectContaining({ role: "custom", customType: "nek.plan_preview" }),
 		);
@@ -425,7 +482,7 @@ describe("nek plan mode", () => {
 		await harness.session.prompt("/plan");
 		harness.setResponses([createPlanCall({ name: "Add auth" })]);
 		await harness.session.prompt("design auth");
-		const original = currentState(harness).plan;
+		const original = currentPlan(harness);
 		await harness.session.prompt("/agent");
 		await harness.session.prompt("/plan");
 		expect(currentState(harness).planStatus).toBe("draft");
@@ -463,9 +520,10 @@ describe("nek plan mode", () => {
 		expect(currentState(harness)).toMatchObject({
 			mode: "plan",
 			planStatus: "ready",
-			planMarkdown: "# Cache\n\nUse Redis.",
-			plan: { path: original?.path, revision: 2 },
+			activePlan: currentPlan(harness)?.path,
+			plans: expect.arrayContaining([expect.objectContaining({ markdown: "# Cache\n\nUse Redis." })]),
 		});
+		expect(currentPlan(harness)?.path).not.toBe(original?.path);
 	});
 
 	it.each(["implement", "fresh"] as const)(
@@ -550,15 +608,17 @@ describe("nek plan mode", () => {
 		await harness.session.prompt("/plan");
 		harness.setResponses([createPlanCall({ name: "Add auth" })]);
 		await harness.session.prompt("plan auth");
+		const saved = currentPlan(harness);
+		if (!saved) throw new Error("Expected saved plan");
 
-		await harness.session.prompt("/nek-build --fresh");
+		await harness.session.prompt(`/nek-build ${planId(saved)} --fresh`);
 
 		const state = replayBranch(created.getBranch());
 		expect(state.mode).toBe("agent");
 		expect(state.todos.map((todo) => todo.status)).toEqual(["in_progress", "pending"]);
-		expect(state.plan).toMatchObject({ name: "Add auth", revision: 1 });
-		expect(state.planMarkdown).toBe("# Add auth\n\n- Add the schema");
-		expect(state.execution).toMatchObject({ path: state.plan?.path, revision: 1, status: "active" });
+		expect(activePlan(state)?.plan).toMatchObject({ name: "Add auth", revision: 1 });
+		expect(activePlan(state)?.markdown).toBe("# Add auth\n\n- Add the schema");
+		expect(state.execution).toMatchObject({ path: activePlan(state)?.plan.path, revision: 1, status: "active" });
 		expect(sent).toEqual([`${IMPLEMENT_FRESH_PREFIX}\n\n# Add auth\n\n- Add the schema`]);
 	});
 
@@ -569,7 +629,7 @@ describe("nek plan mode", () => {
 		await harness.session.prompt("/plan");
 		harness.setResponses([createPlanCall({ name: "Add auth" })]);
 		await harness.session.prompt("plan auth");
-		const plan = currentState(harness).plan;
+		const plan = currentPlan(harness);
 		if (!plan) throw new Error("Expected saved plan");
 		writeFileSync(plan.path, "# Changed plan\n\nA different task.");
 		await harness.session.prompt("/nek-build");
@@ -606,7 +666,7 @@ describe("nek plan mode", () => {
 			}
 			expect(currentState(harness).execution?.status).toBe("interrupted");
 			expect(currentState(harness).todos.map((todo) => todo.status)).toEqual(["pending", "pending"]);
-			expect(currentState(harness).planMarkdown).toBe("# Add auth\n\n- Add the schema");
+			expect(currentSnapshot(harness)?.markdown).toBe("# Add auth\n\n- Add the schema");
 			harness.setResponses([fauxAssistantMessage("answer to the new question")]);
 			await harness.session.prompt("Explain caching. Do not resume auth.");
 			expect(harness.faux.state.callCount).toBe(4);

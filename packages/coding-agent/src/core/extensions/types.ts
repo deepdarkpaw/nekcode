@@ -977,6 +977,13 @@ export interface InputEvent {
 	streamingBehavior?: "steer" | "followUp";
 }
 
+/** Fired after a streaming user message is placed in the steer/follow-up queue. */
+export interface InputQueuedEvent {
+	type: "input_queued";
+	behavior: "steer" | "followUp";
+	source: InputSource;
+}
+
 /** Result from input event handler */
 export type InputEventResult =
 	| { action: "continue" }
@@ -1214,6 +1221,7 @@ export type ExtensionEvent =
 	| ThinkingLevelSelectEvent
 	| UserBashEvent
 	| InputEvent
+	| InputQueuedEvent
 	| ToolCallEvent
 	| ToolResultEvent;
 
@@ -1436,6 +1444,7 @@ export interface ExtensionAPI {
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): () => void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): () => void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): () => void;
+	on(event: "input_queued", handler: ExtensionHandler<InputQueuedEvent>): () => void;
 
 	// =========================================================================
 	// Tool Registration

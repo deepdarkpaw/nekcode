@@ -83,6 +83,7 @@ import {
 	type ExtensionMode,
 	ExtensionRunner,
 	type ExtensionUIContext,
+	type InputQueuedEvent,
 	type InputSource,
 	type MessageEndEvent,
 	type MessageStartEvent,
@@ -1704,10 +1705,11 @@ export class AgentSession {
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
+			const source = options.source ?? "interactive";
 			if (options.streamingBehavior === "followUp") {
-				await this._queueFollowUp(expandedText, currentImages);
+				await this._queueFollowUp(expandedText, currentImages, source);
 			} else {
-				await this._queueSteer(expandedText, currentImages);
+				await this._queueSteer(expandedText, currentImages, source);
 			}
 			preflightResult?.("queued");
 			return;
@@ -1891,9 +1893,9 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		if (behavior === "steer") {
-			await this._queueSteer(expandedText, processedInput.images);
+			await this._queueSteer(expandedText, processedInput.images, source);
 		} else {
-			await this._queueFollowUp(expandedText, processedInput.images);
+			await this._queueFollowUp(expandedText, processedInput.images, source);
 		}
 		return "queued";
 	}
@@ -1934,9 +1936,10 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueSteer(text: string, images: ImageContent[] | undefined, source: InputSource): Promise<void> {
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
+		await this._extensionRunner.emit({ type: "input_queued", behavior: "steer", source } satisfies InputQueuedEvent);
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
@@ -1951,9 +1954,14 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueFollowUp(text: string, images: ImageContent[] | undefined, source: InputSource): Promise<void> {
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
+		await this._extensionRunner.emit({
+			type: "input_queued",
+			behavior: "followUp",
+			source,
+		} satisfies InputQueuedEvent);
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);

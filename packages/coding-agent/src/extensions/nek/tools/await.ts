@@ -38,7 +38,9 @@ export interface AwaitToolOptions {
 function runningLines(records: readonly SubagentRecord[], now: number): string[] {
 	return records
 		.filter((record) => record.status === "running")
-		.map((record) => `${record.id} running (${Math.round((now - record.startedAt) / 1000)}s)`);
+		.map(
+			(record) => `${record.description} (${record.id}) running (${Math.round((now - record.startedAt) / 1000)}s)`,
+		);
 }
 
 /** Result text: every finished subagent's result, then the running ones, then the timeout note. */
@@ -71,14 +73,25 @@ export function createAwaitToolDefinition(
 			if (!subagent_id && !pending) {
 				return {
 					content: [{ type: "text", text: "No running subagents." }],
-					details: { subagents: [], timedOut: false },
+					details: { subagents: [], running: [], timedOut: false, interrupted: false },
 				};
 			}
-			const { done, timedOut } = await registry.await(scope, block_until_ms, signal);
+			const { done, timedOut, interrupted } = await registry.await(scope, block_until_ms, signal);
 			const pool = subagent_id ? registry.list().filter((record) => record.id === subagent_id) : registry.list();
-			const running = runningLines(pool, Date.now());
-			const text = awaitText(done, running, timedOut) || "No subagent has finished yet.";
-			return { content: [{ type: "text", text }], details: { subagents: done.map(snapshotSubagent), timedOut } };
+			const runningRecords = pool.filter((record) => record.status === "running");
+			const running = runningLines(runningRecords, Date.now());
+			const text = interrupted
+				? `${awaitText(done, running, false)}${running.length > 0 ? "\n\n" : ""}Wait ended because the user sent a new message. Subagents keep running; await again after responding if still needed.`
+				: awaitText(done, running, timedOut) || "No subagent has finished yet.";
+			return {
+				content: [{ type: "text", text }],
+				details: {
+					subagents: done.map(snapshotSubagent),
+					running: runningRecords.map(snapshotSubagent),
+					timedOut,
+					interrupted,
+				},
+			};
 		},
 		...awaitRenderers(options.getRegistry),
 	};

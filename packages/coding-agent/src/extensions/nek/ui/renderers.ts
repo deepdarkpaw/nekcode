@@ -18,6 +18,29 @@ import { renderTodoLines } from "./todo-widget.ts";
 const UPDATE_PLAN_PREVIEW_LINES = 12;
 
 type TodoWriteRenderers = Pick<ToolDefinition<TSchema, TodoListData | undefined>, "renderCall" | "renderResult">;
+type SwitchModeRenderers = Pick<ToolDefinition<TSchema, undefined>, "renderCall" | "renderResult">;
+
+function switchTarget(args: unknown): string | undefined {
+	if (typeof args !== "object" || args === null || !("target_mode_id" in args)) return undefined;
+	const target = (args as { target_mode_id?: unknown }).target_mode_id;
+	return target === "plan" || target === "agent" ? target : undefined;
+}
+
+/** Compact switch_mode display; the full mode reminder remains in the tool result sent to the model. */
+export const switchModeRenderers: SwitchModeRenderers = {
+	renderCall(args, theme) {
+		const target = switchTarget(args);
+		return new LinesComponent([
+			theme.fg("toolTitle", theme.bold("switch_mode")) + (target ? theme.fg("accent", ` → ${target}`) : ""),
+		]);
+	},
+	renderResult(result, _options, theme, context) {
+		const output = getTextOutput(result, context.showImages).trim();
+		if (context.isError) return new LinesComponent([theme.fg("error", output)]);
+		const compact = output.split("\n\n", 1)[0] || "Mode switch complete.";
+		return new LinesComponent([theme.fg("toolOutput", compact)]);
+	},
+};
 
 function formatTodoWriteCall(args: unknown, theme: Theme): string {
 	const input = typeof args === "object" && args !== null ? (args as { merge?: unknown; todos?: unknown }) : {};

@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { type AutocompleteProvider, CombinedAutocompleteProvider } from "../src/autocomplete.ts";
 import { Editor, wordWrapLine } from "../src/components/editor.ts";
-import type { TUI } from "../src/tui.ts";
+import { CURSOR_MARKER, type TUI, type TuiMouseEvent } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { visibleWidth } from "../src/utils.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
@@ -15,6 +15,23 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 /** Create a TUI with a virtual terminal for testing */
 function createTestTUI(cols = 80, rows = 24): TUI {
 	return new TuiMainScreen(new VirtualTerminal(cols, rows));
+}
+
+function mouseEvent(overrides: Partial<TuiMouseEvent> = {}): TuiMouseEvent {
+	return {
+		type: "click",
+		button: "left",
+		x: 0,
+		y: 0,
+		screenX: 0,
+		screenY: 0,
+		width: 80,
+		height: 24,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		...overrides,
+	};
 }
 
 /** Standard applyCompletion that replaces prefix with item.value */
@@ -700,6 +717,64 @@ describe("Editor component", () => {
 
 			editor.handleInput("\x1b[1;5C"); // Ctrl+Right
 			assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 15 }); // end
+		});
+	});
+
+	describe("Borderless layout", () => {
+		it("removes border rows and maps mouse clicks to the first and last content rows", () => {
+			const width = 12;
+			const editor = new Editor(createTestTUI(width), defaultEditorTheme, { borders: false });
+			editor.focused = true;
+			editor.setText("first\nlast");
+
+			const lines = editor.render(width);
+			assert.strictEqual(lines.length, 2);
+			assert.ok(
+				lines.some((line) => line.includes(CURSOR_MARKER)),
+				"focused borderless editor must expose the IME cursor marker",
+			);
+			assert.ok(lines.every((line) => !stripVTControlCharacters(line).startsWith("─")));
+
+			editor.handleMouse(mouseEvent({ width, y: 0 }));
+			assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 0 });
+			editor.handleMouse(mouseEvent({ width, y: 1 }));
+			assert.deepStrictEqual(editor.getCursor(), { line: 1, col: 0 });
+		});
+
+		it("keeps narrow CJK wrapping within the borderless width", () => {
+			const width = 6;
+			const editor = new Editor(createTestTUI(width), defaultEditorTheme, { borders: false });
+			editor.setText("你好世界abc");
+
+			const lines = editor.render(width);
+			assert.ok(lines.length > 1);
+			for (const line of lines) {
+				assert.ok(visibleWidth(line) <= width, `line exceeds width ${width}: ${JSON.stringify(line)}`);
+			}
+			assert.strictEqual(editor.getText(), "你好世界abc");
+		});
+
+		it("starts autocomplete mouse rows immediately after borderless content", async () => {
+			const width = 24;
+			const editor = new Editor(createTestTUI(width), defaultEditorTheme, { borders: false });
+			editor.setAutocompleteProvider({
+				getSuggestions: async () => ({
+					items: [
+						{ value: "alpha", label: "alpha" },
+						{ value: "beta", label: "beta" },
+					],
+					prefix: "",
+				}),
+				applyCompletion,
+			});
+
+			editor.handleInput("\t");
+			await flushAutocomplete();
+			editor.render(width);
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			editor.handleMouse(mouseEvent({ width, y: 1 }));
+			assert.strictEqual(editor.getText(), "alpha");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 	});
 

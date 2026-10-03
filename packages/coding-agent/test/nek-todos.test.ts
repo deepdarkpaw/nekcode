@@ -78,7 +78,7 @@ describe("todo summaries", () => {
 
 describe("replayBranch", () => {
 	it("starts in agent mode with no todos", () => {
-		expect(replayBranch([])).toEqual({ mode: "agent", todos: [] });
+		expect(replayBranch([])).toEqual({ mode: "agent", todos: [], plans: [] });
 	});
 
 	it("takes the last todo_write details or nek.todos entry on the branch", () => {

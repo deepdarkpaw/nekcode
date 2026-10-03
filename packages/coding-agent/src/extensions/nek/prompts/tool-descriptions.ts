@@ -81,10 +81,10 @@ Use 'todos' for organizing implementation tasks:
 - If the plan is simple, provide just a few high-level todos or none at all
 
 UPDATING THE PLAN:
-- The plan file URI will be returned in the tool result
-- To revise the same task, first read the current plan file, then use edit for incremental changes (including overview and todos in the file's frontmatter), and call update_plan to submit it for review. Only call create_plan again for a different task or when the user explicitly asks to rewrite the entire plan, and then provide the complete plan body
-- Only the first create_plan call may include name; later same-task revisions use update_plan and must not use name to rename or create a separate plan
-- If the user asks for a separate new plan while a current plan exists, explain the limitation or ask how to proceed before calling create_plan again
+- The plan file URI and stable plan_id will be returned in the tool result.
+- To revise the active plan for the same task, first read its plan file, then use edit for incremental changes (including overview and todos in the file's frontmatter), and call update_plan to submit it for review.
+- To rewrite an existing saved plan as a complete document, call create_plan with its plan_id; the rewrite keeps its path and name and creates a new revision.
+- To create a separate new plan, omit plan_id and provide its name when useful. Omitted plan_id always creates a new file; it never revises the active plan.
 
 Additional guidelines:
 - Avoid asking clarifying questions in the plan itself. Ask them before calling this tool. Present these to the user using the ask_question tool.
@@ -95,7 +95,8 @@ Additional guidelines:
 /** Description of the incremental plan submission tool. */
 export const UPDATE_PLAN = `Use this tool to submit the current plan file for review after making incremental edits.
 
-- This is the only submission entry point for revising an existing plan. First read the plan file, then use edit to change the file before calling update_plan.
+- This is the submission entry point for revising an existing plan. First read the selected plan file, then use edit to change the file before calling update_plan.
+- Omit plan_id to update the active plan, or provide a saved plan_id to select another plan explicitly.
 - Edit the markdown body or the overview and todos in the same file's frontmatter; do not rewrite the plan through this tool.
 - The plan body must be non-empty. Submit only the changes made since the current reviewed snapshot.
 - The tool reads the edited file, records a new revision when its document changed, and ends the turn for user review.`;

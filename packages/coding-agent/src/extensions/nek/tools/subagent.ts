@@ -7,7 +7,7 @@ import { findAgentType } from "../services/agent-types.ts";
 import { resolveChildModel } from "../services/child-session.ts";
 import type { SubagentRegistry } from "../services/subagent-registry.ts";
 import type { AgentType, Mode, SubagentRecord, SubagentToolData } from "../types.ts";
-import { subagentRenderers } from "../ui/subagent-view.ts";
+import { createSubagentRenderers } from "../ui/subagent-view.ts";
 
 /** Tool name of the subagent tool (snake_case, plan.md D3). */
 export const SUBAGENT_TOOL_NAME = "subagent";
@@ -116,9 +116,15 @@ export function createSubagentToolDefinition(
 				: await startSubagent(options, params, signal, ctx);
 			if (record.background) return subagentResult(backgroundSubagentStartText(record), record);
 			const done = await options.getRegistry().wait(record.id, activityReporter(onUpdate));
+			if (done.background && done.status === "running") {
+				return subagentResult(
+					`Subagent ${done.id} ("${done.description}") moved to the background because the user sent a new message. You will be notified when it completes.`,
+					done,
+				);
+			}
 			return subagentResult(formatSubagentResult(done), done);
 		},
-		...subagentRenderers,
+		...createSubagentRenderers(options.getRegistry),
 	};
 }
 

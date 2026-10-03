@@ -2,6 +2,7 @@ import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import type { ExtensionContext, MessageRenderer } from "../../../core/extensions/types.ts";
 import { rawKeyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
 import { getMarkdownTheme } from "../../../modes/interactive/theme/theme.ts";
+import { activePlan } from "../state/session-state.ts";
 import type { NekSessionState, PlanData } from "../types.ts";
 import { formatPlanDocument } from "./renderers.ts";
 
@@ -34,6 +35,7 @@ export const renderPlanPreview: MessageRenderer<PlanData> = (message, options, t
 export function syncPlanUi(ctx: ExtensionContext, state: NekSessionState, shortcut: string): void {
 	if (!ctx.hasUI) return;
 	const planning = state.mode === "plan";
+	const selected = activePlan(state);
 	const interrupted = state.execution?.status === "interrupted";
 	if (!planning && !interrupted) {
 		ctx.ui.setWidget("nek.plan", undefined);
@@ -47,11 +49,11 @@ export function syncPlanUi(ctx: ExtensionContext, state: NekSessionState, shortc
 			const status = planning
 				? state.planStatus === "ready"
 					? "Ready for review"
-					: state.plan
+					: selected
 						? "Revising plan"
 						: "Drafting plan"
 				: "Plan execution interrupted";
-			const name = state.plan ? `  ${state.plan.name} / r${state.plan.revision}` : "";
+			const name = selected ? `  ${selected.plan.name} / r${selected.plan.revision}` : "";
 			const action = planning ? `  ${rawKeyHint(shortcut, "switch mode")}  ${theme.fg("muted", "/agent exit")}` : "";
 			return new Text(
 				theme.fg(planning ? "accent" : "warning", status) + theme.fg("muted", name) + action,

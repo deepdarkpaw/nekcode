@@ -10,7 +10,7 @@ nek does not install, update, or discover extension packages: the `install`, `re
 
 ## Tools
 
-A new session activates `read`, `bash`, `edit`, `write`, `ast_grep`, and the `nek` tools below. A `--tools` allowlist still applies: `nek` tools appear only when listed.
+A new session activates `read`, `bash`, `edit`, `write`, `ast_grep`, `web_search`, and the `nek` tools below. A `--tools` allowlist still applies: `nek` tools appear only when listed.
 
 | Tool | Purpose |
 |---|---|
@@ -24,16 +24,17 @@ A new session activates `read`, `bash`, `edit`, `write`, `ast_grep`, and the `ne
 | `update_plan` | Plan mode only: submits the plan file after incremental `edit`s and ends planning. |
 | `ask_question` | Shows multiple-choice questions to the user. |
 | `subagent` | Delegates a bounded task to a subagent, in the foreground or background. |
-| `await` | Waits for background subagents to finish. |
+| `await` | Waits for background subagents to finish; a user steer ends the wait without stopping the child. |
+| `web_search` | Searches current public-web information through Exa's keyless hosted MCP endpoint. |
 
 ## Modes
 
 - **Agent mode** is the default.
 - **Plan mode** researches and writes a plan without changing code. In plan mode, `edit` and `write` may only target Markdown files, and subagents are read-only. The plan is saved under `.nek/plans/`.
 
-Enter Plan with `/plan`, switch modes with `alt+m`, or start in it with `nek --plan`. Repeating `/plan` stays in Plan and displays the saved revision. `/plan <text>` submits a planning or revision request; `/agent` exits without implementing anything. The editor uses a distinct border color and a persistent `PLAN` badge.
+Enter Plan with `/plan`, switch modes with `alt+m`, or start in it with `nek --plan`. `/plan` is silent when no text is supplied; use `/plans` to select and explicitly preview one of the saved plans. `/plan <text>` submits a planning or revision request; `/agent` exits without implementing anything. The editor uses a distinct border color and a persistent `PLAN` badge.
 
-`create_plan` writes a new plan file and displays the complete Markdown document before approval. When a plan already exists, same-task revisions are incremental: read the plan file, change only the parts that need changing with `edit` (including the frontmatter `overview` and `todos`), then call `update_plan` to save the next revision. `update_plan` reads the file back as the source of truth, so edits made directly in an editor are picked up too. The revision number increases only when the document changed, and the tool result shows only a diff. The review panel keeps its actions separate from the scrollable body: implement here, implement in a fresh session, keep planning, or exit Plan. Page Up/Down review long plans. The same saved body is returned in print/JSON modes.
+`create_plan` creates a new plan file when `plan_id` is omitted. A session may contain multiple plans. To fully rewrite an existing plan, pass its stable `plan_id`; to make an incremental revision, read/edit the selected file and call `update_plan` (optionally with `plan_id`). The revision number increases only when the document changed, and the tool result shows only a diff for updates. `/plans` selects and previews a saved plan without printing it during mode changes. The review panel keeps its actions separate from the scrollable body: implement here, implement in a fresh session, keep planning, or exit Plan.
 
 Implementation runs in Agent, not in a third Plan execution mode. Approval covers one plan revision and its immutable body. Escape interrupts execution and revokes that authorization; old todos and completed progress are retained but cannot automatically resume after a new request. `/nek-build` explicitly starts or resumes a reviewed revision; `--fresh` starts it in a new session.
 
@@ -50,7 +51,9 @@ Built-in subagent types:
 | Type | Tools |
 |---|---|
 | `generalPurpose` (default) | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ast_grep`, `todo_write` |
-| `explore` | `read`, `grep`, `find`, `ls`, `ast_grep` (read-only) |
+| `gpt-6.1-sol-worker` | all built-in tools, including `powershell`, `edit`, and `write`; model `CPA/gpt-6.1-sol`, thinking `xhigh` |
+| `kimi-3-ui-worker` | all built-in tools, including `powershell`, `edit`, and `write`; model `CPA/kimi-k3`, thinking `max` |
+| `explore` | `read`, `grep`, `find`, `ls`, `ast_grep`, `web_search` (read-only) |
 | `shell` | `bash`, `read` |
 
 Define custom types as Markdown files in `~/.nek/agent/agents/` or, for trusted projects, `.nek/agents/`. Project types override user types, which override built-in types. The body becomes the subagent's instructions.
@@ -62,24 +65,29 @@ description: Reviews a diff for correctness and style issues.
 model: anthropic/claude-sonnet-4-5
 readonly: true
 is_background: false
-tools: [read, grep, ast_grep]
+tools: [read, grep, ast_grep, web_search]
+thinking: low
+context_window: 500000
+disallowed_tools: bash
 ---
 Review the changes and report concrete issues with file and line references.
 ```
 
-`readonly: true` always selects the read-only tool set. `model` is used when the `subagent` call does not name one.
+`readonly: true` always selects the read-only tool set. `model` is used when the `subagent` call does not name one. `thinking` overrides the parent's thinking level, `context_window` caps the child's automatic-compaction window, and `disallowed_tools` removes tools from the allowlist. The available preset list includes these fields in the `subagent` description and `/agents` shows it to the user.
 
-Use `/subagents` to list subagents, show a result, or cancel a running subagent.
+Use `/subagents` to list subagents, show a result, or cancel a running subagent. A normal user steer while `await` or a foreground child is waiting ends that wait; a foreground child continues in the background and later sends a completion notice.
 
 ## Commands and shortcuts
 
 | Command | Action |
 |---|---|
-| `/plan [text]` | Enter Plan or view the saved plan; with text, submit a planning request |
+| `/plan [text]` | Enter Plan silently; with text, submit a planning request |
 | `/agent` | Exit Plan without implementing anything |
-| `/nek-build [--fresh]` | Start or resume the reviewed revision, optionally in a new session |
+| `/plans` | Select and preview one saved plan |
+| `/nek-build [plan_id] [--fresh]` | Start or resume a selected reviewed revision, optionally in a new session |
 | `/todos` | Show the todo list of the current branch |
 | `/subagents` | List, inspect, or cancel subagents |
+| `/agents` | List configured subagent presets |
 | `alt+m` | Toggle plan mode |
 
 ## Configuration

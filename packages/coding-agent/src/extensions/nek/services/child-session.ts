@@ -31,7 +31,8 @@ export interface ChildSessionSpec {
 
 /** Tool allowlist of a child: the explore set when read-only is forced, else the type's own tools. */
 export function childToolNames(type: AgentType, forceReadonly: boolean): string[] {
-	return forceReadonly ? [...READ_ONLY_TOOL_NAMES] : [...type.tools];
+	const tools = forceReadonly ? [...READ_ONLY_TOOL_NAMES] : [...type.tools];
+	return tools.filter((toolName) => !type.disallowedTools.includes(toolName));
 }
 
 /**
@@ -56,13 +57,16 @@ export async function createChildSession(spec: ChildSessionSpec): Promise<AgentS
 		cwd,
 		agentDir: spec.agentDir,
 		modelRuntime: spec.parentCtx.modelRegistry.modelRuntime,
-		model: spec.model,
+		model: limitContextWindow(spec.model, spec.type.contextWindow),
 		thinkingLevel: spec.thinkingLevel,
 		tools: childToolNames(spec.type, spec.forceReadonly),
 		resourceLoader,
 		sessionManager: createChildSessionManager(spec),
 		settingsManager,
 	});
+	if (!spec.model && spec.type.contextWindow && session.model) {
+		session.agent.state.model = limitContextWindow(session.model, spec.type.contextWindow) ?? session.model;
+	}
 	await session.bindExtensions({ mode: "print" });
 	return session;
 }
@@ -87,6 +91,12 @@ function readOnlySettingsStorage(cwd: string, agentDir: string): SettingsStorage
 				return undefined;
 			}),
 	};
+}
+
+/** Apply a preset context cap without changing provider/model identity. */
+function limitContextWindow(model: Model<Api> | undefined, limit: number | undefined): Model<Api> | undefined {
+	if (!model || !limit || model.contextWindow <= limit) return model;
+	return { ...model, contextWindow: limit };
 }
 
 /** Model reference as the subagent tool and the error messages spell it. */

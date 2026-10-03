@@ -49,7 +49,16 @@ export function registerSubagents(pi: ExtensionAPI, nek: NekRuntime): void {
 		description: "List subagents; cancel one or show its result",
 		handler: (_args, ctx) => showSubagents(ctx, getRegistry(wiring)),
 	});
+	pi.registerCommand("agents", {
+		description: "List available subagent presets",
+		handler: async (_args, ctx) => {
+			ctx.ui.notify(describeAgentTypes(wiring.agentTypes), "info");
+		},
+	});
 	pi.on("session_start", (_event, ctx) => onSessionStart(wiring, ctx));
+	pi.on("input_queued", (event) => {
+		if (event.behavior === "steer" && event.source !== "extension") wiring.registry?.interruptWaits();
+	});
 	pi.on("agent_before_settle", (event, ctx) => {
 		wiring.ctx = ctx;
 		return settleNotices(wiring, event);
@@ -120,7 +129,7 @@ function createSubagentSession(
 		parentCtx: ctx,
 		type: request.type,
 		model: request.model,
-		thinkingLevel: request.model ? wiring.pi.getThinkingLevel() : undefined,
+		thinkingLevel: request.type.thinking ?? (request.model ? wiring.pi.getThinkingLevel() : undefined),
 		forceReadonly: request.forceReadonly,
 		agentDir: getAgentDir(),
 		extension,

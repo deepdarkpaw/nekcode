@@ -1,3 +1,5 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+
 /**
  * Shared data model for the nek built-in extension (todos, plan mode, subagents).
  * Plain structs only; behavior lives in free functions under state/ and services/.
@@ -39,6 +41,8 @@ export interface PlanExecution extends PlanReference {
 /** Full lifecycle snapshot persisted separately from the plan artifact. */
 export interface PlanLifecycleData {
 	status: PlanStatus;
+	/** Path of the selected plan; selection alone never grants execution authorization. */
+	active?: string;
 	execution?: PlanExecution;
 }
 
@@ -56,8 +60,9 @@ export interface NekSessionState {
 	mode: Mode;
 	todos: Todo[];
 	todoOwner?: PlanReference | "planning";
-	plan?: PlanRecord;
-	planMarkdown?: string;
+	plans: PlanData[];
+	/** Path of the plan selected for review or implementation. */
+	activePlan?: string;
 	planStatus?: PlanStatus;
 	execution?: PlanExecution;
 }
@@ -96,7 +101,9 @@ export interface SubagentToolData {
 /** Await result details: finished records returned by this call, and whether the wait timed out. */
 export interface AwaitToolData {
 	subagents: SubagentRecord[];
+	running?: SubagentRecord[];
 	timedOut: boolean;
+	interrupted?: boolean;
 }
 
 /** Details of a `nek.subagent_notice` message: the finished record the notice reports. */
@@ -115,6 +122,12 @@ export interface AgentType {
 	instructions?: string;
 	/** Tool allowlist of the child session. */
 	tools: string[];
+	/** Tools removed from the allowlist. */
+	disallowedTools: string[];
+	/** Thinking level override; omitted means inherit from the parent. */
+	thinking?: ThinkingLevel;
+	/** Optional child context window cap used by automatic compaction. */
+	contextWindow?: number;
 }
 
 /** create_plan result details; replayBranch() restores the current plan from them. */

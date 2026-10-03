@@ -122,8 +122,8 @@ function renderCardLines(record: SubagentRecord, theme: Theme, width: number): s
 /** Card component: renders the record live, keeps the elapsed timer, and cleans it up on dispose. */
 class SubagentCardComponent extends Container {
 	private readonly state: CardState;
-	private readonly record: SubagentRecord;
-	private readonly expanded: boolean;
+	private record: SubagentRecord;
+	private expanded: boolean;
 	private readonly theme: Theme;
 
 	constructor(state: CardState, record: SubagentRecord, expanded: boolean, theme: Theme) {
@@ -132,6 +132,12 @@ class SubagentCardComponent extends Container {
 		this.record = record;
 		this.expanded = expanded;
 		this.theme = theme;
+	}
+
+	/** Refresh the component when a partial result or expansion setting changes. */
+	update(record: SubagentRecord, expanded: boolean): void {
+		this.record = record;
+		this.expanded = expanded;
 	}
 
 	override render(width: number): string[] {
@@ -179,9 +185,34 @@ export const subagentRenderers: SubagentRenderers = {
 		const state = context.state as CardState;
 		syncCardTimer(state, record.status === "running" && options.isPartial, () => context.invalidate());
 		const existing = context.lastComponent instanceof SubagentCardComponent ? context.lastComponent : undefined;
-		return existing ?? new SubagentCardComponent(state, record, options.expanded, theme);
+		if (existing) {
+			existing.update(record, options.expanded);
+			return existing;
+		}
+		return new SubagentCardComponent(state, record, options.expanded, theme);
 	},
 };
+
+/** Renderer variant that resolves retained records so background cards do not freeze at their start snapshot. */
+export function createSubagentRenderers(getRegistry: () => SubagentRegistry): SubagentRenderers {
+	return {
+		...subagentRenderers,
+		renderResult(result, options, theme, context) {
+			const snapshot = result.details?.subagent;
+			const live = snapshot ? getRegistry().get(snapshot.id) : undefined;
+			const record = live && live.startedAt === snapshot?.startedAt ? live : snapshot;
+			const renderResult = subagentRenderers.renderResult;
+			if (!renderResult) return new Text("", 0, 0);
+			if (!record) return renderResult(result, options, theme, context);
+			return renderResult(
+				{ ...result, details: { subagent: record } },
+				{ ...options, isPartial: options.isPartial || record.status === "running" },
+				theme,
+				context,
+			);
+		},
+	};
+}
 
 /** Await rows: resolve an id to its current description when the registry still retains it. */
 export function awaitRenderers(getRegistry: () => SubagentRegistry): AwaitRenderers {
@@ -196,15 +227,26 @@ export function awaitRenderers(getRegistry: () => SubagentRegistry): AwaitRender
 		},
 		renderResult(result, _options, theme, context) {
 			const subagents = result.details?.subagents ?? [];
+			const running = result.details?.running ?? [];
 			const output = getTextOutput(result, context.showImages).trim();
-			if (context.isError || subagents.length === 0) {
+			if (context.isError) {
 				const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 				text.setText(`\n${theme.fg("error", output)}`);
 				return text;
 			}
-			return new LinesComponent(
-				subagents.map((subagent) => `${" ".repeat(CARD_PAD)}${subagentLine(subagent, theme)}`),
-			);
+			const lines = [
+				...subagents.map((subagent) => `${" ".repeat(CARD_PAD)}${subagentLine(subagent, theme)}`),
+				...running.map(
+					(subagent) =>
+						`${" ".repeat(CARD_PAD)}${theme.fg("muted", `${subagentLine(subagent, theme)} · still running`)}`,
+				),
+			];
+			if (lines.length === 0) return new LinesComponent([theme.fg("muted", ` ${output}`)]);
+			if (result.details?.timedOut)
+				lines.push(theme.fg("muted", " await timed out; subagents above were not stopped"));
+			if (result.details?.interrupted)
+				lines.push(theme.fg("muted", " wait ended after a user message; subagents keep running"));
+			return new LinesComponent(lines);
 		},
 	};
 }

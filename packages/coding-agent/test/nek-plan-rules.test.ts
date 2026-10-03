@@ -7,6 +7,7 @@ import type { SessionEntry } from "../src/core/session-manager.ts";
 import { modeReminder } from "../src/extensions/nek/prompts/plan-mode.ts";
 import {
 	formatPlanFile,
+	planId,
 	planName,
 	planPath,
 	planTodos,
@@ -14,7 +15,7 @@ import {
 	writePlanFile,
 } from "../src/extensions/nek/services/plan-store.ts";
 import { checkModeToolCall, isMarkdownPath, modeToolNames } from "../src/extensions/nek/state/mode-rules.ts";
-import { replayBranch, todosAreActive } from "../src/extensions/nek/state/session-state.ts";
+import { activePlan, findPlan, replayBranch, todosAreActive } from "../src/extensions/nek/state/session-state.ts";
 import type { PlanRecord, Todo } from "../src/extensions/nek/types.ts";
 
 const plan: PlanRecord = {
@@ -29,7 +30,7 @@ const plan: PlanRecord = {
 };
 const todo: Todo = { id: "a", content: "First", status: "pending" };
 
-function toolResultEntry(id: string, toolName: string, details: JsonValue, isError = false): SessionEntry {
+function toolResultEntry(id: string, toolName: string, details: unknown, isError = false): SessionEntry {
 	return {
 		type: "message",
 		id,
@@ -40,7 +41,7 @@ function toolResultEntry(id: string, toolName: string, details: JsonValue, isErr
 			toolCallId: `call-${id}`,
 			toolName,
 			content: [{ type: "text", text: "ok" }],
-			details,
+			details: JSON.parse(JSON.stringify(details)) as JsonValue,
 			isError,
 			timestamp: 0,
 		},
@@ -137,7 +138,7 @@ describe("replayBranch with modes and plans", () => {
 		const stopped = replayBranch(entries);
 		expect(todosAreActive(stopped)).toBe(false);
 		expect(stopped.todos).toEqual([todo]);
-		expect(stopped.planMarkdown).toBe("# Add auth");
+		expect(stopped.plans[0]?.markdown).toBe("# Add auth");
 		expect(todosAreActive(replayBranch([...entries, customEntry("5", "nek.todos", { todos: [todo] })]))).toBe(true);
 	});
 
@@ -161,8 +162,8 @@ describe("replayBranch with modes and plans", () => {
 		expect(replayBranch(entries)).toEqual({
 			mode: "agent",
 			todos: [todo],
-			plan,
-			planMarkdown: "# Add auth",
+			plans: [{ plan, markdown: "# Add auth" }],
+			activePlan: plan.path,
 			planStatus: "ready",
 		});
 	});
@@ -177,11 +178,11 @@ describe("replayBranch with modes and plans", () => {
 		expect(replayBranch(entries.slice(0, 2))).toEqual({
 			mode: "plan",
 			todos: [],
-			plan,
-			planMarkdown: "# Add auth",
+			plans: [{ plan, markdown: "# Add auth" }],
+			activePlan: plan.path,
 			planStatus: "ready",
 		});
-		expect(replayBranch(entries.slice(0, 1))).toEqual({ mode: "plan", todos: [] });
+		expect(replayBranch(entries.slice(0, 1))).toEqual({ mode: "plan", todos: [], plans: [] });
 	});
 
 	it("ignores failed create_plan results and invalid mode entries", () => {
@@ -191,7 +192,7 @@ describe("replayBranch with modes and plans", () => {
 			customEntry("3", "nek.mode", { mode: "debug" }),
 			customEntry("4", "nek.mode", undefined),
 		];
-		expect(replayBranch(entries)).toEqual({ mode: "agent", todos: [] });
+		expect(replayBranch(entries)).toEqual({ mode: "agent", todos: [], plans: [] });
 	});
 });
 
@@ -237,8 +238,39 @@ describe("plan store", () => {
 		expect(content.endsWith("---\n\n# Add auth\n\n- step\n")).toBe(true);
 	});
 
+	it("derives a stable id from the plan filename", () => {
+		expect(planId(plan)).toBe("add-auth_abc123");
+		expect(planId("C:\\repo\\plans\\cache.plan.md")).toBe("cache");
+	});
+
 	it("turns plan todos into a list with the first item in progress", () => {
 		expect(planTodos(plan).map((item) => item.status)).toEqual(["in_progress", "pending"]);
 		expect(planTodos({ ...plan, todos: [] })).toEqual([]);
+	});
+});
+
+describe("multiple saved plans", () => {
+	it("upserts by path and does not authorize execution for a different selection", () => {
+		const other = { ...plan, name: "Cache", path: "/repo/.pi/plans/cache_def456.plan.md", revision: 1 };
+		const entries = [
+			toolResultEntry("1", "create_plan", { plan, markdown: "# Add auth" }),
+			toolResultEntry("2", "create_plan", { plan: other, markdown: "# Cache" }),
+			toolResultEntry("3", "update_plan", {
+				plan: { ...plan, revision: 2, overview: "Updated auth." },
+				markdown: "# Add auth v2",
+				diff: "diff",
+			}),
+			customEntry("4", "nek.plan", {
+				status: "ready",
+				active: other.path,
+				execution: { path: plan.path, revision: 2, status: "active" },
+			}),
+		];
+		const state = replayBranch(entries);
+		expect(state.plans).toHaveLength(2);
+		expect(findPlan(state, "add-auth_abc123")?.plan.revision).toBe(2);
+		expect(activePlan(state)?.plan.path).toBe(other.path);
+		expect(state.execution).toBeUndefined();
+		expect(todosAreActive(state)).toBe(true);
 	});
 });

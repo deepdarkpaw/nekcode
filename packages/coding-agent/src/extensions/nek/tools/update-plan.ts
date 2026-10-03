@@ -5,13 +5,17 @@ import type { ExtensionContext, ToolDefinition } from "../../../core/extensions/
 import { generateDiffString } from "../../../core/tools/edit-diff.ts";
 import { parseFrontmatter } from "../../../utils/frontmatter.ts";
 import { UPDATE_PLAN } from "../prompts/tool-descriptions.ts";
+import { planId } from "../services/plan-store.ts";
 import type { Mode, PlanData, PlanRecord } from "../types.ts";
 import { formatPlanDocument, updatePlanRenderers } from "../ui/renderers.ts";
 
-/** Tool name used to submit an edited current plan for review. */
+/** Tool name used to submit an edited plan for review. */
 export const UPDATE_PLAN_TOOL_NAME = "update_plan";
 
 const updatePlanSchema = Type.Object({
+	plan_id: Type.Optional(
+		Type.String({ description: "Stable id of the plan to update. Omit this field to update the active plan." }),
+	),
 	explanation: Type.Optional(
 		Type.String({ description: "One sentence explaining what changed in this plan revision" }),
 	),
@@ -25,11 +29,11 @@ interface UpdatePlanDetails extends PlanData {
 	diff: string;
 }
 
-/** Access to plan mode, the current plan snapshot, and the shared plan lifecycle callback. */
+/** Access to plan mode, saved snapshots, and the shared plan lifecycle callback. */
 export interface UpdatePlanToolOptions {
 	getMode(): Mode;
-	getPlan(): PlanRecord | undefined;
-	getPlanMarkdown(): string | undefined;
+	getPlans(): readonly PlanData[];
+	getActivePlanId(): string | undefined;
 	setPlan(plan: PlanRecord, markdown: string, ctx: ExtensionContext): void;
 }
 
@@ -67,7 +71,15 @@ function nextPlanRecord(
 	};
 }
 
-/** Submit the plan file after the model has made exact incremental edits with read and edit. */
+function targetPlan(options: UpdatePlanToolOptions, planIdArgument: string | undefined): PlanRecord {
+	const id = planIdArgument ?? options.getActivePlanId();
+	if (!id) throw new Error("No active plan. Call create_plan first or select one with /plans.");
+	const snapshot = options.getPlans().find((item) => planId(item.plan) === id);
+	if (!snapshot) throw new Error(`Unknown plan_id "${id}". Choose an id from the saved plans list.`);
+	return snapshot.plan;
+}
+
+/** Submit the selected plan file after the model has made exact incremental edits with read and edit. */
 export function createUpdatePlanToolDefinition(
 	options: UpdatePlanToolOptions,
 ): ToolDefinition<typeof updatePlanSchema, UpdatePlanDetails> {
@@ -77,11 +89,10 @@ export function createUpdatePlanToolDefinition(
 		description: UPDATE_PLAN,
 		parameters: updatePlanSchema,
 		executionMode: "sequential",
-		async execute(_toolCallId, _params: UpdatePlanToolInput, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: UpdatePlanToolInput, signal, _onUpdate, ctx) {
 			signal?.throwIfAborted();
 			if (options.getMode() !== "plan") throw new Error("update_plan is only available in plan mode.");
-			const current = options.getPlan();
-			if (!current) throw new Error("No current plan. Call create_plan first.");
+			const current = targetPlan(options, params.plan_id);
 
 			const source = await readFile(current.path, "utf8");
 			signal?.throwIfAborted();
@@ -96,7 +107,8 @@ export function createUpdatePlanToolDefinition(
 			if (!markdown)
 				throw new Error("The plan body must not be empty. Add plan content before calling update_plan.");
 
-			const oldMarkdown = options.getPlanMarkdown() ?? "";
+			const oldSnapshot = options.getPlans().find((item) => item.plan.path === current.path);
+			const oldMarkdown = oldSnapshot?.markdown ?? "";
 			const oldDocument = formatPlanDocument({ plan: current, markdown: oldMarkdown });
 			const newDocument = formatPlanDocument({
 				plan: { ...current, overview: parsed.frontmatter.overview, todos },

@@ -5,6 +5,7 @@ import { modeLabel, switchModeResult } from "../prompts/plan-mode.ts";
 import { SWITCH_MODE } from "../prompts/tool-descriptions.ts";
 import { MODES, SWITCH_MODE_TOOL_NAME } from "../state/session-state.ts";
 import type { Mode } from "../types.ts";
+import { switchModeRenderers } from "../ui/renderers.ts";
 
 const switchModeSchema = Type.Object({
 	explanation: Type.Optional(
@@ -58,5 +59,6 @@ export function createSwitchModeToolDefinition(
 			options.setMode(target_mode_id, ctx);
 			return textResult(switchModeResult(target_mode_id));
 		},
+		...switchModeRenderers,
 	};
 }

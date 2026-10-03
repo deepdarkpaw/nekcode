@@ -1,12 +1,13 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { CONFIG_DIR_NAME } from "../../../config.ts";
 import { parseFrontmatter } from "../../../utils/frontmatter.ts";
 import { EXPLORE_INSTRUCTIONS } from "../prompts/subagent.ts";
 import type { AgentType } from "../types.ts";
 
 /** Read-only tool allowlist of the built-in explore type (plan.md section 7.3). */
-export const READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls", "ast_grep"] as const;
+export const READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls", "ast_grep", "web_search"] as const;
 
 /** Tool allowlist of the built-in generalPurpose type (plan.md section 7.3). */
 export const GENERAL_TOOL_NAMES = [
@@ -18,6 +19,22 @@ export const GENERAL_TOOL_NAMES = [
 	"find",
 	"ls",
 	"ast_grep",
+	"todo_write",
+	"web_search",
+] as const;
+
+/** All tools available to a writable child session, including extension tools. */
+export const ALL_TOOL_NAMES = [
+	"read",
+	"bash",
+	"powershell",
+	"edit",
+	"write",
+	"grep",
+	"find",
+	"ls",
+	"ast_grep",
+	"web_search",
 	"todo_write",
 ] as const;
 
@@ -34,6 +51,31 @@ export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 		readonly: false,
 		background: false,
 		tools: [...GENERAL_TOOL_NAMES],
+		disallowedTools: [],
+	},
+	{
+		name: "gpt-6.1-sol-worker",
+		description: "handles coding tasks with GPT-6.1 Sol and access to every writable Nek tool.",
+		source: "builtin",
+		readonly: false,
+		background: false,
+		model: "CPA/gpt-6.1-sol",
+		thinking: "xhigh",
+		tools: [...ALL_TOOL_NAMES],
+		disallowedTools: [],
+	},
+	{
+		name: "kimi-3-ui-worker",
+		description: "handles terminal UI work with Kimi K3.",
+		source: "builtin",
+		readonly: false,
+		background: false,
+		model: "CPA/kimi-k3",
+		thinking: "max",
+		instructions:
+			"Work on the terminal UI: components, rendering, layout, key handling, and interaction. Match the surrounding TUI code.",
+		tools: [...ALL_TOOL_NAMES],
+		disallowedTools: [],
 	},
 	{
 		name: "explore",
@@ -44,6 +86,7 @@ export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 		background: false,
 		instructions: EXPLORE_INSTRUCTIONS,
 		tools: [...READ_ONLY_TOOL_NAMES],
+		disallowedTools: [],
 	},
 	{
 		name: "shell",
@@ -53,6 +96,7 @@ export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 		readonly: false,
 		background: false,
 		tools: [...SHELL_TOOL_NAMES],
+		disallowedTools: [],
 	},
 ];
 
@@ -121,6 +165,15 @@ function readAgentFile(path: string, source: "user" | "project"): AgentType | st
 	const description = readString(fields.description);
 	if (!name || !description) return `${path}: frontmatter needs both "name" and "description"`;
 	const readonly = fields.readonly === true;
+	const thinking = readThinking(fields.thinking);
+	if (fields.thinking !== undefined && !thinking)
+		return `${path}: "thinking" must be one of off, minimal, low, medium, high, xhigh, max`;
+	const contextWindow = readContextWindow(fields.context_window);
+	if (fields.context_window !== undefined && contextWindow === undefined) {
+		return `${path}: "context_window" must be a positive integer`;
+	}
+	const tools = readonly ? [...READ_ONLY_TOOL_NAMES] : (readToolList(fields.tools) ?? [...GENERAL_TOOL_NAMES]);
+	const disallowedTools = readToolList(fields.disallowed_tools) ?? [];
 	return {
 		name,
 		description,
@@ -129,12 +182,26 @@ function readAgentFile(path: string, source: "user" | "project"): AgentType | st
 		background: fields.is_background === true,
 		model: readString(fields.model),
 		instructions: body.trim() || undefined,
-		tools: readonly ? [...READ_ONLY_TOOL_NAMES] : (readToolList(fields.tools) ?? [...GENERAL_TOOL_NAMES]),
+		tools: tools.filter((tool) => !disallowedTools.includes(tool)),
+		disallowedTools,
+		...(thinking ? { thinking } : {}),
+		...(contextWindow !== undefined ? { contextWindow } : {}),
 	};
 }
 
 function readString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function readThinking(value: unknown): ThinkingLevel | undefined {
+	const level = readString(value);
+	return level && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level)
+		? (level as ThinkingLevel)
+		: undefined;
+}
+
+function readContextWindow(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 /** `tools` accepts both `a, b` and `[a, b]`; anything else is ignored rather than failing the file. */
@@ -156,6 +223,16 @@ export function findAgentType(types: readonly AgentType[], name: string): AgentT
 
 /** Render the "Available subagent_type values" block of the task description. */
 export function describeAgentTypes(types: readonly AgentType[]): string {
-	const lines = types.map((type) => `- ${type.name}: ${type.description}`);
+	const lines = types.map((type) => {
+		const details = [
+			`tools: ${type.tools.join(", ") || "none"}`,
+			type.model ? `model: ${type.model}` : "model: inherit",
+			type.thinking ? `thinking: ${type.thinking}` : "thinking: inherit",
+			type.contextWindow ? `context: ${type.contextWindow.toLocaleString()} tokens` : undefined,
+		]
+			.filter(Boolean)
+			.join("; ");
+		return `- ${type.name}: ${type.description} (${details})`;
+	});
 	return `Available subagent_type values\n\n${lines.join("\n")}`;
 }

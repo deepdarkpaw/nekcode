@@ -204,6 +204,31 @@ describe("SubagentRegistry", () => {
 		expect(registry.drainUnobserved()).toEqual([]);
 	});
 
+	it("interrupts an await without stopping the background subagent", async () => {
+		const gate = createGate();
+		const registry = new SubagentRegistry(config({}), () => {});
+		const record = await registry.start(startInput(await child([gatedReply(gate, "later")]), "pending"));
+
+		const waiting = registry.await(undefined, 10_000);
+		registry.interruptWaits();
+		await expect(waiting).resolves.toMatchObject({ done: [], timedOut: false, interrupted: true });
+		expect(registry.get(record.id)).toMatchObject({ status: "running", background: true });
+		gate.open();
+		await vi.waitFor(() => expect(registry.get(record.id)?.status).toBe("completed"));
+	});
+
+	it("detaches a foreground wait when interrupted", async () => {
+		const gate = createGate();
+		const registry = new SubagentRegistry(config({}), () => {});
+		const record = await registry.start(startInput(await child([gatedReply(gate, "later")]), "foreground", false));
+
+		const waiting = registry.wait(record.id);
+		registry.interruptWaits();
+		await expect(waiting).resolves.toMatchObject({ id: record.id, status: "running", background: true });
+		gate.open();
+		await vi.waitFor(() => expect(registry.get(record.id)?.status).toBe("completed"));
+	});
+
 	it("abort cancels a running subagent without a notice", async () => {
 		const gate = createGate();
 		const notified: SubagentRecord[] = [];

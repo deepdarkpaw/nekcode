@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CONFIG_DIR_NAME } from "../src/config.ts";
 import {
+	ALL_TOOL_NAMES,
 	BUILTIN_AGENT_TYPES,
 	describeAgentTypes,
 	discoverAgentTypes,
@@ -32,15 +33,44 @@ describe("discoverAgentTypes", () => {
 		writeFileSync(join(dir, file), content);
 	}
 
-	it("returns the three Cursor built-in types without agent files", () => {
+	it("returns the built-in types without agent files", () => {
 		const { types, errors } = discoverAgentTypes(agentDir, cwd, true);
 		expect(errors).toEqual([]);
-		expect(types.map((type) => type.name)).toEqual(["generalPurpose", "explore", "shell"]);
+		expect(types.map((type) => type.name)).toEqual([
+			"generalPurpose",
+			"gpt-6.1-sol-worker",
+			"kimi-3-ui-worker",
+			"explore",
+			"shell",
+		]);
 		const explore = findAgentType(types, "explore");
 		expect(explore?.readonly).toBe(true);
 		expect(explore?.tools).toEqual([...READ_ONLY_TOOL_NAMES]);
 		expect(findAgentType(types, "generalPurpose")?.tools).toContain("edit");
 		expect(findAgentType(types, "shell")?.tools).toEqual(["bash", "read"]);
+	});
+
+	it("configures the GPT-6.1 Sol worker with all writable tools", () => {
+		const worker = findAgentType(discoverAgentTypes(agentDir, cwd, false).types, "gpt-6.1-sol-worker");
+		expect(worker).toMatchObject({
+			model: "CPA/gpt-6.1-sol",
+			thinking: "xhigh",
+			readonly: false,
+			disallowedTools: [],
+		});
+		expect(worker?.tools).toEqual([...ALL_TOOL_NAMES]);
+	});
+
+	it("configures the Kimi K3 UI worker with all writable tools", () => {
+		const worker = findAgentType(discoverAgentTypes(agentDir, cwd, false).types, "kimi-3-ui-worker");
+		expect(worker).toMatchObject({
+			model: "CPA/kimi-k3",
+			thinking: "max",
+			readonly: false,
+			disallowedTools: [],
+		});
+		expect(worker?.tools).toEqual([...ALL_TOOL_NAMES]);
+		expect(worker?.instructions).toContain("terminal UI");
 	});
 
 	it("reads user types and lets project types override user and built-in types", () => {
@@ -88,6 +118,30 @@ describe("discoverAgentTypes", () => {
 		expect(auditor?.tools).toEqual([...READ_ONLY_TOOL_NAMES]);
 	});
 
+	it("reads thinking, context, and denied tools from a preset", () => {
+		writeAgent(
+			join(agentDir, "agents"),
+			"explorer.md",
+			"---\nname: explorer\ndescription: Researches code and web\nthinking: low\ncontext_window: 500000\ntools: read, web_search, bash\ndisallowed_tools: bash\n---\n",
+		);
+		const result = discoverAgentTypes(agentDir, cwd, false);
+		const explorer = findAgentType(result.types, "explorer");
+		expect(result.errors).toEqual([]);
+		expect(explorer).toMatchObject({ thinking: "low", contextWindow: 500000, disallowedTools: ["bash"] });
+		expect(explorer?.tools).toEqual(["read", "web_search"]);
+	});
+
+	it("reports invalid thinking and context values", () => {
+		writeAgent(
+			join(agentDir, "agents"),
+			"broken-values.md",
+			"---\nname: broken\ndescription: Invalid\nthinking: intense\ncontext_window: -1\n---\n",
+		);
+		const result = discoverAgentTypes(agentDir, cwd, false);
+		expect(result.types.some((type) => type.name === "broken")).toBe(false);
+		expect(result.errors.join("\\n")).toContain("thinking");
+	});
+
 	it("collects bad files as errors and keeps the good ones", () => {
 		writeAgent(join(agentDir, "agents"), "broken.md", "---\nname: [unclosed\n---\n");
 		writeAgent(join(agentDir, "agents"), "nameless.md", "---\ndescription: no name\n---\n");
@@ -115,6 +169,8 @@ describe("discoverAgentTypes", () => {
 	it("describes the available types for the subagent description", () => {
 		const text = describeAgentTypes(BUILTIN_AGENT_TYPES);
 		expect(text.startsWith("Available subagent_type values\n\n- generalPurpose: ")).toBe(true);
+		expect(text).toContain("- gpt-6.1-sol-worker: ");
+		expect(text).toContain("- kimi-3-ui-worker: ");
 		expect(text).toContain("- explore: ");
 		expect(text).toContain("- shell: ");
 	});
