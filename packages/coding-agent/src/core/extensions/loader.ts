@@ -549,6 +549,7 @@ async function initializeExtension(
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
 ): Promise<Extension> {
+	runtime.eventBus = eventBus;
 	const extension = createExtension(extensionPath, resolvedPath);
 	const load = createExtensionAPI(extension, runtime, cwd, eventBus);
 	try {
