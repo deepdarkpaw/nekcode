@@ -80,15 +80,19 @@ export interface BeforeToolCallResult {
  * - `content`: if provided, replaces the tool result content array in full
  * - `details`: if provided, replaces the tool result details value in full
  * - `isError`: if provided, replaces the tool result error flag
+ * - `structuredContent`: if provided, replaces the structured content. If `content` is provided
+ *   without it, the structured content is dropped, because it may no longer match the content.
+ *   Return it along with `content` to keep it.
  * - `usage`: if provided, replaces the tool result usage
  * - `terminate`: if provided, replaces the early-termination hint
  *
- * Omitted fields keep the original executed tool result values.
+ * Other omitted fields keep the original executed tool result values.
  * There is no deep merge for `content`, `details`, or `usage`.
  */
 export interface AfterToolCallResult {
 	content?: (TextContent | ImageContent)[];
 	details?: unknown;
+	structuredContent?: JsonValue;
 	isError?: boolean;
 	/** Usage from the final tool execution itself, if available. Not used for main LLM context accounting. */
 	usage?: Usage;
@@ -328,6 +332,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * - `content` replaces the full content array
 	 * - `details` replaces the full details payload
 	 * - `isError` replaces the error flag
+	 * - `structuredContent` replaces the structured content; replacing `content` without it drops structured content
 	 * - `usage` replaces the tool result usage
 	 * - `terminate` replaces the early-termination hint
 	 *
@@ -422,8 +427,18 @@ export interface AgentToolResult<T = JsonValue | undefined> {
 	content: (TextContent | ImageContent)[];
 	/** Arbitrary structured details for logs or UI rendering. */
 	details: T;
+	/**
+	 * Machine-readable result matching the tool's `outputSchema`, for programmatic callers. Not sent
+	 * to the model; `content` remains the model-facing result.
+	 */
+	structuredContent?: JsonValue;
 	/** Usage from the final tool execution itself, if available. Not used for main LLM context accounting. */
 	usage?: Usage;
+	/**
+	 * Report a failure without throwing. The model sees `content` as an error result, like a thrown
+	 * error, but `details` and `structuredContent` are kept for the UI and programmatic callers.
+	 */
+	isError?: boolean;
 	/**
 	 * Hint that the agent should stop after the current tool batch.
 	 * Early termination only happens when every finalized tool result in the batch sets this to true.
@@ -443,12 +458,13 @@ export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
 	/** Human-readable label for UI display. */
 	label: string;
-	/**
-	 * Optional compatibility shim for raw tool-call arguments before schema validation.
+	/** Optional compatibility shim to prepare raw tool-call arguments before schema validation.
 	 * Must return an object that matches `TParameters`.
 	 */
 	prepareArguments?: (args: unknown) => Static<TParameters>;
-	/** Execute the tool call. Throw on failure instead of encoding errors in `content`. */
+	/** JSON Schema of `structuredContent` in successful results. */
+	outputSchema?: TSchema;
+	/** Execute the tool. Throw on failure, or return a result with `isError: true`. */
 	execute: (
 		toolCallId: string,
 		params: Static<TParameters>,

@@ -1959,6 +1959,98 @@ describe("agentLoop with AgentMessage", () => {
 
 		expect(llmCalls).toBe(1);
 	});
+
+	it("uses returned isError and preserves structured content through tool execution", async () => {
+		const schema = Type.Object({ value: Type.String() });
+		const tool: AgentTool<typeof schema> = {
+			name: "structured",
+			label: "Structured",
+			description: "Returns structured output",
+			parameters: schema,
+			outputSchema: Type.Object({ value: Type.String() }),
+			async execute(_toolCallId, params) {
+				return {
+					content: [{ type: "text", text: params.value }],
+					details: { retained: true },
+					structuredContent: { value: params.value },
+					isError: true,
+				};
+			},
+		};
+		const events: AgentEvent[] = [];
+		const stream = agentLoop(
+			[createUserMessage("run structured")],
+			{ messages: [], tools: [tool] },
+			{ model: createModel(), convertToLlm: identityConverter },
+			undefined,
+			() => {
+				const mockStream = new MockAssistantStream();
+				queueMicrotask(() =>
+					mockStream.push({
+						type: "done",
+						reason: "toolUse",
+						message: createAssistantMessage(
+							[{ type: "toolCall", id: "structured-1", name: "structured", arguments: { value: "x" } }],
+							"toolUse",
+						),
+					}),
+				);
+				return mockStream;
+			},
+		);
+		for await (const event of stream) events.push(event);
+		const end = events.find((event) => event.type === "tool_execution_end");
+		expect(end?.type === "tool_execution_end" ? end.isError : false).toBe(true);
+		const messages = await stream.result();
+		const result = messages.find((message) => message.role === "toolResult");
+		expect(result?.role === "toolResult" ? result.isError : false).toBe(true);
+	});
+
+	it("drops structured content when afterToolCall replaces content", async () => {
+		const schema = Type.Object({ value: Type.String() });
+		const tool: AgentTool<typeof schema> = {
+			name: "structured",
+			label: "Structured",
+			description: "Returns structured output",
+			parameters: schema,
+			async execute(_toolCallId, params) {
+				return {
+					content: [{ type: "text", text: params.value }],
+					details: {},
+					structuredContent: { value: params.value },
+				};
+			},
+		};
+		const stream = agentLoop(
+			[createUserMessage("run structured")],
+			{ messages: [], tools: [tool] },
+			{
+				model: createModel(),
+				convertToLlm: identityConverter,
+				afterToolCall: async () => ({ content: [{ type: "text", text: "replacement" }] }),
+			},
+			undefined,
+			() => {
+				const mockStream = new MockAssistantStream();
+				queueMicrotask(() =>
+					mockStream.push({
+						type: "done",
+						reason: "toolUse",
+						message: createAssistantMessage(
+							[{ type: "toolCall", id: "structured-1", name: "structured", arguments: { value: "x" } }],
+							"toolUse",
+						),
+					}),
+				);
+				return mockStream;
+			},
+		);
+		for await (const _event of stream) {
+			// consume
+		}
+		const result = (await stream.result()).find((message) => message.role === "toolResult");
+		expect(result?.role === "toolResult" ? result.details : undefined).toEqual({});
+	});
 });
 
 describe("agentLoopContinue with AgentMessage", () => {
