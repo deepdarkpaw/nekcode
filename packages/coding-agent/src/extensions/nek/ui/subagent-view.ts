@@ -122,7 +122,7 @@ function cardLines(record: SubagentRecord, theme: Theme): string[] {
 /** First line and detail line, indented, truncated to the render width. */
 function renderCardLines(record: SubagentRecord, theme: Theme, width: number): string[] {
 	return cardLines(record, theme).map((line, index) =>
-		truncateToWidth(`${" ".repeat(index === 0 ? CARD_PAD : DETAIL_PAD)}${oneLine(line)}`, width, ""),
+		truncateToWidth(`${" ".repeat(index === 0 ? CARD_PAD : DETAIL_PAD)}${line}`, width, ""),
 	);
 }
 
@@ -152,7 +152,7 @@ class SubagentCardComponent extends Container {
 		if (this.expanded && this.record.finalText) {
 			lines.push(...new Markdown(this.record.finalText, 1, 0, getMarkdownTheme()).render(width));
 		}
-		return lines.map((line) => oneLine(line));
+		return lines;
 	}
 
 	dispose(): void {
@@ -268,7 +268,7 @@ class LinesComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		return this.lines.map((line) => truncateToWidth(oneLine(line), width, ""));
+		return this.lines.map((line) => truncateToWidth(line, width, ""));
 	}
 }
 
