@@ -3,7 +3,7 @@
  * Used by both tool-execution.ts and bash-execution.ts for consistent behavior.
  */
 
-import { Text } from "@earendil-works/pi-tui";
+import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
 export interface VisualTruncateResult {
 	/** The visual lines to display */
@@ -29,6 +29,7 @@ export function truncateToVisualLines(
 	maxVisualLines: number,
 	width: number,
 	paddingX: number = 0,
+	keep: "start" | "end" = "end",
 ): VisualTruncateResult {
 	if (!text) {
 		return { visualLines: [], skippedCount: 0 };
@@ -43,8 +44,55 @@ export function truncateToVisualLines(
 	}
 
 	// Take the last N visual lines
-	const truncatedLines = allVisualLines.slice(-maxVisualLines);
+	const truncatedLines =
+		keep === "start" ? allVisualLines.slice(0, maxVisualLines) : allVisualLines.slice(-maxVisualLines);
 	const skippedCount = allVisualLines.length - maxVisualLines;
 
 	return { visualLines: truncatedLines, skippedCount };
+}
+
+export interface VisualLinePreviewOptions {
+	/** Styled text; may contain newlines. */
+	text: string;
+	maxVisualLines: number;
+	/** Which visual lines to keep. The hint goes before kept end lines and after kept start lines. */
+	keep: "start" | "end";
+	/** Styled hint line for the given number of hidden visual lines. */
+	formatHint: (hidden: number) => string;
+}
+
+/**
+ * Collapsed tool output limited to a number of visual lines, like bash output. Limiting logical
+ * lines instead lets a single long line (such as minified JSON) wrap across the whole screen.
+ * Caches its lines per width, since it renders on every frame for every result in the transcript.
+ */
+export class VisualLinePreview implements Component {
+	private options: VisualLinePreviewOptions;
+	private cachedWidth: number | undefined;
+	private cachedLines: string[] | undefined;
+
+	constructor(options: VisualLinePreviewOptions) {
+		this.options = options;
+	}
+
+	render(width: number): string[] {
+		if (this.cachedLines === undefined || this.cachedWidth !== width) {
+			const { text, maxVisualLines, keep, formatHint } = this.options;
+			const preview = truncateToVisualLines(text, maxVisualLines, width, 0, keep);
+			const lines = preview.visualLines;
+			if (preview.skippedCount > 0) {
+				const hint = truncateToWidth(formatHint(preview.skippedCount), width, "...");
+				this.cachedLines = keep === "start" ? [...lines, hint] : [hint, ...lines];
+			} else {
+				this.cachedLines = lines;
+			}
+			this.cachedWidth = width;
+		}
+		return this.cachedLines;
+	}
+
+	invalidate(): void {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
 }

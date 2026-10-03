@@ -275,6 +275,8 @@ ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [--] [@files...] [messages...]
 
 ${chalk.bold("Commands:")}
+  ${APP_NAME} mcp <command>             Add, remove, list, sign in to, or sign out of MCP servers
+  ${APP_NAME} mcp --help                Show help for MCP
   ${APP_NAME} auth <command>            Print credentials or check provider readiness
   ${APP_NAME} auth --help               Show help for auth
 
