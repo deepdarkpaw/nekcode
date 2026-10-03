@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { LATEST_PROTOCOL_VERSION } from "@earendil-works/pi-mcp";
+import { listenOnBrowserSafePort } from "@earendil-works/pi-mcp/oauth";
 
 async function readBody(request: IncomingMessage): Promise<string> {
 	const chunks: Buffer[] = [];
@@ -142,10 +143,8 @@ export async function startOAuthMcpServer(
 			response.writeHead(500).end(String(error));
 		});
 	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const address = server.address();
-	if (!address || typeof address === "string") throw new Error("test server did not bind to TCP");
-	origin = `http://127.0.0.1:${address.port}`;
+	const port = await listenOnBrowserSafePort(server, { host: "127.0.0.1" });
+	origin = `http://127.0.0.1:${port}`;
 	return {
 		url: `${origin}/mcp`,
 		log,

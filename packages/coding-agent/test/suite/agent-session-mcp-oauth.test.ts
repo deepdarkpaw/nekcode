@@ -1,10 +1,11 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { type AddressInfo, createServer } from "node:net";
+import { createServer, Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ToolResultMessage } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { listenOnBrowserSafePort } from "@earendil-works/pi-mcp/oauth";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage.ts";
 import { runMcpCommand } from "../../src/extensions/mcp/cli.ts";
 import type { McpOAuthConfig, McpServerEntry } from "../../src/extensions/mcp/config.ts";
@@ -83,6 +84,23 @@ describe("AgentSession MCP OAuth", () => {
 		return result;
 	}
 
+	it("signs in when the OS initially assigns a Fetch-blocked mock server port", async () => {
+		const address = vi
+			.spyOn(Server.prototype, "address")
+			.mockReturnValueOnce({ address: "127.0.0.1", family: "IPv4", port: 6000 });
+		let fixture: Awaited<ReturnType<typeof setup>>;
+		try {
+			fixture = await setup("follow", { callbackUrl: "http://127.0.0.1/oauth/done" });
+			expect(address.mock.calls.length).toBeGreaterThanOrEqual(2);
+			expect(new URL(fixture.server.url).port).not.toBe("6000");
+		} finally {
+			address.mockRestore();
+		}
+		await fixture.harness.session.prompt("/mcp login issues");
+		expect(fixture.notifications.at(-1)).toBe('Signed in to MCP server "issues" (1 tools).');
+		expect(fixture.server.log).toEqual(["401 none", "register", "token code"]);
+	});
+
 	it("signs in through the browser, refreshes expired tokens, and signs out", async () => {
 		const { harness, server, notifications, backend } = await setup("follow");
 
@@ -129,12 +147,10 @@ describe("AgentSession MCP OAuth", () => {
 	});
 
 	async function freePort(): Promise<number> {
-		return new Promise<number>((resolve) => {
-			const probe = createServer().listen(0, "127.0.0.1", () => {
-				const address = probe.address() as AddressInfo;
-				probe.close(() => resolve(address.port));
-			});
-		});
+		const probe = createServer();
+		const port = await listenOnBrowserSafePort(probe, { host: "127.0.0.1" });
+		await new Promise<void>((resolve, reject) => probe.close((error) => (error ? reject(error) : resolve())));
+		return port;
 	}
 
 	it("uses the configured callback URL and scope", async () => {
