@@ -1,5 +1,6 @@
+import { sep } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
 import { FooterComponent, formatCwdForFooter } from "../src/modes/interactive/components/footer.ts";
@@ -73,8 +74,14 @@ function createSession(options: {
 			},
 			thinkingLevel: options.thinkingLevel ?? "off",
 		},
+		get model() {
+			return this.state.model;
+		},
 		sessionManager: {
 			getEntries: () => entries,
+			getEntryCount: () => entries.length,
+			getSessionId: () => "test-session",
+			getLeafId: () => null,
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},
@@ -108,7 +115,7 @@ describe("formatCwdForFooter", () => {
 
 	it("abbreviates the home directory and descendants", () => {
 		expect(formatCwdForFooter("/home/user", "/home/user")).toBe("~");
-		expect(formatCwdForFooter("/home/user/project", "/home/user")).toBe("~/project");
+		expect(formatCwdForFooter("/home/user/project", "/home/user")).toBe(`~${sep}project`);
 	});
 });
 
@@ -188,6 +195,59 @@ describe("FooterComponent width handling", () => {
 
 		const statsLine = stripAnsi(footer.render(120)[1]);
 		expect(statsLine).toContain("$1.250");
+	});
+
+	it("updates cached usage totals after an entry is appended", () => {
+		const usage = { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } };
+		const session = createSession({ sessionName: "", usage });
+		const footer = new FooterComponent(session, createFooterData(1));
+		expect(stripAnsi(footer.render(120)[1])).toContain("$0.500");
+
+		session.sessionManager.getEntries().push({ type: "message", message: { role: "assistant", usage } } as never);
+		expect(stripAnsi(footer.render(120)[1])).toContain("$1.000");
+	});
+
+	it("reuses session scans across unchanged frames, widths, and theme invalidation", () => {
+		const session = createSession({ sessionName: "" });
+		const entries = vi.spyOn(session.sessionManager, "getEntries");
+		const context = vi.spyOn(session, "getContextUsage");
+		const footer = new FooterComponent(session, createFooterData(1));
+
+		footer.render(120);
+		footer.render(120);
+		footer.invalidate();
+		footer.render(80);
+
+		expect(entries).toHaveBeenCalledTimes(1);
+		expect(context).toHaveBeenCalledTimes(1);
+	});
+
+	it.each(["leaf", "session", "model"] as const)("refreshes cached context when the %s changes", (change) => {
+		const session = createSession({ sessionName: "" });
+		const context = vi.spyOn(session, "getContextUsage");
+		const footer = new FooterComponent(session, createFooterData(1));
+		expect(stripAnsi(footer.render(120)[1])).toContain("12.3%");
+
+		context.mockReturnValue({ tokens: 100_000, contextWindow: 200_000, percent: 50 });
+		if (change === "leaf") vi.spyOn(session.sessionManager, "getLeafId").mockReturnValue("new-leaf");
+		if (change === "session") vi.spyOn(session.sessionManager, "getSessionId").mockReturnValue("new-session");
+		if (change === "model") session.state.model = { ...session.state.model! };
+
+		expect(stripAnsi(footer.render(120)[1])).toContain("50.0%");
+		expect(context).toHaveBeenCalledTimes(2);
+	});
+
+	it("refreshes cached totals when the bound session changes", () => {
+		const session = createSession({ sessionName: "" });
+		const footer = new FooterComponent(session, createFooterData(1));
+		footer.render(120);
+		footer.setSession(
+			createSession({
+				sessionName: "",
+				usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } },
+			}),
+		);
+		expect(stripAnsi(footer.render(120)[1])).toContain("$0.500");
 	});
 
 	it("shows the latest cache hit rate when cache usage is present", () => {
