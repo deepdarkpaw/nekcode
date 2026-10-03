@@ -167,10 +167,11 @@ export type {
 	SetThinkingLevelHandler,
 	TerminalInputHandler,
 	ThinkingLevelSelectEvent,
+	// Tools
+	ToolAnnotations,
 	// Events - Tool
 	ToolCallEvent,
 	ToolCallEventResult,
-	// Tools
 	ToolDefinition,
 	// Events - Tool Execution
 	ToolExecutionEndEvent,
@@ -178,7 +179,9 @@ export type {
 	ToolExecutionMode,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
+	ToolExposure,
 	ToolInfo,
+	ToolNamespace,
 	ToolRenderResultOptions,
 	ToolResultEvent,
 	ToolResultEventResult,

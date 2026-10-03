@@ -99,6 +99,7 @@ import {
 	type ToolExecutionEndEvent,
 	type ToolExecutionStartEvent,
 	type ToolExecutionUpdateEvent,
+	type ToolExposure,
 	type ToolInfo,
 	type TreePreparation,
 	type TurnStartEvent,
@@ -1298,12 +1299,19 @@ export class AgentSession {
 			description: definition.description,
 			parameters: definition.parameters,
 			promptGuidelines: definition.promptGuidelines,
+			exposure: this._getToolExposure(definition.name),
+			...(definition.namespace ? { namespace: definition.namespace } : {}),
+			...(definition.annotations ? { annotations: { ...definition.annotations } } : {}),
 			sourceInfo,
 		}));
 	}
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
 		return this._toolDefinitions.get(name)?.definition;
+	}
+
+	private _getToolExposure(name: string): ToolExposure {
+		return this._toolDefinitions.get(name)?.definition.exposure ?? "direct";
 	}
 
 	/**
@@ -1313,17 +1321,24 @@ export class AgentSession {
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
-		const tools: AgentTool[] = [];
-		const validToolNames: string[] = [];
-		for (const name of toolNames) {
+		const validToolNames = [...new Set(toolNames)].filter(
+			(name) => this._toolRegistry.has(name) && this._getToolExposure(name) !== "hidden",
+		);
+		const deferredNames = [...this._toolRegistry.keys()].filter((name) => this._getToolExposure(name) === "deferred");
+		const activeDeferredNames = new Set(validToolNames.filter((name) => deferredNames.includes(name)));
+		const hasInactiveDeferred = deferredNames.some((name) => !activeDeferredNames.has(name));
+		const toolSearchName = this._toolDefinitions.has("tool_search") ? "tool_search" : undefined;
+		const nextToolNames = toolSearchName
+			? hasInactiveDeferred
+				? [...validToolNames, ...(validToolNames.includes(toolSearchName) ? [] : [toolSearchName])]
+				: validToolNames.filter((name) => name !== toolSearchName)
+			: validToolNames;
+		const tools = nextToolNames.flatMap((name) => {
 			const tool = this._toolRegistry.get(name);
-			if (tool) {
-				tools.push(tool);
-				validToolNames.push(name);
-			}
-		}
+			return tool ? [tool] : [];
+		});
 		this.agent.state.tools = tools;
-		this._rebuildSystemPrompt(validToolNames);
+		this._rebuildSystemPrompt(nextToolNames);
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1444,7 +1459,9 @@ export class AgentSession {
 		options: NormalizedBuildSystemPromptOptions,
 		messages: AgentMessage[] = this.agent.state.messages,
 	): SystemMessage | undefined {
-		options.selectedTools = [...new Set(options.selectedTools)].filter((name) => this._toolRegistry.has(name));
+		options.selectedTools = [...new Set(options.selectedTools)].filter(
+			(name) => this._toolRegistry.has(name) && this._getToolExposure(name) !== "hidden",
+		);
 		this.agent.state.tools = options.selectedTools.flatMap((name) => {
 			const tool = this._toolRegistry.get(name);
 			return tool ? [tool] : [];
@@ -3282,22 +3299,25 @@ export class AgentSession {
 		const nextActiveToolNames = (
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 		).filter((name) => isAllowedTool(name));
+		const activateOnRegistration = (name: string): boolean => {
+			const definition = this._toolDefinitions.get(name)?.definition;
+			if (!definition) return false;
+			const exposure = definition.exposure ?? "direct";
+			return (exposure === "direct" || exposure === "model-only") && definition.defaultActive !== false;
+		};
 
 		if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (allowedToolNames.has(toolName)) {
-					nextActiveToolNames.push(toolName);
-				}
+				if (allowedToolNames.has(toolName)) nextActiveToolNames.push(toolName);
 			}
 		} else if (options?.includeAllExtensionTools) {
 			for (const tool of wrappedExtensionTools) {
-				nextActiveToolNames.push(tool.name);
+				if (activateOnRegistration(tool.name)) nextActiveToolNames.push(tool.name);
 			}
 		} else if (!options?.activeToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (!previousRegistryNames.has(toolName)) {
+				if (!previousRegistryNames.has(toolName) && activateOnRegistration(toolName))
 					nextActiveToolNames.push(toolName);
-				}
 			}
 		}
 

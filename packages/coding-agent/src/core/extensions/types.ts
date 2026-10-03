@@ -419,6 +419,28 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 // Tool Types
 // ============================================================================
 
+/**
+ * Controls how a registered tool is exposed to the model.
+ *
+ * Without codemode, `model-only` behaves like `direct`: it is declared and callable while active.
+ * `direct` and `model-only` tools are active by default; `deferred` and `hidden` tools are not.
+ */
+export type ToolExposure = "direct" | "model-only" | "deferred" | "hidden";
+
+/** Hints about a tool's side effects. */
+export interface ToolAnnotations {
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
+}
+
+/** Group of related tools, such as tools from one MCP server. */
+export interface ToolNamespace {
+	name: string;
+	description?: string;
+}
+
 /** Rendering options for tool results */
 export interface ToolRenderResultOptions {
 	/** Whether the result view is expanded */
@@ -471,6 +493,16 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	promptGuidelines?: string[];
 	/** Parameter schema (TypeBox) */
 	parameters: TParams;
+	/** JSON Schema of structuredContent returned by successful executions. */
+	outputSchema?: TSchema;
+	/** How the model reaches this tool. Defaults to direct. */
+	exposure?: ToolExposure;
+	/** Group of related tools. */
+	namespace?: ToolNamespace;
+	/** Hints about the tool's side effects. */
+	annotations?: ToolAnnotations;
+	/** Whether registration activates this tool. Defaults to true for direct/model-only. */
+	defaultActive?: boolean;
 	/** Optional provider-side constrained sampling request for this tool. Set false to explicitly disable it, equivalent to leaving it undefined. */
 	constrainedSampling?: false | ConstrainedSamplingConfig;
 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
@@ -1826,8 +1858,13 @@ export type GetSessionNameHandler = () => string | undefined;
 
 export type GetActiveToolsHandler = () => string[];
 
-/** Tool info with name, description, parameter schema, prompt guidelines, and source metadata. */
-export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "promptGuidelines"> & {
+/** Tool info with name, description, schema, exposure, namespace, and source metadata. */
+export type ToolInfo = Pick<
+	ToolDefinition,
+	"name" | "description" | "parameters" | "promptGuidelines" | "annotations"
+> & {
+	exposure: ToolExposure;
+	namespace?: ToolNamespace;
 	sourceInfo: SourceInfo;
 };
 

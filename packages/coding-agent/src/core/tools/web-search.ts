@@ -141,6 +141,7 @@ export function createWebSearchToolDefinition(
 		description:
 			"Search the public web for current information. Include a Sources section with links in the final answer.",
 		promptSnippet: webSearchToolSystemPromptContribution.snippet,
+		exposure: "direct",
 		parameters: webSearchSchema,
 		async execute(_toolCallId, input, signal) {
 			const combinedSignal = signal
