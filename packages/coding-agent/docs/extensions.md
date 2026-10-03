@@ -159,7 +159,7 @@ A tool's optional `exposure` controls how it enters the model's tool declaration
 | Exposure | Behavior |
 |---|---|
 | `direct` | Declared and callable while active. This is the default. |
-| `model-only` | Declared while active. Without codemode, it behaves like `direct`. |
+| `model-only` | Declared while active; behaves like `direct` in nekcode. |
 | `deferred` | Registered but inactive by default. It is declared only after being added with `pi.setActiveTools()`, commonly by `tool_search`. |
 | `hidden` | Registered for extension state but never declared or activated, even when requested. |
 
@@ -169,7 +169,9 @@ The shared event bus emits `tools_changed` after registry refreshes and active-t
 
 #### `tool_search`
 
-nekcode includes the `tool_search` extension. It activates on session start and tool-set changes only while at least one allowed, inactive deferred tool exists, and deactivates when none remain. Its description lists the namespaces of the discoverable tools. It searches the names, descriptions, parameter names, schema descriptions, and optional namespace metadata of registered deferred tools with BM25 ranking. A matching call activates the tools for the next model request. This uses the normal active set, so discoveries survive resume, tree navigation, and fork on that branch. It never searches or loads direct, model-only, or hidden tools, including the always-direct `web_search` tool.
+nekcode includes the `tool_search` extension. It activates while allowed, inactive deferred tools or pending deferred sources exist, and deactivates when neither remains. Its description lists discoverable namespaces, including sources still connecting. Before searching, it waits up to 10 seconds for pending sources, respecting cancellation, then searches the current tool snapshot with BM25 ranking over names, descriptions, parameters, schemas, and namespaces. A matching call activates the tools for the next model request. Discoveries are recorded on the active branch and survive resume, tree navigation, and fork when their definitions are available. It never searches or loads direct, model-only, or hidden tools, including the always-direct `web_search` tool.
+
+Background loaders use the generic event-bus contract in `src/extensions/tool-search/pending.ts`: register a `{ namespace, ready }` source before connecting, settle `ready` only after tool registration or failure, and remove the source on completion, disable, or shutdown. `tool_search:pending_sources_changed` synchronizes discovery immediately; `tool_search:collect_pending_sources` collects sources synchronously. The runtime emits `runtime_invalidated` before making captured extension APIs stale, allowing background loaders to cancel work and remove pending sources. This contract is not MCP-specific.
 
 Use `exposure: "deferred"` for optional tools that should stay out of the initial request while remaining discoverable:
 
@@ -186,6 +188,12 @@ pi.registerTool({
   }),
 });
 ```
+
+### MCP servers
+
+Use `pi.registerMcpServer(name, config)` to add a server for the current extension runtime. The config has the same shape as an `mcpServers` entry and defaults to deferred exposure. The built-in MCP extension connects registrations at session startup or immediately when added during a session. `pi.unregisterMcpServer(name)` removes your extension's registration, and `pi.getMcpServers()` reports registrations and their owners.
+
+An extension can replace its own server but cannot overwrite another extension's server or a name differing only in `-` and `_`. File-configured servers take precedence over matching registrations. Registration changes emit `mcp_servers_change`; the core stores configuration, while the MCP extension owns connections. See [MCP Servers](mcp.md) for trust, OAuth, discovery, tools, and resources.
 
 <a id="extensioncontext"></a>
 <a id="extensioncommandcontext"></a>
