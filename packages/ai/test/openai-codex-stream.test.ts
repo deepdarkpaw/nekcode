@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { arch, platform, release, tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
+import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -1082,11 +1083,14 @@ describe("openai-codex streaming", () => {
 		expect(requestedReasoning).toEqual({ effort: "low", summary: "auto" });
 	});
 
+	// pi#10034
 	it.each([
 		["gpt-5.1-codex", "flex", 0.5],
 		["gpt-5.1-codex", "priority", 2],
+		["gpt-5.1-codex", "fast", 2],
 		["gpt-5.5", "flex", 0.5],
 		["gpt-5.5", "priority", 2.5],
+		["gpt-5.5", "fast", 2.5],
 	] as const)(
 		"uses the client-sent %s service tier for %s when Codex echoes default",
 		async (modelId, serviceTier, multiplier) => {
@@ -1171,7 +1175,7 @@ describe("openai-codex streaming", () => {
 
 			const result = await streamOpenAICodexResponses(model, context, {
 				apiKey: token,
-				serviceTier,
+				serviceTier: serviceTier as unknown as ResponseCreateParamsStreaming["service_tier"],
 				transport: "sse",
 			}).result();
 

@@ -370,10 +370,12 @@ function getServiceTierCostMultiplier(
 	model: Pick<Model<"openai-responses">, "id">,
 	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 ): number {
-	switch (serviceTier) {
+	const serviceTierName = serviceTier as string;
+	switch (serviceTierName) {
 		case "flex":
 			return 0.5;
 		case "priority":
+		case "fast":
 			return model.id === "gpt-5.5" ? 2.5 : 2;
 		default:
 			return 1;
