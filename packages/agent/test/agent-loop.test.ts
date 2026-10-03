@@ -2001,6 +2001,7 @@ describe("agentLoop with AgentMessage", () => {
 		for await (const event of stream) events.push(event);
 		const end = events.find((event) => event.type === "tool_execution_end");
 		expect(end?.type === "tool_execution_end" ? end.isError : false).toBe(true);
+		expect(end?.type === "tool_execution_end" ? end.result.structuredContent : undefined).toEqual({ value: "x" });
 		const messages = await stream.result();
 		const result = messages.find((message) => message.role === "toolResult");
 		expect(result?.role === "toolResult" ? result.isError : false).toBe(true);
@@ -2021,6 +2022,7 @@ describe("agentLoop with AgentMessage", () => {
 				};
 			},
 		};
+		const events: AgentEvent[] = [];
 		const stream = agentLoop(
 			[createUserMessage("run structured")],
 			{ messages: [], tools: [tool] },
@@ -2045,9 +2047,9 @@ describe("agentLoop with AgentMessage", () => {
 				return mockStream;
 			},
 		);
-		for await (const _event of stream) {
-			// consume
-		}
+		for await (const event of stream) events.push(event);
+		const end = events.find((event) => event.type === "tool_execution_end");
+		expect(end?.type === "tool_execution_end" ? end.result.structuredContent : undefined).toBeUndefined();
 		const result = (await stream.result()).find((message) => message.role === "toolResult");
 		expect(result?.role === "toolResult" ? result.details : undefined).toEqual({});
 	});
