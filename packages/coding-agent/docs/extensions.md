@@ -149,6 +149,41 @@ Register every tool first, keep optional tools inactive, and use `pi.setActiveTo
 
 nekcode records the initial prompt and tool set in the transcript's first system message, then appends tool and prompt changes before the next model request. Providers that cannot represent the transition receive a complete transcript checkpoint, which can invalidate the cached prefix.
 
+<a id="tool-exposure"></a>
+
+### Tool exposure
+
+A tool's optional `exposure` controls how it enters the model's tool declarations:
+
+| Exposure | Behavior |
+|---|---|
+| `direct` | Declared and callable while active. This is the default. |
+| `model-only` | Declared while active. Without codemode, it behaves like `direct`. |
+| `deferred` | Registered but inactive by default. It is declared only after being added with `pi.setActiveTools()`, commonly by `tool_search`. |
+| `hidden` | Registered for extension state but never declared or activated, even when requested. |
+
+Direct and model-only tools are activated when registered unless `defaultActive: false` is set. A tool named in the `--tools` allowlist or explicitly passed to `pi.setActiveTools()` can be activated; the allowlist still filters every tool. `pi.getAllTools()` reports the resolved exposure (defaulting to `direct`), namespace, and schema metadata.
+
+#### `tool_search`
+
+nekcode includes the `tool_search` extension. It is declared only while at least one inactive deferred tool exists. It searches the names, descriptions, parameter names, schema descriptions, and optional namespace metadata of registered deferred tools with BM25 ranking. A matching call activates the tools for the next model request. It never searches or loads direct, model-only, or hidden tools, including the always-direct `web_search` tool.
+
+Use `exposure: "deferred"` for optional tools that should stay out of the initial request while remaining discoverable:
+
+```typescript
+pi.registerTool({
+  name: "search_docs",
+  label: "Search docs",
+  description: "Search the project documentation",
+  exposure: "deferred",
+  parameters: Type.Object({ query: Type.String() }),
+  execute: async (_toolCallId, { query }) => ({
+    content: [{ type: "text", text: `Results for ${query}` }],
+    details: undefined,
+  }),
+});
+```
+
 <a id="extensioncontext"></a>
 <a id="extensioncommandcontext"></a>
 <a id="use-extension-context"></a>
