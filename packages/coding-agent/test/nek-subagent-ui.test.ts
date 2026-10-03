@@ -133,6 +133,50 @@ describe("subagent card rendering", () => {
 		},
 	);
 
+	it("collapses multiline card fields into one bounded line per row", () => {
+		initTheme("dark");
+		const cases: Array<[string, Component]> = [
+			[
+				"running",
+				renderCard({
+					description: "running description\nwith a second line",
+					activity: "tool output\nwith a newline\tand tab",
+				}),
+			],
+			[
+				"completed",
+				renderCard({
+					status: "completed",
+					description: "completed description\nwith a second line",
+					endedAt: NOW - 3_000,
+					finalText: "summary line\nwith more result text",
+					tokens: 1200,
+				}),
+			],
+			[
+				"errored",
+				renderCard({
+					status: "errored",
+					description: "errored description\nwith a second line",
+					error: "error line\nwith details\tand tabs",
+				}),
+			],
+		];
+
+		for (const [status, component] of cases) {
+			const lines = component.render(40);
+			// pi#subagent-card-newlines
+			expect(
+				lines.every((line) => !line.includes("\n")),
+				`${status} card emitted a newline`,
+			).toBe(true);
+			expect(
+				lines.every((line) => visibleWidth(line) <= 40),
+				`${status} card exceeded width`,
+			).toBe(true);
+		}
+	});
+
 	it("shows a short model-less card and omits an empty activity line", () => {
 		initTheme("dark");
 		const text = assertFits(renderCard({ model: undefined, activity: undefined }, collapsed, true));

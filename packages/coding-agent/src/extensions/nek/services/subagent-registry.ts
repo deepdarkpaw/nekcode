@@ -56,6 +56,11 @@ interface SubagentEntry {
 /** Maximum characters retained for the latest streamed activity text. */
 export const ACTIVITY_MAX_CHARS = 80;
 
+/** Collapse streamed content into one bounded activity line. */
+function compactActivity(text: string): string {
+	return text.replace(/\s+/g, " ").trim().slice(-ACTIVITY_MAX_CHARS);
+}
+
 /** Lower bound of a blocking await (Codex clamp). */
 export const MIN_AWAIT_MS = 1000;
 
@@ -353,10 +358,11 @@ export class SubagentRegistry {
 		const record = entry.record;
 		if (event.type === "agent_start" && entry.abortRequested) void entry.session.abort();
 		if (event.type === "tool_execution_start") {
-			record.activity = `${event.toolName} ${summarizeArgs(event.args)}`.trimEnd();
+			record.activity = compactActivity(`${event.toolName} ${summarizeArgs(event.args)}`);
 		} else if (event.type === "message_update" && event.message.role === "assistant") {
 			const text = assistantText(event.message);
-			record.activity = text ? text.slice(-ACTIVITY_MAX_CHARS) : record.activity;
+			const activity = compactActivity(text);
+			record.activity = activity ? activity : record.activity;
 		} else if (event.type === "message_end" && event.message.role === "assistant") {
 			record.tokens += event.message.usage.totalTokens;
 		} else {

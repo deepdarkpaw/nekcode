@@ -36,6 +36,11 @@ interface CardState {
 	interval?: ReturnType<typeof setInterval>;
 }
 
+/** Collapse dynamic card text to the single-line form expected by the TUI row renderer. */
+function oneLine(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
+
 function iconColor(status: SubagentStatus): "success" | "accent" | "error" {
 	if (status === "completed") return "success";
 	if (status === "running") return "accent";
@@ -64,7 +69,7 @@ export function subagentElapsed(record: SubagentRecord, now = Date.now()): strin
 function modelId(record: SubagentRecord): string {
 	if (!record.model) return "unknown model";
 	const slash = record.model.lastIndexOf("/");
-	return slash === -1 ? record.model : record.model.slice(slash + 1);
+	return oneLine(slash === -1 ? record.model : record.model.slice(slash + 1));
 }
 
 /** Token count, e.g. `3.2k tokens`. */
@@ -80,28 +85,30 @@ function tokenText(tokens: number): string {
  * `⠋ <description>  <model> · <type> · <elapsed>` while running, and the same metadata plus tokens once finished.
  */
 export function subagentLine(record: SubagentRecord, theme: Theme, now = Date.now()): string {
-	const meta = [`${modelId(record)} · ${record.type}`, subagentElapsed(record, now)];
+	const meta = [`${modelId(record)} · ${oneLine(record.type)}`, subagentElapsed(record, now)];
 	if (record.status !== "running") meta.push(tokenText(record.tokens));
-	return `${statusIcon(record, theme, now)} ${record.description}  ${theme.fg("muted", meta.join(" · "))}`;
+	return `${statusIcon(record, theme, now)} ${oneLine(record.description)}  ${theme.fg("muted", meta.join(" · "))}`;
 }
 
 /** First non-empty line of a result body, used as the second card line. */
 function firstLine(text: string | undefined): string | undefined {
-	return text
+	const line = text
 		?.split("\n")
-		.map((line) => line.trim())
-		.find((line) => line.length > 0);
+		.map((value) => value.trim())
+		.find((value) => value.length > 0);
+	return line === undefined ? undefined : oneLine(line);
 }
 
 /** Head lines of a card (without indentation) for the current record state. */
 function cardLines(record: SubagentRecord, theme: Theme): string[] {
 	const head = [subagentLine(record, theme)];
 	if (record.status === "running") {
-		if (record.activity) head.push(theme.fg("dim", record.activity));
+		if (record.activity) head.push(theme.fg("dim", oneLine(record.activity)));
 		return head;
 	}
 	if (record.status === "errored" || record.status === "aborted") {
-		head.push(theme.fg("error", record.error ?? firstLine(record.finalText) ?? "The subagent run failed."));
+		const error = oneLine(record.error ?? "");
+		head.push(theme.fg("error", error || firstLine(record.finalText) || "The subagent run failed."));
 		return head;
 	}
 	if (record.finalText) {
@@ -115,7 +122,7 @@ function cardLines(record: SubagentRecord, theme: Theme): string[] {
 /** First line and detail line, indented, truncated to the render width. */
 function renderCardLines(record: SubagentRecord, theme: Theme, width: number): string[] {
 	return cardLines(record, theme).map((line, index) =>
-		truncateToWidth(`${" ".repeat(index === 0 ? CARD_PAD : DETAIL_PAD)}${line}`, width, ""),
+		truncateToWidth(`${" ".repeat(index === 0 ? CARD_PAD : DETAIL_PAD)}${oneLine(line)}`, width, ""),
 	);
 }
 
@@ -145,7 +152,7 @@ class SubagentCardComponent extends Container {
 		if (this.expanded && this.record.finalText) {
 			lines.push(...new Markdown(this.record.finalText, 1, 0, getMarkdownTheme()).render(width));
 		}
-		return lines;
+		return lines.map((line) => oneLine(line));
 	}
 
 	dispose(): void {
@@ -171,7 +178,7 @@ export const subagentRenderers: SubagentRenderers = {
 	renderCall(args, theme, context) {
 		const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 		const input = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
-		const description = typeof input.description === "string" ? input.description : "subagent";
+		const description = typeof input.description === "string" ? oneLine(input.description) : "subagent";
 		text.setText(`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("text", description)}`);
 		return text;
 	},
@@ -179,7 +186,7 @@ export const subagentRenderers: SubagentRenderers = {
 		const record = result.details?.subagent;
 		if (context.isError || !record) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(`\n${theme.fg("error", getTextOutput(result, context.showImages).trim())}`);
+			text.setText(`\n${theme.fg("error", oneLine(getTextOutput(result, context.showImages)))}`);
 			return text;
 		}
 		const state = context.state as CardState;
@@ -221,14 +228,14 @@ export function awaitRenderers(getRegistry: () => SubagentRegistry): AwaitRender
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			const input = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
 			const id = typeof input.subagent_id === "string" ? input.subagent_id : undefined;
-			const description = id ? (getRegistry().get(id)?.description ?? id) : "any subagent";
+			const description = id ? oneLine(getRegistry().get(id)?.description ?? id) : "any subagent";
 			text.setText(`${theme.fg("toolTitle", theme.bold("await"))} ${theme.fg("accent", description)}`);
 			return text;
 		},
 		renderResult(result, _options, theme, context) {
 			const subagents = result.details?.subagents ?? [];
 			const running = result.details?.running ?? [];
-			const output = getTextOutput(result, context.showImages).trim();
+			const output = oneLine(getTextOutput(result, context.showImages));
 			if (context.isError) {
 				const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 				text.setText(`\n${theme.fg("error", output)}`);
@@ -261,7 +268,7 @@ class LinesComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		return this.lines.map((line) => truncateToWidth(line, width, ""));
+		return this.lines.map((line) => truncateToWidth(oneLine(line), width, ""));
 	}
 }
 
