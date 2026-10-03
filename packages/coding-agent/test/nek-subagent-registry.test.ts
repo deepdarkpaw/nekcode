@@ -1,7 +1,9 @@
 import { type FauxResponseStep, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentSession, AgentSessionEvent, AgentSessionEventListener } from "../src/core/agent-session.ts";
 import { DEFAULT_NEK_CONFIG } from "../src/extensions/nek/config.ts";
 import {
+	ACTIVITY_MAX_CHARS,
 	clampAwaitTimeout,
 	type SubagentConfig,
 	SubagentRegistry,
@@ -38,6 +40,28 @@ function config(overrides: Partial<SubagentConfig>): SubagentConfig {
 	return { ...DEFAULT_NEK_CONFIG.subagent, ...overrides };
 }
 
+function fakeSession(events: AgentSessionEvent[]): AgentSession {
+	let listener: AgentSessionEventListener | undefined;
+	return {
+		sessionId: "fake-subagent",
+		sessionFile: undefined,
+		model: undefined,
+		messages: [],
+		subscribe(next: AgentSessionEventListener) {
+			listener = next;
+			return () => {
+				listener = undefined;
+			};
+		},
+		prompt: async () => {
+			for (const event of events) listener?.(event);
+		},
+		abort: async () => {},
+		dispose: () => {},
+		getLastAssistantText: () => undefined,
+	} as unknown as AgentSession;
+}
+
 describe("SubagentRegistry", () => {
 	const harnesses: Harness[] = [];
 
@@ -62,6 +86,49 @@ describe("SubagentRegistry", () => {
 			createSession: async () => harness.session,
 		};
 	}
+
+	it("collapses multiline tool arguments and assistant activity to bounded single lines", async () => {
+		const assistantText = `${"prefix\n".repeat(20)}final assistant line\twith tabs`;
+		const events = [
+			{
+				type: "tool_execution_start",
+				toolCallId: "call-1",
+				toolName: "bash",
+				args: { command: "first line\n\tsecond line\rthird line" },
+			} as unknown as AgentSessionEvent,
+			{
+				type: "message_update",
+				message: fauxAssistantMessage(assistantText),
+				assistantMessageEvent: {},
+			} as unknown as AgentSessionEvent,
+		];
+		const activities: string[] = [];
+		const registry = new SubagentRegistry(
+			config({}),
+			() => {},
+			(record) => {
+				if (record.activity) activities.push(record.activity);
+			},
+		);
+
+		const record = await registry.start({
+			description: "activity test",
+			type: "generalPurpose",
+			prompt: "run activity test",
+			background: false,
+			createSession: async () => fakeSession(events),
+		});
+		await registry.wait(record.id);
+
+		// pi#nek-subagent-card-newlines
+		expect(activities.length).toBeGreaterThanOrEqual(2);
+		expect(activities[0]).toContain("first line second line third line");
+		expect(activities[1]).toContain("final assistant line with tabs");
+		for (const activity of activities) {
+			expect(activity).not.toMatch(/[\n\r\t]/);
+			expect(activity.length).toBeLessThanOrEqual(ACTIVITY_MAX_CHARS);
+		}
+	});
 
 	it("clamps await timeouts to [1000, awaitMaxMs] and treats <= 0 as non-blocking", () => {
 		const limits = config({ awaitDefaultMs: 30_000, awaitMaxMs: 60_000 });

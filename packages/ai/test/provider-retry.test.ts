@@ -11,6 +11,7 @@ function providerError(status: number | undefined, headers?: Record<string, stri
 describe("provider request retries", () => {
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 	});
 
 	it("retries retryable provider errors", async () => {
@@ -25,6 +26,28 @@ describe("provider request retries", () => {
 		expect(request).toHaveBeenCalledTimes(1);
 		await vi.advanceTimersByTimeAsync(1);
 
+		await expect(result).resolves.toBe("ok");
+		expect(request).toHaveBeenCalledTimes(2);
+	});
+
+	// pi#9571
+	it.each<Record<string, string>>([
+		{ "retry-after": "not an HTTP date" },
+		{ "retry-after": "Infinity" },
+		{ "retry-after-ms": "Infinity" },
+		{ "retry-after-ms": "invalid", "retry-after": "invalid" },
+	])("uses exponential backoff for invalid retry headers %j", async (headers) => {
+		vi.useFakeTimers();
+		vi.spyOn(Math, "random").mockReturnValue(0);
+		const request = vi
+			.fn<() => Promise<string>>()
+			.mockRejectedValueOnce(providerError(429, headers))
+			.mockResolvedValue("ok");
+
+		const result = retryProviderRequest(request, { maxRetries: 1 });
+		await vi.advanceTimersByTimeAsync(499);
+		expect(request).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(1);
 		await expect(result).resolves.toBe("ok");
 		expect(request).toHaveBeenCalledTimes(2);
 	});

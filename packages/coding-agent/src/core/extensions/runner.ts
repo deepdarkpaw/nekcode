@@ -797,6 +797,11 @@ export class ExtensionRunner {
 		this.shutdownHandler();
 	}
 
+	/** Notify extensions after the registry or active tool set changes. */
+	notifyToolsChanged(): void {
+		this.runtime.eventBus?.emit("tools_changed", undefined);
+	}
+
 	getActiveTools(): string[] {
 		this.assertActive();
 		return this.runtime.getActiveTools();
@@ -1092,6 +1097,11 @@ export class ExtensionRunner {
 
 					if (handlerResult.content !== undefined) {
 						currentEvent.content = handlerResult.content;
+						if (handlerResult.structuredContent === undefined) delete currentEvent.structuredContent;
+						modified = true;
+					}
+					if (handlerResult.structuredContent !== undefined) {
+						currentEvent.structuredContent = handlerResult.structuredContent;
 						modified = true;
 					}
 					if (handlerResult.details !== undefined) {
@@ -1126,6 +1136,7 @@ export class ExtensionRunner {
 		return {
 			content: currentEvent.content,
 			details: currentEvent.details,
+			structuredContent: currentEvent.structuredContent,
 			isError: currentEvent.isError,
 			usage: currentEvent.usage,
 		};

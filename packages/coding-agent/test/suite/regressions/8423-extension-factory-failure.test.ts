@@ -85,4 +85,24 @@ describe("issue #8423 extension factory failure", () => {
 		await expect(failingLoad).rejects.toThrow("factory failed");
 		expect(runtime.pendingProviderRegistrations.map(({ name }) => name)).toEqual(["working-provider"]);
 	});
+
+	// pi#10054
+	it("rejects invalid extension command registrations while loading", async () => {
+		const invalidFactories: Array<(pi: ExtensionAPI) => void> = [
+			(pi) => pi.registerCommand("", { handler: async () => {} }),
+			(pi) => pi.registerCommand(undefined as unknown as string, { handler: async () => {} }),
+			(pi) => {
+				const registerCommand = pi.registerCommand as (name: string, options: { description?: string }) => void;
+				registerCommand("missing-handler", {});
+			},
+		];
+
+		for (const [index, factory] of invalidFactories.entries()) {
+			const runtime = createExtensionRuntime();
+			const eventBus = createEventBus();
+			await expect(
+				loadExtensionFromFactory(factory, process.cwd(), eventBus, runtime, `<invalid-command-${index}>`),
+			).rejects.toThrow();
+		}
+	});
 });

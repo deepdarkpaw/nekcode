@@ -133,6 +133,48 @@ describe("subagent card rendering", () => {
 		},
 	);
 
+	it("collapses dynamic fields without flattening composed card rows or Markdown", () => {
+		initTheme("dark");
+		const running = renderCard({
+			description: "running description\nwith a second line",
+			activity: "tool output\nwith a newline\tand tab",
+		});
+		const completed = renderCard(
+			{
+				status: "completed",
+				description: "completed description\nwith a second line",
+				endedAt: NOW - 3_000,
+				finalText: "summary line\nwith more result text\n\n```text\n  indented code\n    deeper\n```",
+				tokens: 1200,
+			},
+			expanded,
+		);
+		const errored = renderCard({
+			status: "errored",
+			description: "errored description\nwith a second line",
+			error: "error line\nwith details\tand tabs",
+		});
+		const cards = [running, completed, errored];
+
+		for (const card of cards) {
+			const lines = card.render(80);
+			// pi#subagent-card-newlines
+			expect(lines.every((line) => !line.includes("\n"))).toBe(true);
+			expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
+		}
+
+		const runningLines = running.render(120).map(stripAnsi);
+		expect(runningLines[0]?.startsWith(" ")).toBe(true);
+		expect(runningLines[0]?.startsWith("  ")).toBe(false);
+		expect(runningLines[0]).toContain("running description with a second line  claude-sonnet-4");
+		expect(runningLines[1]?.startsWith("   ")).toBe(true);
+		expect(runningLines[1]?.startsWith("    ")).toBe(false);
+
+		const completedText = completed.render(120).map(stripAnsi).join("\n");
+		expect(completedText).toContain("  indented code");
+		expect(completedText).toContain("    deeper");
+	});
+
 	it("shows a short model-less card and omits an empty activity line", () => {
 		initTheme("dark");
 		const text = assertFits(renderCard({ model: undefined, activity: undefined }, collapsed, true));

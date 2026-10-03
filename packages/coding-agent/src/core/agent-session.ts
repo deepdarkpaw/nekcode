@@ -99,6 +99,7 @@ import {
 	type ToolExecutionEndEvent,
 	type ToolExecutionStartEvent,
 	type ToolExecutionUpdateEvent,
+	type ToolExposure,
 	type ToolInfo,
 	type TreePreparation,
 	type TurnStartEvent,
@@ -570,6 +571,7 @@ export class AgentSession {
 						input: args as Record<string, unknown>,
 						content: result.content,
 						details: result.details,
+						structuredContent: result.structuredContent,
 						isError,
 						usage: result.usage,
 					})
@@ -587,11 +589,14 @@ export class AgentSession {
 				return undefined;
 			}
 
+			const contentReplaced = hookResult?.content !== undefined || normalizedContent !== content;
 			return {
 				content: normalizedContent,
 				details: hookResult?.details,
+				...(contentReplaced ? {} : { structuredContent: result.structuredContent }),
 				isError: hookResult?.isError ?? isError,
 				usage: hookResult?.usage,
+				...(hookResult?.structuredContent !== undefined ? { structuredContent: hookResult.structuredContent } : {}),
 			};
 		};
 	}
@@ -1298,12 +1303,19 @@ export class AgentSession {
 			description: definition.description,
 			parameters: definition.parameters,
 			promptGuidelines: definition.promptGuidelines,
+			exposure: this._getToolExposure(definition.name),
+			...(definition.namespace ? { namespace: definition.namespace } : {}),
+			...(definition.annotations ? { annotations: { ...definition.annotations } } : {}),
 			sourceInfo,
 		}));
 	}
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
 		return this._toolDefinitions.get(name)?.definition;
+	}
+
+	private _getToolExposure(name: string): ToolExposure {
+		return this._toolDefinitions.get(name)?.definition.exposure ?? "direct";
 	}
 
 	/**
@@ -1313,17 +1325,15 @@ export class AgentSession {
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
-		const tools: AgentTool[] = [];
-		const validToolNames: string[] = [];
-		for (const name of toolNames) {
+		const validToolNames = [...new Set(toolNames)].filter(
+			(name) => this._toolRegistry.has(name) && this._getToolExposure(name) !== "hidden",
+		);
+		this.agent.state.tools = validToolNames.flatMap((name) => {
 			const tool = this._toolRegistry.get(name);
-			if (tool) {
-				tools.push(tool);
-				validToolNames.push(name);
-			}
-		}
-		this.agent.state.tools = tools;
+			return tool ? [tool] : [];
+		});
 		this._rebuildSystemPrompt(validToolNames);
+		this._extensionRunner.notifyToolsChanged();
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1444,11 +1454,8 @@ export class AgentSession {
 		options: NormalizedBuildSystemPromptOptions,
 		messages: AgentMessage[] = this.agent.state.messages,
 	): SystemMessage | undefined {
-		options.selectedTools = [...new Set(options.selectedTools)].filter((name) => this._toolRegistry.has(name));
-		this.agent.state.tools = options.selectedTools.flatMap((name) => {
-			const tool = this._toolRegistry.get(name);
-			return tool ? [tool] : [];
-		});
+		this.setActiveToolsByName(options.selectedTools);
+		options.selectedTools = this.getActiveToolNames();
 		const sections = diffSystemPromptSections(
 			getCurrentSystemMessage(messages)?.sections ?? {},
 			buildSystemPromptSections(options),
@@ -1487,14 +1494,7 @@ export class AgentSession {
 	private _restoreToolsFromTranscript(): void {
 		const current = getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages);
 		if (!current) return;
-		const toolNames = (current.toolsAdded ?? [])
-			.map((tool) => tool.name)
-			.filter((name) => this._toolRegistry.has(name));
-		this.agent.state.tools = toolNames.flatMap((name) => {
-			const registered = this._toolRegistry.get(name);
-			return registered ? [registered] : [];
-		});
-		this._rebuildSystemPrompt(toolNames);
+		this.setActiveToolsByName((current.toolsAdded ?? []).map((tool) => tool.name));
 	}
 
 	// =========================================================================
@@ -3211,8 +3211,18 @@ export class AgentSession {
 		);
 	}
 
+	private _isActivatedOnRegistration(name: string): boolean {
+		const exposure = this._getToolExposure(name);
+		return (
+			(exposure === "direct" || exposure === "model-only") &&
+			this._toolDefinitions.get(name)?.definition.defaultActive !== false
+		);
+	}
+
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
-		const previousRegistryNames = new Set(this._toolRegistry.keys());
+		const previouslyActivatedOnRegistration = new Set(
+			[...this._toolRegistry.keys()].filter((name) => this._isActivatedOnRegistration(name)),
+		);
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
 		const excludedToolNames = this._excludedToolNames;
@@ -3285,17 +3295,18 @@ export class AgentSession {
 
 		if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (allowedToolNames.has(toolName)) {
+				const exposure = this._getToolExposure(toolName);
+				if (allowedToolNames.has(toolName) && (exposure === "direct" || exposure === "model-only")) {
 					nextActiveToolNames.push(toolName);
 				}
 			}
 		} else if (options?.includeAllExtensionTools) {
 			for (const tool of wrappedExtensionTools) {
-				nextActiveToolNames.push(tool.name);
+				if (this._isActivatedOnRegistration(tool.name)) nextActiveToolNames.push(tool.name);
 			}
 		} else if (!options?.activeToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (!previousRegistryNames.has(toolName)) {
+				if (!previouslyActivatedOnRegistration.has(toolName) && this._isActivatedOnRegistration(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
 			}
