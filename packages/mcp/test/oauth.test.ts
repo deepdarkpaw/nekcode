@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { Server } from "node:http";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpClient, StreamableHttpTransport } from "../src/index.ts";
 import {
 	adaptOAuthProvider,
@@ -501,6 +502,36 @@ describe("MCP OAuth", () => {
 });
 
 describe("OAuthCallbackServer pages", () => {
+	it("does not publish an automatically assigned Fetch-blocked callback port", async () => {
+		const address = vi
+			.spyOn(Server.prototype, "address")
+			.mockReturnValueOnce({ address: "127.0.0.1", family: "IPv4", port: 6000 });
+		let callback: OAuthCallbackServer | undefined;
+		try {
+			callback = await OAuthCallbackServer.listen();
+			expect(address.mock.calls.length).toBeGreaterThanOrEqual(2);
+			expect(new URL(callback.redirectUrl).port).not.toBe("6000");
+			const pending = callback.waitForCallback("safe-port");
+			const response = await fetch(`${callback.redirectUrl}?code=abc&state=safe-port`);
+			expect(response.status).toBe(200);
+			await response.text();
+			expect((await pending).code).toBe("abc");
+		} finally {
+			address.mockRestore();
+			await callback?.close();
+		}
+	});
+
+	it("does not retry a bind error or replace an explicitly configured port", async () => {
+		const held = await OAuthCallbackServer.listen();
+		try {
+			const port = Number(new URL(held.redirectUrl).port);
+			await expect(OAuthCallbackServer.listen({ port })).rejects.toMatchObject({ code: "EADDRINUSE" });
+		} finally {
+			await held.close();
+		}
+	});
+
 	it("renders plain text by default", async () => {
 		const callback = await OAuthCallbackServer.listen();
 		try {
