@@ -603,10 +603,12 @@ function getServiceTierCostMultiplier(
 	model: Pick<Model<"openai-codex-responses">, "id">,
 	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 ): number {
-	switch (serviceTier) {
+	const serviceTierName = serviceTier as string;
+	switch (serviceTierName) {
 		case "flex":
 			return 0.5;
 		case "priority":
+		case "fast":
 			return model.id === "gpt-5.5" ? 2.5 : 2;
 		default:
 			return 1;
@@ -632,7 +634,11 @@ function resolveCodexServiceTier(
 	responseServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 	requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 ): ResponseCreateParamsStreaming["service_tier"] | undefined {
-	if (responseServiceTier === "default" && (requestServiceTier === "flex" || requestServiceTier === "priority")) {
+	const requestServiceTierName = requestServiceTier as string;
+	if (
+		responseServiceTier === "default" &&
+		(requestServiceTierName === "flex" || requestServiceTierName === "priority" || requestServiceTierName === "fast")
+	) {
 		return requestServiceTier;
 	}
 	return responseServiceTier ?? requestServiceTier;

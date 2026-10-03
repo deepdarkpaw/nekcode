@@ -1,3 +1,4 @@
+import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
@@ -477,8 +478,10 @@ describe("openai-responses provider defaults", () => {
 		expect(captured.clientRequestId).toBeNull();
 	});
 
+	// pi#10034
 	it.each([
 		["gpt-5.4", "priority", 2],
+		["gpt-5.4", "fast", 2],
 		["gpt-5.5", "priority", 2.5],
 		["gpt-5.5", "flex", 0.5],
 	] as const)("applies %s %s service-tier cost multiplier", async (modelId, serviceTier, multiplier) => {
@@ -514,7 +517,10 @@ describe("openai-responses provider defaults", () => {
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 			}),
-			{ apiKey: "test-key", serviceTier },
+			{
+				apiKey: "test-key",
+				serviceTier: serviceTier as unknown as ResponseCreateParamsStreaming["service_tier"],
+			},
 		);
 
 		const result = await stream.result();
