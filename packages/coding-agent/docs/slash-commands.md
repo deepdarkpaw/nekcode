@@ -45,6 +45,7 @@ Review a session before exporting or sharing it. Sessions can contain prompts, t
 
 | Command | Description |
 |---|---|
+| `/mcp [login|logout|reconnect] [server]` | Manage [MCP servers](mcp.md), exposure, connections, and OAuth |
 | `/trust` | Save a project trust decision for future nekcode processes |
 | `/reload` | Reload keybindings, extensions, skills, templates, themes, and context files |
 | `/hotkeys` | Show active keyboard shortcuts |

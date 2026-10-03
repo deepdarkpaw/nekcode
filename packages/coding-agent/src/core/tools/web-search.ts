@@ -1,5 +1,17 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import {
+	type CallToolResult,
+	McpClient,
+	McpConnectionClosedError,
+	type McpFetch,
+	McpHttpError,
+	McpSessionExpiredError,
+	type McpTransport,
+	StreamableHttpTransport,
+} from "@earendil-works/pi-mcp";
 import { type Static, Type } from "typebox";
+import { APP_NAME, VERSION } from "../../config.ts";
+import { raceWithAbortSignal } from "../../utils/abort.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { webSearchRenderers } from "./renderers/web-search.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -37,7 +49,9 @@ export interface WebSearchToolDetails {
 
 export interface WebSearchToolOptions {
 	endpoint?: string;
-	fetch?: typeof fetch;
+	fetch?: McpFetch;
+	/** New transport for each connection, including a retry. Useful for offline testing. */
+	createTransport?: (endpoint: string) => McpTransport;
 	timeoutMs?: number;
 	maxBytes?: number;
 }
@@ -50,11 +64,6 @@ export const webSearchToolSystemPromptContribution = {
 	snippet: "Search the public web for current information and cite the returned sources.",
 	guidelines: [],
 } as const;
-
-interface JsonRpcResponse {
-	result?: { content?: Array<{ type?: string; text?: string }> };
-	error?: { message?: string };
-}
 
 /** Parse the text blocks returned by Exa's hosted MCP tool. */
 export function parseWebSearchResults(text: string): WebSearchResult[] {
@@ -99,21 +108,21 @@ function filterResults(
 	});
 }
 
-function responseText(body: string): string {
-	for (const line of body.split("\n")) {
-		if (!line.startsWith("data:")) continue;
-		const payload = line.slice(5).trim();
-		if (!payload || payload === "[DONE]") continue;
-		try {
-			const response = JSON.parse(payload) as JsonRpcResponse;
-			if (response.error) throw new Error(response.error.message ?? "Exa web search failed.");
-			const text = response.result?.content?.find((item) => item.type === "text")?.text;
-			if (text) return text;
-		} catch (error) {
-			if (error instanceof Error && error.message !== "Unexpected end of JSON input") throw error;
-		}
-	}
-	throw new Error("Exa web search returned no results.");
+function responseText(result: CallToolResult): string {
+	const text = result.content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("\n");
+	if (result.isError) throw new Error(text || "Exa web search failed.");
+	if (!text) throw new Error("Exa web search returned no results.");
+	return text;
+}
+
+function isConnectionFailure(error: unknown, client: McpClient | undefined): boolean {
+	if (error instanceof McpConnectionClosedError || error instanceof McpSessionExpiredError) return true;
+	if (error instanceof McpHttpError) return error.status === 408 || error.status === 429 || error.status >= 500;
+	if (error instanceof TypeError) return true;
+	return client?.connectionState === "closed";
 }
 
 function formatResults(results: readonly WebSearchResult[]): string {
@@ -132,9 +141,42 @@ export function createWebSearchToolDefinition(
 	options: WebSearchToolOptions = {},
 ): ToolDefinition<typeof webSearchSchema, WebSearchToolDetails> {
 	const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
-	const fetchImpl = options.fetch ?? globalThis.fetch;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+	const createTransport =
+		options.createTransport ??
+		((url: string) => new StreamableHttpTransport({ url, fetch: options.fetch, openGetStream: false }));
+	let client: McpClient | undefined;
+	let opening: { client: McpClient; ready: Promise<McpClient>; waiters: number } | undefined;
+	const getClient = async (signal: AbortSignal): Promise<McpClient> => {
+		signal.throwIfAborted();
+		if (client?.connectionState === "connected") return client;
+		if (!opening) {
+			const next = new McpClient({ name: APP_NAME, version: VERSION, requestTimeoutMs: timeoutMs });
+			const state = { client: next, ready: Promise.resolve(next), waiters: 0 };
+			state.ready = next
+				.connect(createTransport(endpoint))
+				.then(() => {
+					if (opening === state) client = next;
+					return next;
+				})
+				.finally(() => {
+					if (opening === state) opening = undefined;
+				});
+			opening = state;
+		}
+		const state = opening;
+		state.waiters++;
+		try {
+			return await raceWithAbortSignal(state.ready, signal);
+		} finally {
+			state.waiters--;
+			if (signal.aborted && state.waiters === 0 && opening === state) {
+				opening = undefined;
+				void state.client.close();
+			}
+		}
+	};
 	return {
 		name: "web_search",
 		label: "web_search",
@@ -147,26 +189,31 @@ export function createWebSearchToolDefinition(
 			const combinedSignal = signal
 				? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
 				: AbortSignal.timeout(timeoutMs);
-			const response = await fetchImpl(endpoint, {
-				method: "POST",
-				headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
-				body: JSON.stringify({
-					jsonrpc: "2.0",
-					id: 1,
-					method: "tools/call",
-					params: {
-						name: "web_search_exa",
-						arguments: {
+			let raw = "";
+			for (let attempt = 0; ; attempt++) {
+				let current: McpClient | undefined;
+				try {
+					current = await getClient(combinedSignal);
+					const result = await current.callTool(
+						"web_search_exa",
+						{
 							query: input.query,
 							objective: input.objective ?? input.query,
 							numResults: input.num_results ?? DEFAULT_RESULTS,
 						},
-					},
-				}),
-				signal: combinedSignal,
-			});
-			if (!response.ok) throw new Error(`Web search failed with HTTP ${response.status}.`);
-			const raw = responseText(await response.text());
+						{ signal: combinedSignal, timeoutMs },
+					);
+					raw = responseText(result);
+					break;
+				} catch (error) {
+					combinedSignal.throwIfAborted();
+					if (attempt > 0 || !isConnectionFailure(error, current)) throw error;
+					if (current) {
+						if (client === current) client = undefined;
+						await raceWithAbortSignal(current.close(), combinedSignal);
+					}
+				}
+			}
 			const results = filterResults(parseWebSearchResults(raw), input.allowed_domains, input.blocked_domains);
 			const formatted = truncateHead(formatResults(results), { maxBytes, maxLines: Number.MAX_SAFE_INTEGER });
 			return {

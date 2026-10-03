@@ -60,6 +60,7 @@ import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
+import type { McpServerConfig, McpServerRegistry, RegisteredMcpServer } from "../mcp-servers.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
@@ -679,6 +680,11 @@ export interface SessionShutdownEvent {
 	targetSessionFile?: string;
 }
 
+export interface McpServersChangeEvent {
+	type: "mcp_servers_change";
+	servers: RegisteredMcpServer[];
+}
+
 /** Preparation data for tree navigation */
 export interface TreePreparation {
 	targetId: string;
@@ -1226,6 +1232,7 @@ export function isToolCallEventType(toolName: string, event: ToolCallEvent): boo
 
 /** Union of all event types */
 export type ExtensionEvent =
+	| McpServersChangeEvent
 	| ProjectTrustEvent
 	| ResourcesDiscoverEvent
 	| SessionEvent
@@ -1418,6 +1425,7 @@ export interface ExtensionAPI {
 		event: "resources_discover",
 		handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>,
 	): () => void;
+	on(event: "mcp_servers_change", handler: ExtensionHandler<McpServersChangeEvent>): () => void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): () => void;
 	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): () => void;
 	on(
@@ -1683,6 +1691,13 @@ export interface ExtensionAPI {
 	 */
 	unregisterProvider(name: string): void;
 
+	/** Register or replace a server owned by this extension. File-configured servers take precedence. */
+	registerMcpServer(name: string, config: McpServerConfig): void;
+	/** Remove a server owned by this extension. */
+	unregisterMcpServer(name: string): void;
+	/** Registered servers for the extension that connects them. */
+	getMcpServers(): RegisteredMcpServer[];
+
 	/** Shared event bus for extension communication. */
 	events: EventBus;
 }
@@ -1893,6 +1908,7 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  * Contains flag values (defaults set during registration, CLI values set after).
  */
 export interface ExtensionRuntimeState {
+	mcpServers: McpServerRegistry;
 	/** Shared event bus for synchronous registry and active-tool notifications. */
 	eventBus?: EventBus;
 	flagValues: Map<string, boolean | string>;

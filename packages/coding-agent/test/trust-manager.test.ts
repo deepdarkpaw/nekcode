@@ -37,6 +37,12 @@ describe("ProjectTrustStore", () => {
 		expect(store.get(childDir)).toBe(true);
 	});
 
+	it("requires trust for a project MCP configuration", () => {
+		mkdirSync(join(cwd, CONFIG_DIR_NAME), { recursive: true });
+		writeFileSync(join(cwd, CONFIG_DIR_NAME, "mcp.json"), "{}");
+		expect(hasTrustRequiringProjectResources(cwd)).toBe(true);
+	});
+
 	it("detects trust-requiring project resources", () => {
 		const originalHome = process.env.HOME;
 		process.env.HOME = tempDir;

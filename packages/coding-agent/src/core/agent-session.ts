@@ -394,6 +394,8 @@ export class AgentSession {
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
+	/** Restored loadout tools waiting for background registration, until the next run or a replacement loadout. */
+	private _pendingToolNames = new Set<string>();
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
@@ -1325,6 +1327,13 @@ export class AgentSession {
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
+		const previous = this.getActiveToolNames();
+		this._setActiveTools(toolNames);
+		const active = new Set(this.getActiveToolNames());
+		if (previous.some((name) => !active.has(name))) this._pendingToolNames.clear();
+	}
+
+	private _setActiveTools(toolNames: string[]): void {
 		const validToolNames = [...new Set(toolNames)].filter(
 			(name) => this._toolRegistry.has(name) && this._getToolExposure(name) !== "hidden",
 		);
@@ -1332,6 +1341,7 @@ export class AgentSession {
 			const tool = this._toolRegistry.get(name);
 			return tool ? [tool] : [];
 		});
+		for (const name of validToolNames) this._pendingToolNames.delete(name);
 		this._rebuildSystemPrompt(validToolNames);
 		this._extensionRunner.notifyToolsChanged();
 	}
@@ -1492,9 +1502,19 @@ export class AgentSession {
 
 	/** Restore the active tool loadout declared by the session transcript, if it declares one. */
 	private _restoreToolsFromTranscript(): void {
+		this._pendingToolNames.clear();
 		const current = getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages);
 		if (!current) return;
-		this.setActiveToolsByName((current.toolsAdded ?? []).map((tool) => tool.name));
+		const names = (current.toolsAdded ?? []).map((tool) => tool.name);
+		this._setActiveTools(names);
+		this._pendingToolNames = new Set(
+			names.filter(
+				(name) =>
+					!this._toolRegistry.has(name) &&
+					(!this._allowedToolNames || this._allowedToolNames.has(name)) &&
+					!this._excludedToolNames?.has(name),
+			),
+		);
 	}
 
 	// =========================================================================
@@ -1502,6 +1522,7 @@ export class AgentSession {
 	// =========================================================================
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		this._pendingToolNames.clear();
 		this._agentRunAbortRequested = false;
 		this._lastActivityOutcome = "completed";
 		this._isAgentRunActive = true;
@@ -3312,7 +3333,8 @@ export class AgentSession {
 			}
 		}
 
-		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
+		nextActiveToolNames.push(...this._pendingToolNames);
+		this._setActiveTools([...new Set(nextActiveToolNames)]);
 	}
 
 	private _buildRuntime(options: {
@@ -3374,6 +3396,7 @@ export class AgentSession {
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
+		const previousToolNames = this.getActiveToolNames();
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 		oldRunner.invalidate();
 		await this.settingsManager.reload();
@@ -3381,10 +3404,11 @@ export class AgentSession {
 		resetApiProviders();
 		await this._resourceLoader.reload();
 		this._buildRuntime({
-			activeToolNames: this.getActiveToolNames(),
+			activeToolNames: previousToolNames,
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
+		this._pendingToolNames = new Set(previousToolNames.filter((name) => !this._toolRegistry.has(name)));
 
 		const hasBindings =
 			this._extensionUIContext ||

@@ -15,6 +15,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import { type McpServerConfig, McpServerRegistry, mcpNamespace, validateMcpServerConfig } from "../mcp-servers.ts";
 import { readNekManifest } from "../nek-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
@@ -181,9 +182,11 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
 		pendingNativeProviderRegistrations: [],
+		mcpServers: new McpServerRegistry(),
 		assertActive,
 		invalidate: (message) => {
 			if (state.staleMessage) return;
+			runtime.eventBus?.emit("runtime_invalidated", undefined);
 			state.staleMessage =
 				message ??
 				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
@@ -439,6 +442,35 @@ function createExtensionAPI(
 		unregisterProvider(name: string) {
 			assertActive();
 			applyRuntimeChange(() => runtime.unregisterProvider(name, extension.path));
+		},
+
+		registerMcpServer(name: string, config: McpServerConfig) {
+			assertActive();
+			const validated = validateMcpServerConfig(name, config);
+			if (typeof validated === "string") {
+				throw new Error(`Invalid MCP server registered by extension "${extension.path}": ${validated}`);
+			}
+			const owner = runtime.mcpServers.get(name)?.extensionPath;
+			if (owner !== undefined && owner !== extension.path) {
+				throw new Error(`MCP server "${name}" is already registered by extension "${owner}"`);
+			}
+			// Names that differ only in `-` and `_` would share a namespace.
+			const clash = runtime.mcpServers
+				.list()
+				.find((server) => server.name !== name && mcpNamespace(server.name) === mcpNamespace(name));
+			if (clash) throw new Error(`MCP server "${name}" conflicts with registered server "${clash.name}"`);
+			const server = { name, config: structuredClone(validated), extensionPath: extension.path };
+			applyRuntimeChange(() => runtime.mcpServers.register(server));
+		},
+
+		unregisterMcpServer(name: string) {
+			assertActive();
+			applyRuntimeChange(() => runtime.mcpServers.unregister(name, extension.path));
+		},
+
+		getMcpServers() {
+			assertActive();
+			return runtime.mcpServers.list();
 		},
 
 		events: {

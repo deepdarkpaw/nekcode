@@ -7,6 +7,7 @@ This page documents nekcode's command-line commands and options. Run `nek --help
 ```sh
 nek [options] [--] [@files...] [messages...]
 nek auth <check|print-api-key|print-bearer-token> [options]
+nek mcp <add|remove|list|login|logout> [options]
 ```
 
 <a id="modes"></a>
@@ -205,6 +206,21 @@ nek -e ./review-extension/
 ```
 
 See [Extensions](extensions.md) for the extension API and [packages.md](packages.md) for the intentionally limited explicit-directory format.
+
+## MCP commands
+
+Shell-level MCP commands use the built-in implementation without loading extensions. See [MCP Servers](mcp.md) for configuration, project trust, exposure, and OAuth.
+
+| Command | Behavior |
+|---|---|
+| `nek mcp add <server> [options] -- <command> [args...]` | Add or replace a stdio server |
+| `nek mcp add <server> [options] --url <url>` | Add or replace a Streamable HTTP server |
+| `nek mcp remove <server> [--local]` | Remove a server from the selected config file |
+| `nek mcp list [--json]` | Connect enabled servers and report state, tools, and errors; exit 1 on failure |
+| `nek mcp login <server> [--timeout <seconds>]` | Sign in through OAuth; default browser timeout is 300 seconds |
+| `nek mcp logout <server>` | Delete that server's stored OAuth credentials |
+
+`add` and `remove` use user-level configuration by default; `-l` or `--local` selects `.nek/mcp.json`. Add options include repeatable `--env KEY=VALUE` and `--header KEY=VALUE`, `--cwd`, `--bearer-token-env-var`, OAuth client settings, `--description`, and `--exposure deferred|direct|hidden`. See `nek mcp --help` for exact options. Session-level changes are available through `/mcp`.
 
 ## Credential commands
 

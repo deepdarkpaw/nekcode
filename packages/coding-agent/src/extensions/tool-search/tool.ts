@@ -165,6 +165,8 @@ export interface ToolSearchToolDetails {
 
 export interface ToolSearchToolOptions {
 	tools?: Pick<ExtensionAPI, "getAllTools" | "getActiveTools" | "setActiveTools">;
+	/** Wait for registered background sources before taking the searchable tool snapshot. */
+	beforeSearch?: (signal: AbortSignal | undefined) => Promise<void>;
 }
 
 function isSearchable(exposure: ToolExposure): boolean {
@@ -211,10 +213,12 @@ export function createToolSearchToolDefinition(
 		promptSnippet: "Search for tools that are not loaded yet and load the matches",
 		parameters: toolSearchSchema,
 		exposure: "model-only",
-		async execute(_toolCallId, { query, limit }) {
+		async execute(_toolCallId, { query, limit }, signal) {
 			if (query.trim() === "") throw new Error("query must not be empty");
 			const max = limit ?? DEFAULT_TOOL_SEARCH_LIMIT;
 			if (!Number.isInteger(max) || max <= 0) throw new Error("limit must be a positive integer");
+			await options.beforeSearch?.(signal);
+			signal?.throwIfAborted();
 			const tools = options.tools ? searchAndLoad(options.tools, query, max) : [];
 			const text =
 				tools.length === 0

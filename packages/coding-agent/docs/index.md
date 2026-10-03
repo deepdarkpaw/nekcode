@@ -19,6 +19,7 @@ If nekcode is already installed:
 
 nekcode can reuse prompts, load specialized instructions, add explicit extensions, change its terminal interface, connect model services, and load themes.
 
+- [MCP servers](mcp.md): connect tools and resources, configure discovery, and manage OAuth.
 - [Extensions](extensions.md)
 - [Skills](skills.md)
 - [Prompt templates](prompt-templates.md)
