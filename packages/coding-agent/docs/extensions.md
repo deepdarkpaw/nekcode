@@ -133,9 +133,10 @@ A custom tool defines a name, model-facing description, TypeBox parameter schema
 Its result requires model-facing `content` and a `details` field for rendering or state reconstruction.
 Use `details: undefined` when there are no structured details. If the tool makes nested model calls, include their `usage` in the result so session totals remain accurate.
 
-Throw from `execute()` to produce a failed tool result.
-Returning an object does not mark it as an error.
+Throw from `execute()` or return `isError: true` to produce a failed tool result. A returned error keeps its `details` and `structuredContent`; describing a failure in `content` alone does not mark the result as an error.
 Return `terminate: true` only when the agent should skip its automatic follow-up after every completed tool in that batch agrees to terminate.
+
+Tools may declare an `outputSchema` and return matching `structuredContent` for programmatic consumers. This payload is not sent to the model; `content` remains the model-facing result. `tool_result` handlers can replace structured content. Replacing `content` without returning `structuredContent` drops the prior structured payload because the two may no longer agree.
 
 Use sequential execution when tools share mutable in-memory state.
 File-mutating tools should wrap the complete read-modify-write operation with `withFileMutationQueue()`.
@@ -162,11 +163,13 @@ A tool's optional `exposure` controls how it enters the model's tool declaration
 | `deferred` | Registered but inactive by default. It is declared only after being added with `pi.setActiveTools()`, commonly by `tool_search`. |
 | `hidden` | Registered for extension state but never declared or activated, even when requested. |
 
-Direct and model-only tools are activated when registered unless `defaultActive: false` is set. A tool named in the `--tools` allowlist or explicitly passed to `pi.setActiveTools()` can be activated; the allowlist still filters every tool. `pi.getAllTools()` reports the resolved exposure (defaulting to `direct`), namespace, and schema metadata.
+Direct and model-only tools are activated when registered unless `defaultActive: false` is set. Naming a direct or model-only tool in the `--tools` allowlist enables it even when inactive by default. Deferred tools can be explicitly enabled with `pi.setActiveTools()`; hidden tools cannot. The allowlist still filters every tool. `pi.getAllTools()` reports the resolved exposure (defaulting to `direct`), namespace, annotations, and schema metadata.
+
+The shared event bus emits `tools_changed` after registry refreshes and active-tool changes. Extensions can subscribe with `pi.events.on("tools_changed", handler)` to synchronize their tool state. Synchronous handlers finish before the caller returns; handlers that change tools should guard against reentrant notifications.
 
 #### `tool_search`
 
-nekcode includes the `tool_search` extension. It is declared only while at least one inactive deferred tool exists. It searches the names, descriptions, parameter names, schema descriptions, and optional namespace metadata of registered deferred tools with BM25 ranking. A matching call activates the tools for the next model request. It never searches or loads direct, model-only, or hidden tools, including the always-direct `web_search` tool.
+nekcode includes the `tool_search` extension. It activates on session start and tool-set changes only while at least one allowed, inactive deferred tool exists, and deactivates when none remain. Its description lists the namespaces of the discoverable tools. It searches the names, descriptions, parameter names, schema descriptions, and optional namespace metadata of registered deferred tools with BM25 ranking. A matching call activates the tools for the next model request. This uses the normal active set, so discoveries survive resume, tree navigation, and fork on that branch. It never searches or loads direct, model-only, or hidden tools, including the always-direct `web_search` tool.
 
 Use `exposure: "deferred"` for optional tools that should stay out of the initial request while remaining discoverable:
 
