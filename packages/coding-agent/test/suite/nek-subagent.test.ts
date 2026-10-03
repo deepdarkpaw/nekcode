@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../../src/config.ts";
 import { DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/config.ts";
 import { createNekExtension } from "../../src/extensions/nek/index.ts";
-import { READ_ONLY_TOOL_NAMES } from "../../src/extensions/nek/services/agent-types.ts";
+import { BUILTIN_AGENT_TYPES, READ_ONLY_TOOL_NAMES } from "../../src/extensions/nek/services/agent-types.ts";
 import type { SubagentToolData } from "../../src/extensions/nek/types.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -332,7 +332,7 @@ describe("nek subagents", () => {
 		await harness.session.prompt("bugbot");
 		const text = JSON.stringify(toolResults(harness, "subagent")[0].content);
 		expect(text).toContain(
-			'Unknown subagent_type \\"bugbot\\". Available subagent types: generalPurpose, explore, shell.',
+			`Unknown subagent_type \\"bugbot\\". Available subagent types: ${BUILTIN_AGENT_TYPES.map((type) => type.name).join(", ")}.`,
 		);
 	});
 });

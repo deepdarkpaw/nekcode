@@ -797,6 +797,11 @@ export class ExtensionRunner {
 		this.shutdownHandler();
 	}
 
+	/** Notify extensions after the registry or active tool set changes. */
+	notifyToolsChanged(): void {
+		this.runtime.eventBus?.emit("tools_changed", undefined);
+	}
+
 	getActiveTools(): string[] {
 		this.assertActive();
 		return this.runtime.getActiveTools();
@@ -1131,6 +1136,7 @@ export class ExtensionRunner {
 		return {
 			content: currentEvent.content,
 			details: currentEvent.details,
+			structuredContent: currentEvent.structuredContent,
 			isError: currentEvent.isError,
 			usage: currentEvent.usage,
 		};

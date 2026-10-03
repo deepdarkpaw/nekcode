@@ -10,7 +10,14 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { agentLoop, agentLoopContinue, runAgentLoop } from "../src/agent-loop.ts";
 import { setDefaultStreamFn } from "../src/index.ts";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.ts";
+import type {
+	AfterToolCallResult,
+	AgentContext,
+	AgentEvent,
+	AgentLoopConfig,
+	AgentMessage,
+	AgentTool,
+} from "../src/types.ts";
 
 // Mock stream for testing - mimics MockAssistantStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -1981,7 +1988,11 @@ describe("agentLoop with AgentMessage", () => {
 		const stream = agentLoop(
 			[createUserMessage("run structured")],
 			{ messages: [], tools: [tool] },
-			{ model: createModel(), convertToLlm: identityConverter },
+			{
+				model: createModel(),
+				convertToLlm: identityConverter,
+				finishTurn: () => ({ action: "end" }),
+			},
 			undefined,
 			() => {
 				const mockStream = new MockAssistantStream();
@@ -2005,6 +2016,7 @@ describe("agentLoop with AgentMessage", () => {
 		const messages = await stream.result();
 		const result = messages.find((message) => message.role === "toolResult");
 		expect(result?.role === "toolResult" ? result.isError : false).toBe(true);
+		expect(result?.role === "toolResult" ? result.details : undefined).toEqual({ retained: true });
 	});
 
 	it("drops structured content when afterToolCall replaces content", async () => {
@@ -2029,6 +2041,7 @@ describe("agentLoop with AgentMessage", () => {
 			{
 				model: createModel(),
 				convertToLlm: identityConverter,
+				finishTurn: () => ({ action: "end" }),
 				afterToolCall: async () => ({ content: [{ type: "text", text: "replacement" }] }),
 			},
 			undefined,
@@ -2053,6 +2066,73 @@ describe("agentLoop with AgentMessage", () => {
 		const result = (await stream.result()).find((message) => message.role === "toolResult");
 		expect(result?.role === "toolResult" ? result.details : undefined).toEqual({});
 	});
+
+	it.each(["sequential", "parallel"] as const)(
+		"composes structured result overrides in %s mode",
+		async (toolExecution) => {
+			const schema = Type.Object({});
+			const tool: AgentTool<typeof schema, { retained: boolean }> = {
+				name: "structured",
+				label: "Structured",
+				description: "Structured results",
+				parameters: schema,
+				async execute() {
+					return {
+						content: [{ type: "text", text: "original" }],
+						details: { retained: true },
+						structuredContent: { value: "original" },
+						isError: true,
+					};
+				},
+			};
+			const redacted = [{ type: "text" as const, text: "redacted" }];
+			const patches: AfterToolCallResult[] = [
+				{ content: redacted },
+				{ structuredContent: { value: "replaced" } },
+				{ content: redacted, structuredContent: { value: "both" } },
+				{ details: { note: "kept" }, isError: false },
+			];
+			const seen: unknown[] = [];
+			for (const patch of patches) {
+				await runAgentLoop(
+					[createUserMessage("run")],
+					{ messages: [], tools: [tool] },
+					{
+						model: createModel(),
+						convertToLlm: identityConverter,
+						toolExecution,
+						afterToolCall: async ({ result, isError }) => {
+							expect(result.structuredContent).toEqual({ value: "original" });
+							expect(isError).toBe(true);
+							return patch;
+						},
+						finishTurn: () => ({ action: "end" }),
+					},
+					(event) => {
+						if (event.type !== "tool_execution_end") return;
+						seen.push(event.result.structuredContent);
+						expect(event.isError).toBe(patch.isError ?? true);
+					},
+					undefined,
+					() => {
+						const stream = new MockAssistantStream();
+						queueMicrotask(() =>
+							stream.push({
+								type: "done",
+								reason: "toolUse",
+								message: createAssistantMessage(
+									[{ type: "toolCall", id: "x", name: "structured", arguments: {} }],
+									"toolUse",
+								),
+							}),
+						);
+						return stream;
+					},
+				);
+			}
+			expect(seen).toEqual([undefined, { value: "replaced" }, { value: "both" }, { value: "original" }]);
+		},
+	);
 });
 
 describe("agentLoopContinue with AgentMessage", () => {
