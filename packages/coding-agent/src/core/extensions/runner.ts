@@ -1092,6 +1092,11 @@ export class ExtensionRunner {
 
 					if (handlerResult.content !== undefined) {
 						currentEvent.content = handlerResult.content;
+						if (handlerResult.structuredContent === undefined) delete currentEvent.structuredContent;
+						modified = true;
+					}
+					if (handlerResult.structuredContent !== undefined) {
+						currentEvent.structuredContent = handlerResult.structuredContent;
 						modified = true;
 					}
 					if (handlerResult.details !== undefined) {

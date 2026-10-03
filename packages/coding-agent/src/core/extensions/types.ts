@@ -1098,6 +1098,8 @@ interface ToolResultEventBase {
 	toolCallId: string;
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
+	/** Machine-readable result for programmatic consumers; not sent to the model. */
+	structuredContent?: AgentToolResult["structuredContent"];
 	isError: boolean;
 	/** Usage from the tool execution itself, if available. */
 	usage?: Usage;
@@ -1299,6 +1301,8 @@ export type UserBashEventResult =
 export interface ToolResultEventResult {
 	content?: (TextContent | ImageContent)[];
 	details?: unknown;
+	/** Replace structured content; replacing content without it drops the prior value. */
+	structuredContent?: AgentToolResult["structuredContent"];
 	isError?: boolean;
 	usage?: Usage;
 }

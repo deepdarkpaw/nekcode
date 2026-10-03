@@ -571,6 +571,7 @@ export class AgentSession {
 						input: args as Record<string, unknown>,
 						content: result.content,
 						details: result.details,
+						structuredContent: result.structuredContent,
 						isError,
 						usage: result.usage,
 					})
@@ -588,11 +589,14 @@ export class AgentSession {
 				return undefined;
 			}
 
+			const contentReplaced = hookResult?.content !== undefined || normalizedContent !== content;
 			return {
 				content: normalizedContent,
 				details: hookResult?.details,
+				...(contentReplaced ? {} : { structuredContent: result.structuredContent }),
 				isError: hookResult?.isError ?? isError,
 				usage: hookResult?.usage,
+				...(hookResult?.structuredContent !== undefined ? { structuredContent: hookResult.structuredContent } : {}),
 			};
 		};
 	}
