@@ -381,6 +381,7 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private reportedMcpServers = new Set<string>();
 	private uiPromptDepth = 0;
 	private activeUIPrompt: { kind: UIPromptKind; title?: string } | undefined;
 
@@ -423,6 +424,11 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+
+		this.runtime.mcpServers.setChangeListener(() => {
+			void this.emit({ type: "mcp_servers_change", servers: this.runtime.mcpServers.list() });
+			this.reportUnhandledMcpServers();
+		});
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
@@ -699,6 +705,23 @@ export class ExtensionRunner {
 	emitError(error: ExtensionError): void {
 		for (const listener of this.errorListeners) {
 			listener(error);
+		}
+	}
+
+	/**
+	 * Report registered MCP servers when no extension handles `mcp_servers_change`, which means
+	 * nothing connects them (for example when another MCP extension replaced the built-in one).
+	 */
+	reportUnhandledMcpServers(): void {
+		if (this.hasHandlers("mcp_servers_change")) return;
+		for (const server of this.runtime.mcpServers.list()) {
+			if (this.reportedMcpServers.has(server.name)) continue;
+			this.reportedMcpServers.add(server.name);
+			this.emitError({
+				extensionPath: server.extensionPath,
+				event: "register_mcp_server",
+				error: `MCP server "${server.name}" is registered, but no loaded extension connects MCP servers; another extension may have replaced the built-in MCP support`,
+			});
 		}
 	}
 
@@ -991,6 +1014,7 @@ export class ExtensionRunner {
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
+		if (event.type === "session_start") this.reportUnhandledMcpServers();
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
 

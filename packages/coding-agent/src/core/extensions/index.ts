@@ -2,6 +2,14 @@
  * Extension system for lifecycle events and custom tools.
  */
 
+export type {
+	McpExposure,
+	McpHttpServerConfig,
+	McpOAuthConfig,
+	McpServerConfig,
+	McpStdioServerConfig,
+	RegisteredMcpServer,
+} from "../mcp-servers.ts";
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
 export type { SourceInfo } from "../source-info.ts";
 export {
@@ -111,6 +119,7 @@ export type {
 	LsToolResultEvent,
 	MarkdownTransformContext,
 	MarkdownTransformer,
+	McpServersChangeEvent,
 	// Events - Message
 	MessageEndEvent,
 	MessageEndEventResult,
