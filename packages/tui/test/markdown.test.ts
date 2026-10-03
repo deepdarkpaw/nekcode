@@ -1730,6 +1730,24 @@ bar`,
 	});
 
 	describe("Streaming code fences", () => {
+		it("preserves trimmed partial fences across invalidation and reparses appended source", () => {
+			const source = "```ts\nconst x = 1;\n``";
+			const markdown = new Markdown(source, 0, 0, defaultMarkdownTheme);
+			const first = markdown.render(80);
+			markdown.invalidate();
+			assert.deepStrictEqual(markdown.render(80), first);
+			assert.deepStrictEqual(
+				markdown.render(40).map((line) => stripAnsi(line).trimEnd()),
+				["```ts", "  const x = 1;", "```"],
+			);
+
+			markdown.setText(`${source}\`\n\nafter`);
+			assert.deepStrictEqual(
+				markdown.render(80).map((line) => stripAnsi(line).trimEnd()),
+				["```ts", "  const x = 1;", "```", "", "after"],
+			);
+		});
+
 		it("stabilizes partial closing fence rendering", () => {
 			const cases = [
 				{
