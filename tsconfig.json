@@ -122,6 +122,7 @@
 	],
 	"exclude": [
 		"**/dist/**",
-		"packages/coding-agent/examples/extensions/gondolin/**"
+		"packages/coding-agent/examples/extensions/gondolin/**",
+		"packages/opentui/test/native/**"
 	]
 }

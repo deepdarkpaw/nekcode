@@ -77,3 +77,11 @@ done
 
 echo "Running tests without API keys in isolated home: $test_root/home"
 env -i "${test_env[@]}" npm test
+
+# The native OpenTUI frontend tests need Bun (OpenTUI's renderer is a Bun FFI library).
+if bun_path="$(type -P bun)"; then
+	echo "Running OpenTUI native tests with $bun_path"
+	(cd packages/opentui && env -i "${test_env[@]}" "$bun_path" test ./test/native)
+else
+	echo "Skipping OpenTUI native tests: bun is not on PATH"
+fi
