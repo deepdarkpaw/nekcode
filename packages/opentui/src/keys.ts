@@ -19,7 +19,10 @@ export type KeyAction =
 	| "dialogUp"
 	| "dialogDown"
 	| "dialogAccept"
-	| "dialogCancel";
+	| "dialogCancel"
+	| "dialogYes"
+	| "dialogNo"
+	| "editorSubmit";
 
 /** A key in `ctrl+alt+shift+name` form, as in `"alt+return"`. */
 export type KeySpec = string;
@@ -27,12 +30,13 @@ export type KeySpec = string;
 export const DEFAULT_KEYBINDINGS: Readonly<Record<KeyAction, readonly KeySpec[]>> = {
 	submit: ["return"],
 	submitFollowUp: ["alt+return"],
-	newline: ["shift+return", "ctrl+j"],
+	newline: ["shift+return", "linefeed", "ctrl+j"],
 	abort: ["escape"],
 	clearOrExit: ["ctrl+c"],
 	exit: ["ctrl+d"],
 	scrollPageUp: ["pageup"],
 	scrollPageDown: ["pagedown"],
+	// Plain Home/End scroll only while the input is empty; otherwise they move the cursor.
 	scrollTop: ["ctrl+home", "home"],
 	scrollBottom: ["ctrl+end", "end"],
 	toggleTools: ["ctrl+o"],
@@ -41,6 +45,9 @@ export const DEFAULT_KEYBINDINGS: Readonly<Record<KeyAction, readonly KeySpec[]>
 	dialogDown: ["down", "ctrl+n"],
 	dialogAccept: ["return"],
 	dialogCancel: ["escape"],
+	dialogYes: ["y"],
+	dialogNo: ["n"],
+	editorSubmit: ["ctrl+s", "alt+return"],
 };
 
 /** The modifier and key fields of an OpenTUI key event. */

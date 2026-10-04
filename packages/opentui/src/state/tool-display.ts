@@ -29,6 +29,8 @@ export interface ToolPreview {
 	lines: Line[];
 	/** Lines not shown while collapsed. */
 	hidden: number;
+	/** Where the hidden lines were cut: before the shown lines (shell output keeps its end) or after. */
+	hiddenAt?: "start" | "end";
 }
 
 const WEB_PREVIEW_RESULTS = 5;
@@ -175,7 +177,10 @@ function trimTrailingEmpty(lines: Line[]): Line[] {
 
 function window(lines: Line[], expanded: boolean, max: number, keep: "start" | "end"): ToolPreview {
 	if (expanded || lines.length <= max) return { lines, hidden: 0 };
-	return { lines: keep === "start" ? lines.slice(0, max) : lines.slice(-max), hidden: lines.length - max };
+	const hidden = lines.length - max;
+	return keep === "start"
+		? { lines: lines.slice(0, max), hidden, hiddenAt: "end" }
+		: { lines: lines.slice(-max), hidden, hiddenAt: "start" };
 }
 
 interface WebResult {
