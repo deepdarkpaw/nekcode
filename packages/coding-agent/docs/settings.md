@@ -39,7 +39,7 @@ See [Choose a Model](models.md) for model selection and thinking controls.
 |---|---|---|---|
 | `defaultTools` | `string[]` | `read`, `bash`, `edit`, `write` | Built-in tools enabled at startup. An empty array disables all built-in tools but not extension or SDK tools. |
 
-Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, and `ls`. CLI tool options override this setting for one invocation. See [Command Line](cli.md#tools).
+Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, and `ls`. `/reload` enables tools newly added to `defaultTools`, keeps removed tools active, and does not re-enable unchanged tools disabled during the session. CLI tool options override this setting, including on reload. See [Command Line](cli.md#tools).
 
 ## Sessions and context
 

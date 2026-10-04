@@ -63,6 +63,12 @@ vi.mock("openai", () => {
 	return { default: FakeOpenAI };
 });
 
+const openCodeGoKimiModel: Model<"openai-completions"> = {
+	...getModel("opencode", "kimi-k2.6"),
+	provider: "opencode-go",
+	baseUrl: "https://opencode.ai/zen/go/v1",
+};
+
 const localOpenAICompletionsModel = {
 	api: "openai-completions",
 	provider: "local-vllm",
@@ -1320,7 +1326,7 @@ describe("openai-completions tool_choice", () => {
 			},
 		];
 
-		const { compat: _compat, ...baseModel } = getModel("opencode-go", "kimi-k2.6")!;
+		const { compat: _compat, ...baseModel } = openCodeGoKimiModel;
 		const model = { ...baseModel, api: "openai-completions" } as const;
 		const response = await streamSimple(
 			model,
@@ -1367,7 +1373,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("replays OpenCode Go reasoning thinking blocks as reasoning_content", () => {
-		const { compat: _compat, ...baseModel } = getModel("opencode-go", "kimi-k2.6")!;
+		const { compat: _compat, ...baseModel } = openCodeGoKimiModel;
 		const model = { ...baseModel, api: "openai-completions" } as Model<"openai-completions">;
 		const messages = convertMessages(
 			model,
@@ -1426,7 +1432,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("sends thinking disabled for OpenCode Go Kimi K2.6 when thinking is off", async () => {
-		const model = getModel("opencode-go", "kimi-k2.6")!;
+		const model = openCodeGoKimiModel;
 		let payload: unknown;
 
 		await streamSimple(
@@ -1448,7 +1454,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("sends thinking enabled for OpenCode Go Kimi K2.6 when thinking is enabled", async () => {
-		const model = getModel("opencode-go", "kimi-k2.6")!;
+		const model = openCodeGoKimiModel;
 		let payload: unknown;
 
 		await streamSimple(
@@ -1519,7 +1525,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("sends max_tokens for OpenCode completions models", async () => {
-		const cases = [getModel("opencode-go", "kimi-k2.6")!, getModel("opencode", "kimi-k2.6")!] as const;
+		const cases = [openCodeGoKimiModel, getModel("opencode", "kimi-k2.6")!] as const;
 
 		for (const model of cases) {
 			let payload: unknown;
