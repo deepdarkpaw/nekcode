@@ -68,13 +68,13 @@ function Sync-Source {
 	if ($Channel -eq 'stable') {
 		$refs = Get-Git @('ls-remote', '--tags', '--refs', $remote, 'refs/tags/nek-v*')
 		$selector = @'
-let text="";
-process.stdin.on("data", c => text += c);
-process.stdin.on("end", () => {
- const versions = text.split(/\r?\n/).map(line => line.trim().split(/\s+/).at(-1)?.replace("refs/tags/", ""))
-  .map(tag => ({ tag, match: /^nek-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(tag || "") }))
-  .filter(v => v.match && v.match.slice(1,4).every(n => Number.isSafeInteger(Number(n))) && (!v.match[4] || v.match[4].split(".").every(p => p && (!/^\d+$/.test(p) || !/^0\d/.test(p)))))
-  .map(v => ({ tag: v.tag, core: v.match.slice(1,4).map(Number), pre: v.match[4]?.split(".") || [] }));
+let text='';
+process.stdin.on('data', c => text += c);
+process.stdin.on('end', () => {
+ const versions = text.split(/\r?\n/).map(line => line.trim().split(/\s+/).at(-1)?.replace('refs/tags/', ''))
+  .map(tag => ({ tag, match: /^nek-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(tag || '') }))
+  .filter(v => v.match && v.match.slice(1,4).every(n => Number.isSafeInteger(Number(n))) && (!v.match[4] || v.match[4].split('.').every(p => p && (!/^\d+$/.test(p) || !/^0\d/.test(p)))))
+  .map(v => ({ tag: v.tag, core: v.match.slice(1,4).map(Number), pre: v.match[4]?.split('.') || [] }));
  const compare = (a,b) => {
   for (let i=0;i<3;i++) if (a.core[i]!==b.core[i]) return a.core[i]-b.core[i];
   if (!a.pre.length || !b.pre.length) return !a.pre.length ? (!b.pre.length ? 0 : 1) : -1;
@@ -83,7 +83,7 @@ process.stdin.on("end", () => {
    const xn=/^\d+$/.test(x),yn=/^\d+$/.test(y);if(xn&&yn)return BigInt(x)<BigInt(y)?-1:1;if(xn!==yn)return xn?-1:1;return x<y?-1:1;
   } return 0;
  };
- versions.sort((a,b)=>compare(b,a)); process.stdout.write(versions[0]?.tag || "");
+ versions.sort((a,b)=>compare(b,a)); process.stdout.write(versions[0]?.tag || '');
 });
 '@
 		$target = $refs | & node -e $selector
