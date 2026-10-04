@@ -329,7 +329,7 @@ ${chalk.bold("Options:")}
   --export <file>                Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
-  --tui-mode <mode>              TUI mode: regular (default) or fullscreen
+  --tui-mode <mode>              TUI mode: fullscreen (default) or regular
   --ui <name>                    Interactive frontend: tui (default) or opentui (experimental, needs Bun)
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
