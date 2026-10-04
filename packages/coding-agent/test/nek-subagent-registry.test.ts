@@ -130,6 +130,41 @@ describe("SubagentRegistry", () => {
 		}
 	});
 
+	it("sums input (with cache) and output tokens and stamps activity changes", async () => {
+		const usageMessage = (input: number, output: number, cacheRead: number, cacheWrite: number) => {
+			const message = fauxAssistantMessage("partial");
+			message.usage = { ...message.usage, input, output, cacheRead, cacheWrite };
+			return { type: "message_end", message } as unknown as AgentSessionEvent;
+		};
+		const events = [
+			{ type: "tool_execution_start", toolCallId: "c", toolName: "read", args: {} } as unknown as AgentSessionEvent,
+			usageMessage(100, 20, 1_000, 50),
+			usageMessage(10, 5, 2_000, 0),
+		];
+		const snapshots: Array<Pick<SubagentRecord, "usage" | "lastActivityAt" | "activity">> = [];
+		const registry = new SubagentRegistry(
+			config({}),
+			() => {},
+			(record) =>
+				snapshots.push({ usage: record.usage, lastActivityAt: record.lastActivityAt, activity: record.activity }),
+		);
+		const before = Date.now();
+		const record = await registry.start({
+			description: "usage test",
+			type: "generalPurpose",
+			prompt: "run usage test",
+			background: false,
+			createSession: async () => fakeSession(events),
+		});
+		await registry.wait(record.id);
+
+		expect(registry.get(record.id)?.usage).toEqual({ input: 3_160, output: 25 });
+		const first = snapshots.find((snapshot) => snapshot.activity?.startsWith("read"));
+		expect(first?.lastActivityAt).toBeGreaterThanOrEqual(before);
+		// Usage is replaced, not mutated, so earlier snapshots keep their totals.
+		expect(snapshots.map((snapshot) => snapshot.usage?.input)).toContain(1_150);
+	});
+
 	it("clamps await timeouts to [1000, awaitMaxMs] and treats <= 0 as non-blocking", () => {
 		const limits = config({ awaitDefaultMs: 30_000, awaitMaxMs: 60_000 });
 		expect(clampAwaitTimeout(undefined, limits)).toBe(30_000);

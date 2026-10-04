@@ -72,7 +72,7 @@ export function createCreatePlanToolDefinition(
 ): ToolDefinition<typeof createPlanSchema, PlanData> {
 	return {
 		name: CREATE_PLAN_TOOL_NAME,
-		label: "create_plan",
+		label: "Plan",
 		description: CREATE_PLAN,
 		parameters: createPlanSchema,
 		executionMode: "sequential",

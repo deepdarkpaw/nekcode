@@ -80,10 +80,21 @@ export interface SubagentRecord {
 	observed: boolean;
 	/** Most recent tool call or streamed assistant text, at most 80 characters. */
 	activity?: string;
+	/** Epoch ms of the last change to `activity`. */
+	lastActivityAt?: number;
 	/** Actual model used by the child, in `provider/id` form. */
 	model?: string;
-	/** Tokens used by the child session so far (sum of assistant usage totals). */
-	tokens: number;
+	/**
+	 * Tokens used by the child session so far, summed over its assistant messages. `input` includes cache reads and
+	 * writes. Records stored by older versions lack this field.
+	 */
+	usage?: SubagentUsage;
+}
+
+/** Input and output token totals of one subagent. */
+export interface SubagentUsage {
+	input: number;
+	output: number;
 }
 
 /** Subagent result details: a snapshot of the record when the call returned. */

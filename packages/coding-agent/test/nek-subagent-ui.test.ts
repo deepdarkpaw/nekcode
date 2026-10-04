@@ -3,8 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolRenderContext, ToolRenderResultOptions } from "../src/core/extensions/types.ts";
 import type { SubagentRegistry } from "../src/extensions/nek/services/subagent-registry.ts";
 import type { AwaitToolData, PlanData, SubagentRecord, SubagentToolData } from "../src/extensions/nek/types.ts";
-import { updatePlanRenderers } from "../src/extensions/nek/ui/renderers.ts";
-import { awaitRenderers, subagentLine, subagentRenderers } from "../src/extensions/nek/ui/subagent-view.ts";
+import {
+	askQuestionRenderers,
+	switchModeRenderers,
+	todoWriteRenderers,
+	updatePlanRenderers,
+} from "../src/extensions/nek/ui/renderers.ts";
+import {
+	awaitRenderers,
+	renderSubagentNotice,
+	subagentLine,
+	subagentRenderers,
+	subagentWidgetLines,
+} from "../src/extensions/nek/ui/subagent-view.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -30,7 +41,7 @@ function record(overrides: Partial<SubagentRecord> = {}): SubagentRecord {
 		status: "running",
 		startedAt: NOW - 12_000,
 		observed: false,
-		tokens: 0,
+		usage: { input: 0, output: 0 },
 		...overrides,
 	};
 }
@@ -86,13 +97,22 @@ describe("subagent card rendering", () => {
 		(appearance) => {
 			initTheme(appearance);
 			const running = assertFits(
-				renderCard({ status: "running", activity: "read src/foo.ts" }, collapsed, true),
+				renderCard(
+					{
+						status: "running",
+						activity: "read src/foo.ts",
+						lastActivityAt: NOW - 5_000,
+						usage: { input: 12_400, output: 3_400 },
+					},
+					collapsed,
+					true,
+				),
 				[80],
 				80,
 			);
 			expect(running).toContain("Map the caching layer");
-			expect(running).toContain("read src/foo.ts");
-			expect(running).toContain("claude-sonnet-4 · generalPurpose · 12s");
+			expect(running).toContain("read src/foo.ts · 5s ago");
+			expect(running).toContain("claude-sonnet-4 · generalPurpose · ↑12k ↓3.4k · 12s");
 			// The provider prefix must not leak into the model label.
 			expect(running).not.toContain("anthropic/");
 
@@ -101,13 +121,14 @@ describe("subagent card rendering", () => {
 					status: "completed",
 					endedAt: NOW - 3_000,
 					finalText: "The cache module is updated and covered by regression tests.",
-					tokens: 3200,
+					usage: { input: 2_000, output: 1_200 },
 				}),
 				[80],
 				80,
 			);
 			expect(completed).toContain("✓");
-			expect(completed).toContain("3.2k tokens");
+			expect(completed).toContain("generalPurpose · ↑2.0k ↓1.2k · 9s");
+			expect(completed).not.toContain("ago");
 			expect(completed).toContain("The cache module is updated");
 
 			const errored = assertFits(renderCard({ status: "errored", error: "The child session failed to start." }));
@@ -123,7 +144,7 @@ describe("subagent card rendering", () => {
 						status: "completed",
 						endedAt: NOW - 3_000,
 						finalText: "## Result\n\n- Updated the cache module.\n- Added regression tests.",
-						tokens: 1200,
+						usage: { input: 1_000, output: 200 },
 					},
 					expanded,
 				),
@@ -145,7 +166,7 @@ describe("subagent card rendering", () => {
 				description: "completed description\nwith a second line",
 				endedAt: NOW - 3_000,
 				finalText: "summary line\nwith more result text\n\n```text\n  indented code\n    deeper\n```",
-				tokens: 1200,
+				usage: { input: 1_000, output: 200 },
 			},
 			expanded,
 		);
@@ -182,10 +203,50 @@ describe("subagent card rendering", () => {
 		expect(text.split("\n").filter((line) => line.includes("read "))).toHaveLength(0);
 	});
 
+	it("renders records from older sessions without usage and omits the token part", () => {
+		initTheme("dark");
+		const legacy = { ...record({ status: "completed", endedAt: NOW - 2_000 }), tokens: 900 };
+		delete legacy.usage;
+		const line = stripAnsi(subagentLine(legacy, theme, NOW));
+		expect(line).toContain("claude-sonnet-4 · generalPurpose · 10s");
+		expect(line).not.toContain("↑");
+		const notice = renderSubagentNotice(
+			{
+				role: "custom",
+				customType: "nek.subagent_notice",
+				content: "done",
+				display: true,
+				details: { subagent: legacy },
+				timestamp: 0,
+			},
+			{ expanded: false, outputPad: 1 },
+			theme,
+		);
+		expect(stripAnsi(notice?.render(80).join("\n") ?? "")).toContain("generalPurpose · 10s");
+	});
+
+	it("shows the card format with the activity line in the background widget", () => {
+		initTheme("dark");
+		const lines = subagentWidgetLines(
+			[
+				record({ activity: "bash npm test", lastActivityAt: NOW - 65_000, usage: { input: 500, output: 20 } }),
+				record({ id: "sub-2", background: false }),
+				record({ id: "sub-3", status: "completed", endedAt: NOW }),
+			],
+			theme,
+			NOW,
+		)?.map(stripAnsi);
+		expect(lines).toHaveLength(2);
+		expect(lines?.[0]).toContain("Map the caching layer  claude-sonnet-4 · generalPurpose · ↑500 ↓20 · 12s");
+		expect(lines?.[1]).toBe("bash npm test · 1m 5s ago");
+		expect(subagentWidgetLines([record({ status: "completed" })], theme, NOW)).toBeUndefined();
+	});
+
 	it("computes elapsed time and the spinner frame from the record", () => {
 		initTheme("dark");
 		expect(subagentLine(record({ startedAt: NOW - 12_000 }), theme, NOW)).toContain("12s");
 		expect(subagentLine(record({ startedAt: NOW - 125_000 }), theme, NOW)).toContain("2m 5s");
+		expect(subagentLine(record({ startedAt: NOW - 3_725_000 }), theme, NOW)).toContain("1h 2m");
 		const frames = new Set(
 			[0, 80, 160, 240].map((offset) =>
 				stripAnsi(subagentLine(record({ startedAt: NOW - offset }), theme, NOW)).slice(0, 1),
@@ -209,7 +270,7 @@ describe("await rows", () => {
 			if (!component) throw new Error("Missing await call renderer");
 			return assertFits(component);
 		};
-		expect(call({ subagent_id: "sub-1" })).toContain("Map the caching layer");
+		expect(call({ subagent_id: "sub-1" })).toContain("Waiting Map the caching layer");
 		expect(call({ subagent_id: "missing-id" })).toContain("missing-id");
 		expect(call({})).toContain("any subagent");
 	});
@@ -219,7 +280,7 @@ describe("await rows", () => {
 		const renderers = awaitRenderers(() => registry);
 		const details: AwaitToolData = {
 			subagents: [
-				record({ status: "completed", endedAt: NOW - 3_000, tokens: 900 }),
+				record({ status: "completed", endedAt: NOW - 3_000, usage: { input: 900, output: 40 } }),
 				record({ id: "sub-2", description: "Map the caching layer", status: "errored", error: "boom" }),
 			],
 			timedOut: false,
@@ -236,7 +297,7 @@ describe("await rows", () => {
 		const text = assertFits(component, [80], 80);
 		expect(text).toContain("✓");
 		expect(text).toContain("✗");
-		expect(text).toContain("900 tokens");
+		expect(text).toContain("↑900 ↓40");
 		expect(text.split("\n").filter((line) => line.includes("claude-sonnet-4"))).toHaveLength(2);
 	});
 });
@@ -259,7 +320,7 @@ const plan: PlanData & { diff: string } = {
 };
 
 describe("update_plan rendering", () => {
-	it("shows the badge, revision, explanation, and a colored diff", () => {
+	it("shows the display name, revision, explanation, and a colored diff", () => {
 		initTheme("dark");
 		const context = renderContext({ explanation: "Rename the cache scope" });
 		const component = updatePlanRenderers.renderResult?.(
@@ -272,8 +333,8 @@ describe("update_plan rendering", () => {
 		const lines = component.render(80);
 		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 		const text = stripAnsi(lines.join("\n"));
-		expect(text).toContain("PLAN");
-		expect(text).toContain("Cache review");
+		expect(text).toContain("Plan update Cache review");
+		expect(text).not.toContain("update_plan");
 		expect(text).toContain("Revision 3");
 		expect(text).toContain("Rename the cache scope");
 		// The colored diff uses the diff theme tokens, not plain tool output.
@@ -316,5 +377,43 @@ describe("update_plan rendering", () => {
 			renderContext({}),
 		);
 		expect(stripAnsi(component?.render(80).join("\n") ?? "").trim()).toBe("Saved plan update is missing.");
+	});
+});
+
+describe("nek tool display names", () => {
+	function callText(component: Component | undefined): string {
+		if (!component) throw new Error("Missing call renderer");
+		return assertFits(component, [40, 80, 120], 120).trim();
+	}
+
+	it("uses display names instead of function names", () => {
+		initTheme("dark");
+		const todos = callText(
+			todoWriteRenderers.renderCall?.({ merge: true, todos: [{}, {}, {}] } as never, theme, renderContext({})),
+		);
+		expect(todos).toBe("Todos 3 items · merge");
+		expect(
+			callText(switchModeRenderers.renderCall?.({ target_mode_id: "plan" } as never, theme, renderContext({}))),
+		).toBe("Mode Plan");
+		const single = callText(
+			askQuestionRenderers.renderCall?.(
+				{ questions: [{ id: "q", prompt: "Which\ncache store?", options: [] }] } as never,
+				theme,
+				renderContext({}),
+			),
+		);
+		expect(single).toBe("Question Which cache store?");
+		const several = callText(
+			askQuestionRenderers.renderCall?.({ questions: [{}, {}] } as never, theme, renderContext({})),
+		);
+		expect(several).toBe("Question 2 questions");
+		expect(callText(subagentRenderers.renderCall?.({ description: "Map" } as never, theme, renderContext({})))).toBe(
+			"Subagent Map",
+		);
+		const partial = renderContext({});
+		partial.isPartial = true;
+		expect(callText(updatePlanRenderers.renderCall?.({ explanation: "Trim" } as never, theme, partial))).toBe(
+			"Plan update Trim",
+		);
 	});
 });

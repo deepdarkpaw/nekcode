@@ -107,7 +107,7 @@ export function createSubagentToolDefinition(
 ): ToolDefinition<SubagentSchema, SubagentToolData> {
 	return {
 		name: SUBAGENT_TOOL_NAME,
-		label: "subagent",
+		label: "Subagent",
 		description: options.description,
 		parameters: createSubagentSchema(options.agentTypes.map((type) => type.name)),
 		async execute(_toolCallId, params: SubagentToolInput, signal, onUpdate, ctx) {

@@ -40,7 +40,7 @@ Plan mode only plans; Agent mode implements. Approving a reviewed revision switc
 
 Re-entering Plan treats the previous plan as reference, following Claude Code's reentry rule: compare the latest request with the existing plan, replace it for a different task, or revise it for the same task. Ask new questions when a decision is genuinely unresolved, then save and review the revised plan. A pending approval never applies to a draft or to a plan file changed after review.
 
-Subagent rows render like Cursor: a status icon, the title, and a muted `model · type · elapsed` line, with the current `activity` on the second line. Rows update live while the subagent runs, and expand to the full Markdown result with `ctrl+o`.
+Subagent rows render like Cursor: a status icon, the title, and muted `model · type · ↑input ↓output · elapsed` metadata, for example `✓ Map the cache layer  claude-sonnet-4 · explore · ↑12k ↓3.4k · 1m 5s`. Input tokens include cache reads and writes; the total time runs from start to finish. While the subagent runs, the second line shows its current activity and how long ago it changed, for example `bash npm test · 5s ago`. Tool cards, `await` results, completion notices, and the background list above the editor use the same format. Rows update live while the subagent runs, and expand to the full Markdown result with `ctrl+o`.
 
 ## Subagents
 

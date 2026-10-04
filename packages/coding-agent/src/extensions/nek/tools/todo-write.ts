@@ -43,7 +43,7 @@ export function createTodoWriteToolDefinition(
 ): ToolDefinition<typeof todoWriteSchema, TodoListData | undefined> {
 	return {
 		name: TODO_WRITE_TOOL_NAME,
-		label: "todo_write",
+		label: "Todos",
 		description: TODO_WRITE,
 		parameters: todoWriteSchema,
 		executionMode: "sequential",

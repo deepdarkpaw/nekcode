@@ -1,6 +1,7 @@
 /**
  * Presentation for the nek tools. Tool files spread these into their definitions, like the core tools.
  * Every renderer truncates to the render width, because the TUI aborts the session on an overwide line.
+ * Row headers use display names, never function names: `<display name> <primary argument> <muted metadata>`.
  */
 
 import { Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
@@ -18,6 +19,12 @@ const UPDATE_PLAN_PREVIEW_LINES = 12;
 
 type TodoWriteRenderers = Pick<ToolDefinition<TSchema, TodoListData | undefined>, "renderCall" | "renderResult">;
 type SwitchModeRenderers = Pick<ToolDefinition<TSchema, undefined>, "renderCall" | "renderResult">;
+type AskQuestionRenderers = Pick<ToolDefinition<TSchema, unknown>, "renderCall">;
+
+/** Bold display name of a tool row header. */
+function toolTitle(name: string, theme: Theme): string {
+	return theme.fg("toolTitle", theme.bold(name));
+}
 
 function switchTarget(args: unknown): string | undefined {
 	if (typeof args !== "object" || args === null || !("target_mode_id" in args)) return undefined;
@@ -30,7 +37,7 @@ export const switchModeRenderers: SwitchModeRenderers = {
 	renderCall(args, theme) {
 		const target = switchTarget(args);
 		return new LinesComponent([
-			theme.fg("toolTitle", theme.bold("switch_mode")) + (target ? theme.fg("accent", ` → ${target}`) : ""),
+			toolTitle("Mode", theme) + (target ? theme.fg("accent", ` ${target === "plan" ? "Plan" : "Agent"}`) : ""),
 		]);
 	},
 	renderResult(result, _options, theme, context) {
@@ -44,9 +51,9 @@ export const switchModeRenderers: SwitchModeRenderers = {
 function formatTodoWriteCall(args: unknown, theme: Theme): string {
 	const input = typeof args === "object" && args !== null ? (args as { merge?: unknown; todos?: unknown }) : {};
 	const count = Array.isArray(input.todos) ? input.todos.length : 0;
-	let text = theme.fg("toolTitle", theme.bold("todo_write"));
-	if (typeof input.merge === "boolean") text += ` ${theme.fg("accent", input.merge ? "merge" : "replace")}`;
-	return text + theme.fg("toolOutput", ` ${count} ${count === 1 ? "item" : "items"}`);
+	const meta = [`${count} ${count === 1 ? "item" : "items"}`];
+	if (typeof input.merge === "boolean") meta.push(input.merge ? "merge" : "replace");
+	return `${toolTitle("Todos", theme)} ${theme.fg("muted", meta.join(" · "))}`;
 }
 
 function formatTodoWriteResult(
@@ -76,6 +83,25 @@ export const todoWriteRenderers: TodoWriteRenderers = {
 	renderResult(result, options, theme, context) {
 		const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 		text.setText(formatTodoWriteResult(result, options, theme, context));
+		return text;
+	},
+};
+
+/** ask_question call: `Question` with the prompt of a single question, or the number of questions. */
+export const askQuestionRenderers: AskQuestionRenderers = {
+	renderCall(args, theme, context) {
+		const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+		const questions =
+			typeof args === "object" && args !== null && "questions" in args && Array.isArray(args.questions)
+				? (args.questions as unknown[])
+				: [];
+		const first = questions[0];
+		const prompt =
+			typeof first === "object" && first !== null && "prompt" in first && typeof first.prompt === "string"
+				? first.prompt.replace(/\s+/g, " ").trim()
+				: "";
+		const meta = questions.length > 1 ? `${questions.length} questions` : prompt;
+		text.setText(`${toolTitle("Question", theme)}${meta ? ` ${theme.fg("muted", meta)}` : ""}`);
 		return text;
 	},
 };
@@ -172,8 +198,8 @@ export function updatePlanDiffLines(diff: string, expanded: boolean, theme: Them
 }
 
 /**
- * update_plan presentation: the PLAN badge with revision, the explanation, and the colored document diff. Collapsed
- * shows a diff preview; expanded shows the full diff and the full plan document.
+ * update_plan presentation: the `Plan update` header with name and revision, the explanation, and the colored document
+ * diff. Collapsed shows a diff preview; expanded shows the full diff and the full plan document.
  */
 export const updatePlanRenderers: UpdatePlanRenderers = {
 	renderShell: "self",
@@ -181,8 +207,7 @@ export const updatePlanRenderers: UpdatePlanRenderers = {
 		if (!context.isPartial) return new Container();
 		const explanation = updatePlanExplanation(args);
 		return new LinesComponent([
-			theme.style(" PLAN ", { fg: "borderAccent", bold: true, inverse: true }) +
-				(explanation ? ` ${theme.fg("text", explanation)}` : ""),
+			toolTitle("Plan update", theme) + (explanation ? ` ${theme.fg("text", explanation)}` : ""),
 		]);
 	},
 	renderResult(result, options, theme, context) {
@@ -199,7 +224,7 @@ export const updatePlanRenderers: UpdatePlanRenderers = {
 		}
 		const explanation = updatePlanExplanation(context.args);
 		const lines = [
-			planHeading(details.plan.name, details.plan.revision, theme),
+			`${toolTitle("Plan update", theme)} ${theme.fg("text", details.plan.name)}${theme.fg("muted", `  Revision ${details.plan.revision}`)}`,
 			...(explanation ? [theme.fg("muted", explanation)] : []),
 			...updatePlanDiffLines(details.diff, options.expanded, theme),
 		];
