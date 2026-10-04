@@ -8,18 +8,19 @@ The published npm package identifier remains `@earendil-works/pi-coding-agent` s
 
 ## Install
 
-nekcode is not published to the npm registry. The registry package `@earendil-works/pi-coding-agent` is upstream pi and installs the `pi` command, not `nek`. Build and install from a checkout instead:
+nekcode is not published to the npm registry. The registry package `@earendil-works/pi-coding-agent` is upstream pi and installs the `pi` command, not `nek`. Use the install script instead (Git and Node.js 22.19 or newer required; run it again to update):
 
 ```bash
-git clone https://github.com/deepdarkpaw/nekcode.git
-cd nekcode
-npm ci --ignore-scripts
-npm run build
-npm install -g --ignore-scripts ./packages/coding-agent
-nek --version
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.sh | bash
 ```
 
-Node.js 22.19 or newer is required. The global install links to the checkout, so keep the checkout in place.
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.ps1 | iex
+```
+
+See the [repository README](../../README.en.md) for installer options and search-tool setup.
 
 Start it in the directory it should inspect and modify:
 

@@ -48,6 +48,7 @@ packages/agent/docs/extensions/pi-server-artifact/index.md
 reference/
 /*.md
 !/README.md
+!/README.en.md
 !/AGENTS.md
 !/CONTRIBUTING.md
 !/SECURITY.md

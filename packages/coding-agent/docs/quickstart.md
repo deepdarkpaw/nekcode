@@ -6,17 +6,19 @@ For native Windows setup, read [Windows Setup](windows.md). For Android, read [T
 
 ## 1. Install nekcode
 
-nekcode is not published to the npm registry. The registry package `@earendil-works/pi-coding-agent` is upstream pi and installs `pi`, not `nek`. Build and install from a checkout:
+nekcode is not published to the npm registry. The registry package `@earendil-works/pi-coding-agent` is upstream pi and installs `pi`, not `nek`. Install with the script, which needs Git and Node.js 22.19 or newer:
 
 ```bash
-git clone https://github.com/deepdarkpaw/nekcode.git
-cd nekcode
-npm ci --ignore-scripts
-npm run build
-npm install -g --ignore-scripts ./packages/coding-agent
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.sh | bash
 ```
 
-This requires Node.js 22.19 or newer. The global install links to the checkout, so keep the checkout in place. To run without installing, use `./nek-test.sh` from the checkout.
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.ps1 | iex
+```
+
+The script clones the source, installs dependencies, creates a `nek` launcher that runs the source directly, and sets up fd, rg, and ast-grep. Run it again to update. See the [README](../../../README.en.md) for options.
 
 Verify the installation:
 
@@ -24,7 +26,7 @@ Verify the installation:
 nek --version
 ```
 
-On Linux, macOS, WSL, and Termux, ensure the npm global binary directory is on `PATH`.
+On Linux and macOS, the launcher goes to `~/.local/bin`; if the installer reports that it is not on `PATH`, add the printed line to your shell profile.
 
 ## 2. Start nekcode
 
