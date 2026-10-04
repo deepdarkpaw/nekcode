@@ -78,8 +78,13 @@ install_dependencies() {
 # The built-in model catalog is generated, not committed. Refresh it on every install or update.
 hydrate_model_data() {
 	step "Generating the built-in model catalog"
-	(cd "$INSTALL_DIR" && npm run --silent hydrate:model-data)
+	local output
+	if ! output="$(cd "$INSTALL_DIR" && npm run --silent hydrate:model-data 2>&1)"; then
+		printf '%s\n' "$output" >&2
+		fail "model catalog generation failed (it downloads model metadata; check the network and run again)"
+	fi
 	[ -d "$INSTALL_DIR/$MODEL_DATA_DIR" ] || fail "model catalog was not generated in $MODEL_DATA_DIR"
+	echo "done"
 }
 
 write_launcher() {

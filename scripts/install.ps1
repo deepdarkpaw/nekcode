@@ -83,10 +83,19 @@ function Install-Dependencies {
 function Update-ModelData {
 	Write-Step 'Generating the built-in model catalog'
 	Push-Location $InstallDir
-	try { Invoke-Native 'npm.cmd' @('run', '--silent', 'hydrate:model-data') } finally { Pop-Location }
-	if (-not (Test-Path (Join-Path $InstallDir 'packages\ai\src\providers\data'))) {
-		Stop-Install 'model catalog was not generated'
+	# PowerShell 5.1 turns redirected native stderr into terminating errors under 'Stop'.
+	$ErrorActionPreference = 'Continue'
+	try { $output = & npm.cmd run --silent hydrate:model-data 2>&1 } finally {
+		$ErrorActionPreference = 'Stop'
+		Pop-Location
 	}
+	if ($LASTEXITCODE -ne 0) {
+		$output | ForEach-Object { Write-Host $_ }
+		Stop-Install 'model catalog generation failed (it downloads model metadata; check the network and run again)'
+	}
+	$dataDir = Join-Path $InstallDir 'packages\ai\src\providers\data'
+	if (-not (Test-Path $dataDir)) { Stop-Install 'model catalog was not generated' }
+	Write-Host 'done'
 }
 
 # nek.cmd serves cmd and PowerShell; the extensionless script serves Git Bash.
