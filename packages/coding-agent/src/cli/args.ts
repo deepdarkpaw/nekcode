@@ -280,6 +280,8 @@ ${chalk.bold("Usage:")}
 ${chalk.bold("Commands:")}
   ${APP_NAME} mcp <command>             Add, remove, list, sign in to, or sign out of MCP servers
   ${APP_NAME} mcp --help                Show help for MCP
+  ${APP_NAME} update [options]           Update the source checkout
+  ${APP_NAME} update --help              Show help for update
   ${APP_NAME} auth <command>            Print credentials or check provider readiness
   ${APP_NAME} auth --help               Show help for auth
 
@@ -324,6 +326,10 @@ ${chalk.bold("Options:")}
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as NEK_OFFLINE=1)
+
+Update command options:
+  update --channel stable|dev      Select and persist the update channel
+  update --check                   Check the configured origin without changing files
   --                             End option parsing; treat remaining arguments as messages/files
   --help, -h                     Show this help
   --version, -v                  Show version number

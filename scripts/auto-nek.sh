@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Developer wrapper that runs nek from this checkout's latest `npm run build`.
-# Development invocations use NEK_EXPERIMENTAL=1 by default. Pass --stable to use
-# the next nek executable on PATH; `nek update` also uses stable so self-update
-# works.
+# Developer wrapper that runs nek directly from this checkout's source.
+# Pass --stable to use the next nek executable on PATH.
 #
 # From the repository root, install with:
 #   mkdir -p "$HOME/.local/bin"
@@ -53,23 +51,17 @@ for arg in "$@"; do
 	fi
 done
 
-if [[ "${args[0]:-}" == "update" ]]; then
-	use_stable=true
-fi
-
 if [[ "$use_stable" == true ]]; then
 	if ! stable_nek="$(find_stable_nek)"; then
-		echo "error: could not find a stable pi executable after the auto-nek wrapper on PATH" >&2
+		echo "error: could not find a stable nek executable after the auto-nek wrapper on PATH" >&2
 		exit 1
 	fi
 	exec "$stable_nek" ${args[@]+"${args[@]}"}
 fi
 
-dev_nek="$repo_dir/packages/coding-agent/dist/bundle/cli.js"
-if [[ ! -x "$dev_nek" ]]; then
-	echo "error: development pi build not found; run \`npm run build\` in $repo_dir" >&2
-	exit 1
+resolver="$repo_dir/packages/coding-agent/src/experimental/source-resolver.ts"
+if command -v cygpath > /dev/null 2>&1; then
+	repo_dir="$(cygpath -m "$repo_dir")"
+	resolver="file:///$repo_dir/packages/coding-agent/src/experimental/source-resolver.ts"
 fi
-
-export NEK_EXPERIMENTAL="${NEK_EXPERIMENTAL:-1}"
-exec "$dev_nek" ${args[@]+"${args[@]}"}
+exec node --import "$resolver" "$repo_dir/packages/coding-agent/src/cli.ts" ${args[@]+"${args[@]}"}

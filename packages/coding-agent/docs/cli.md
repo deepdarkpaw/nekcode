@@ -8,6 +8,7 @@ This page documents nekcode's command-line commands and options. Run `nek --help
 nek [options] [--] [@files...] [messages...]
 nek auth <check|print-api-key|print-bearer-token> [options]
 nek mcp <add|remove|list|login|logout> [options]
+nek update [--channel stable|dev] [--check]
 ```
 
 <a id="modes"></a>
@@ -206,6 +207,25 @@ nek -e ./review-extension/
 ```
 
 See [Extensions](extensions.md) for the extension API and [packages.md](packages.md) for the intentionally limited explicit-directory format.
+
+## Updates
+
+```sh
+nek --version                       # nek 0.1.0 (pi 1.0.2)
+nek update --check
+nek update --channel dev --check
+nek update
+```
+
+`nek update` operates on the git checkout containing the running CLI, not the current project directory. Stable chooses the highest semantic-version `nek-v*` tag; dev follows the installed `NEK_BRANCH` (default `nek`). `--channel` saves the global `updateChannel` preference. No update check runs automatically at startup.
+
+`--check` makes only `git ls-remote` requests to the checkout's `origin`, without fetching, checking out files, or calling GitHub APIs. It prints the current tag or commit, the target, and update availability. Exit codes are `0` for a successful check with no update, `1` for an error, and `2` when an update is available. No stable tags is a successful check with exit `0` and an explicit message.
+
+Without `--check`, the command runs the checkout's Bash installer on Linux/macOS or PowerShell installer on Windows, streams output, and returns its exit code. The installer refuses tracked local changes and divergent/local commits. It moves an ordinary checkout only by fast-forward; a detached checkout exactly on a release tag may move to another release. Stable checkouts stay detached.
+
+Installer options are `NEK_INSTALL_DIR`, `NEK_BIN_DIR`, `NEK_REPO_URL`, `NEK_BRANCH`, `NEK_CHANNEL`, `NEK_SKIP_TOOLS=1`, and `NEK_INSTALL_BUN=1`. The gitignored `.nek-install-state.json` in the install root stores `binDir`, `channel`, and `branch`; update reuses these values. Explicit installer environment options override saved state. A missing stable release stops installation and suggests `NEK_CHANNEL=dev`.
+
+`npm run nek:release -- patch|minor|<x.y.z>` prepares a nek release from a clean tree on branch `nek`. It changes only `nekConfig.version`, commits `Release nek v<x.y.z>`, and creates `nek-v<x.y.z>`. It never pushes and prints the push commands for review.
 
 ## MCP commands
 

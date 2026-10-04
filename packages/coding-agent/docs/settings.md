@@ -144,7 +144,8 @@ Resource arrays support glob exclusions with `!pattern`, exact inclusion with `+
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
+| `updateChannel` | `"stable" \| "dev"` | `"stable"` | Global update preference, persisted by `nek update --channel`. Stable selects the highest `nek-v*` tag; dev follows the installed branch (default `nek`). There is no automatic startup update check. |
 | `collapseChangelog` | boolean | `false` | Show a condensed changelog after an update. |
-| `enableInstallTelemetry` | boolean | `true` | Enable anonymous install/update reporting and selected provider attribution headers. Does not control update checks. |
+| `enableInstallTelemetry` | boolean | `true` | Enable selected provider attribution headers. nekcode does not send pi.dev install/update reports. |
 | `enableAnalytics` | boolean | `false` | Opt in to analytics data sharing. Currently used only by the experimental first-run setup. |
 | `warnings.anthropicExtraUsage` | boolean | `true` | Warn when Anthropic subscription authentication may use paid extra usage. |

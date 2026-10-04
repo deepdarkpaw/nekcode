@@ -18,7 +18,9 @@ curl -fsSL https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/ins
 irm https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.ps1 | iex
 ```
 
-The script clones the source, installs dependencies, creates a `nek` launcher that runs the source directly, and sets up fd, rg, and ast-grep. Run it again to update. See the [README](../../../README.en.md) for options.
+The script installs the highest semantic-version `nek-v*` release tag by default. If no release exists, it stops and suggests `NEK_CHANNEL=dev`; it never silently switches channels. For a development install, use `NEK_CHANNEL=dev` before the Bash installer or `$env:NEK_CHANNEL='dev'` before the PowerShell installer.
+
+The installer clones the source, runs `npm ci --ignore-scripts`, creates a source-running `nek` launcher, and sets up fd, rg, and ast-grep. Set `NEK_INSTALL_BUN=1` to install Bun through its official installer for the optional OpenTUI frontend; existing Bun installations are retained. See [update options](cli.md#updates) and the [README](../../../README.en.md).
 
 Verify the installation:
 
@@ -109,10 +111,6 @@ Start with the least powerful mechanism that meets the need:
 
 ## Uninstall nekcode
 
-If installed with npm:
-
-```bash
-npm uninstall -g @earendil-works/pi-coding-agent
-```
+Remove the source installation directory and the `nek` launcher (on Windows, also `nek.cmd`) from the configured bin directory. Windows users can remove that bin directory from their user PATH.
 
 This does not remove `~/.nek/agent/`, which contains configuration, credentials, sessions, prompts, skills, and themes.
