@@ -53,6 +53,12 @@ describe("update command", () => {
 		expect(updateIsAvailable("dev", { commit: "old", tag: "nek-v0.3.0" }, target)).toBe(true);
 	});
 
+	it("does not offer a dev update when HEAD already contains the remote branch head", () => {
+		const target = { name: "nek", commit: "remote" };
+		expect(updateIsAvailable("dev", { commit: "local-ahead" }, target, true)).toBe(false);
+		expect(updateIsAvailable("dev", { commit: "local-behind" }, target, false)).toBe(true);
+	});
+
 	it("persists the update channel in global settings", async () => {
 		const settings = SettingsManager.inMemory();
 		expect(settings.getUpdateChannel()).toBe("stable");

@@ -217,7 +217,7 @@ nek update --channel dev --check
 nek update
 ```
 
-`nek update` operates on the git checkout containing the running CLI, not the current project directory. Stable chooses the highest semantic-version `nek-v*` tag; dev follows the installed `NEK_BRANCH` (default `nek`). `--channel` saves the global `updateChannel` preference. No update check runs automatically at startup.
+`nek update` operates on the git checkout containing the running CLI, not the current project directory. Stable chooses the highest semantic-version `nek-v*` tag; dev follows the installed `NEK_BRANCH` (default `nek`). `--channel` saves the global `updateChannel` preference when updating; `--check` never changes files or settings. A dev checkout that already contains the remote branch head (for example, one with newer local commits) is reported as up to date. No update check runs automatically at startup.
 
 `--check` makes only `git ls-remote` requests to the checkout's `origin`, without fetching, checking out files, or calling GitHub APIs. It prints the current tag or commit, the target, and update availability. Exit codes are `0` for a successful check with no update, `1` for an error, and `2` when an update is available. No stable tags is a successful check with exit `0` and an explicit message.
 

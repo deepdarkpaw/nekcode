@@ -161,13 +161,27 @@ function printCheckResult(
 	console.log(available ? "Update available." : "Already up to date.");
 }
 
+/** Whether the local checkout already contains `commit` (equal to HEAD or an ancestor of it). */
+function headContains(checkout: string, commit: string): boolean {
+	const result = spawnProcessSync("git", ["-C", checkout, "merge-base", "--is-ancestor", commit, "HEAD"], {
+		encoding: "utf8",
+		stdio: "ignore",
+	});
+	return result.status === 0;
+}
+
+/**
+ * Stable compares release versions; dev reports an update only when HEAD does not already contain the branch head,
+ * so a checkout that is ahead of the remote branch is not offered a "newer" older commit.
+ */
 export function updateIsAvailable(
 	channel: UpdateChannel,
 	current: { commit: string; tag?: string },
 	target: RemoteRef,
+	headContainsTarget = false,
 ): boolean {
 	if (current.commit === target.commit) return false;
-	if (channel === "dev") return true;
+	if (channel === "dev") return !headContainsTarget;
 	const currentVersion = current.tag?.startsWith("nek-v") ? valid(current.tag.slice("nek-v".length)) : null;
 	if (!currentVersion) return true;
 	const targetVersion = target.name.slice("nek-v".length);
@@ -206,8 +220,8 @@ Channels:
   dev     Update to the configured NEK_BRANCH (default: nek)
 
 Options:
-  --channel <channel>  Select and persist stable or dev
-  --check              Check using git ls-remote without changing files
+  --channel <channel>  Select stable or dev; persisted when updating, not with --check
+  --check              Check using git ls-remote without changing files or settings
   --help               Show this help
 
 Exit codes for --check:
@@ -227,7 +241,8 @@ export async function runUpdateCommand(args: readonly string[], context: UpdateC
 		const state = readInstallState(checkout);
 		const channel =
 			parsed.channel ?? context.settingsManager?.getGlobalSettings().updateChannel ?? state.channel ?? "stable";
-		if (parsed.channel && context.settingsManager) {
+		// --check changes no files, so only a real update persists the selected channel.
+		if (parsed.channel && !parsed.check && context.settingsManager) {
 			context.settingsManager.setUpdateChannel(parsed.channel);
 			await context.settingsManager.flush();
 			const errors = context.settingsManager.drainErrors();
@@ -256,7 +271,7 @@ export async function runUpdateCommand(args: readonly string[], context: UpdateC
 			}
 			const target = refs[0];
 			if (!target) throw new Error(`Remote branch ${branch} was not found on origin`);
-			const available = updateIsAvailable(channel, current, target);
+			const available = updateIsAvailable(channel, current, target, headContains(checkout, target.commit));
 			printCheckResult(
 				channel,
 				current.tag ?? current.commit.slice(0, 12),
