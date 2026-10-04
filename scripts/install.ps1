@@ -92,7 +92,13 @@ process.stdin.on('end', () => {
 	}
 	if ($fresh) {
 		Write-Step "Cloning $remote ($target) into $InstallDir"
-		Invoke-Native 'git' @('clone', '--no-checkout', '--branch', $target, $remote, $InstallDir)
+		# A release tag is annotated; 'clone --branch <tag>' warns that the tag object "is not a commit".
+		# The full clone already has the tag, so stable checks it out below instead.
+		if ($Channel -eq 'stable') {
+			Invoke-Native 'git' @('clone', '--no-checkout', $remote, $InstallDir)
+		} else {
+			Invoke-Native 'git' @('clone', '--no-checkout', '--branch', $target, $remote, $InstallDir)
+		}
 		$targetRef = $target
 	} else {
 		if ((Get-Git @('-C', $InstallDir, 'rev-parse', '--is-shallow-repository')) -eq 'true') {

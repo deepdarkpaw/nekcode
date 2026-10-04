@@ -79,7 +79,13 @@ process.stdin.on("end", () => {
 	if [ "$fresh" = 1 ]; then
 		step "Cloning $remote ($target) into $INSTALL_DIR"
 		mkdir -p "$(dirname "$INSTALL_DIR")"
-		git clone --no-checkout --branch "$target" "$remote" "$INSTALL_DIR"
+		# A release tag is annotated; `clone --branch <tag>` warns that the tag object "is not a commit".
+		# The full clone already has the tag, so stable checks it out below instead.
+		if [ "$CHANNEL" = stable ]; then
+			git clone --no-checkout "$remote" "$INSTALL_DIR"
+		else
+			git clone --no-checkout --branch "$target" "$remote" "$INSTALL_DIR"
+		fi
 	else
 		if [ "$(git -C "$INSTALL_DIR" rev-parse --is-shallow-repository)" = true ]; then
 			git -C "$INSTALL_DIR" fetch --unshallow origin
