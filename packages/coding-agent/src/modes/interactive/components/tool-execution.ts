@@ -22,6 +22,8 @@ import type { Theme } from "../theme/theme.ts";
  * narrowing them here would make those definitions unassignable.
  */
 export interface ToolRenderers {
+	/** Display label used by the generic fallback row; identifier-like labels are shown in Title Case. */
+	label?: string;
 	renderShell?: "default" | "self";
 	renderCall?: (args: any, theme: Theme, context: ToolRenderContext<any, any>) => Component;
 	renderResult?: (
@@ -32,11 +34,14 @@ export interface ToolRenderers {
 	) => Component;
 }
 
-import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { getToolDisplayName } from "../../../core/tools/renderers/tool-names.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import { VisualLinePreview } from "./visual-truncate.ts";
 
+/** Visual (wrapped) lines of a fallback result shown before it is expanded. */
 const FALLBACK_PREVIEW_LINES = 10;
 
 export interface ToolExecutionOptions {
@@ -46,8 +51,6 @@ export interface ToolExecutionOptions {
 
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
-	private contentText: Text;
-	private contentTextRegion: MouseRegion;
 	private selfRenderContainer: Container;
 	private selfRenderHeight = 0;
 	private callRendererComponent?: Component;
@@ -99,19 +102,11 @@ export class ToolExecutionComponent extends Container {
 
 		this.addChild(new Spacer(1));
 
-		// Always create all shell variants. contentBox is used for default renderer-based composition.
+		// contentBox frames rows drawn by renderers or by the generic fallback.
 		// selfRenderContainer is used when the tool renders its own framing.
-		// contentText is reserved for generic fallback rendering when no tool definition exists.
 		this.contentBox = new Box(1, 1, (text: string) => theme.bg("toolPendingBg", text));
-		this.contentText = new Text("", 1, 1, (text: string) => theme.bg("toolPendingBg", text));
-		this.contentTextRegion = this.createResultRegion(this.contentText);
 		this.selfRenderContainer = new Container();
-
-		if (this.hasRendererDefinition()) {
-			this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
-		} else {
-			this.addChild(this.contentTextRegion);
-		}
+		this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
 
 		this.updateDisplay();
 	}
@@ -122,10 +117,6 @@ export class ToolExecutionComponent extends Container {
 
 	private getResultRenderer(): ToolDefinition<any, any>["renderResult"] | undefined {
 		return this.toolDefinition?.renderResult;
-	}
-
-	private hasRendererDefinition(): boolean {
-		return this.toolDefinition !== undefined;
 	}
 
 	private getRenderShell(): "default" | "self" {
@@ -152,8 +143,10 @@ export class ToolExecutionComponent extends Container {
 		};
 	}
 
+	/** Generic header: display name (label, else Title Case) and the arguments as muted metadata. */
 	private createCallFallback(): Component {
-		return new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
+		const name = getToolDisplayName(this.toolName, this.toolDefinition?.label);
+		return new Text(formatToolCallWithArgs(name, this.args, theme, this.expanded), 0, 0);
 	}
 
 	private createResultFallback(): Component | undefined {
@@ -162,14 +155,26 @@ export class ToolExecutionComponent extends Container {
 			return undefined;
 		}
 
-		const lines = output.split("\n");
-		const displayLines = this.expanded ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
-		const remaining = lines.length - displayLines.length;
-		let text = displayLines.map((line) => theme.fg("toolOutput", line)).join("\n");
-		if (remaining > 0) {
-			text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-		}
-		return new Text(text, 0, 0);
+		const color = this.result?.isError ? "error" : "toolOutput";
+		const styled = output
+			.split("\n")
+			.map((line) => theme.fg(color, line))
+			.join("\n");
+		const container = new Container();
+		container.addChild(new Spacer(1));
+		// Limit wrapped lines, not logical ones: one long output line must not fill the screen.
+		container.addChild(
+			this.expanded
+				? new Text(styled, 0, 0)
+				: new VisualLinePreview({
+						text: styled,
+						maxVisualLines: FALLBACK_PREVIEW_LINES,
+						keep: "start",
+						formatHint: (hidden) =>
+							`${theme.fg("muted", `... (${hidden} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`,
+					}),
+		);
+		return container;
 	}
 
 	private createResultRegion(component: Component): MouseRegion {
@@ -266,7 +271,7 @@ export class ToolExecutionComponent extends Container {
 			return [];
 		}
 
-		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
+		if (this.getRenderShell() === "self") {
 			const contentLines = this.selfRenderContainer.render(width);
 			this.selfRenderHeight = contentLines.length;
 			if (contentLines.length === 0 && this.imageComponents.length === 0) {
@@ -295,7 +300,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
-		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") return super.handleMouse(event);
+		if (this.getRenderShell() !== "self") return super.handleMouse(event);
 		if (event.y <= 0 || event.y > this.selfRenderHeight) return undefined;
 		return this.selfRenderContainer.handleMouse({
 			...event,
@@ -313,63 +318,57 @@ export class ToolExecutionComponent extends Container {
 
 		let hasContent = false;
 		this.hideComponent = false;
-		if (this.hasRendererDefinition()) {
-			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
-			if (renderContainer instanceof Box) {
-				renderContainer.setBgFn(bgFn);
-			}
-			renderContainer.clear();
+		const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
+		if (renderContainer instanceof Box) {
+			renderContainer.setBgFn(bgFn);
+		}
+		renderContainer.clear();
 
-			const callRenderer = this.getCallRenderer();
-			if (!callRenderer) {
+		const callRenderer = this.getCallRenderer();
+		if (!callRenderer) {
+			renderContainer.addChild(this.createResultRegion(this.createCallFallback()));
+			hasContent = true;
+		} else {
+			try {
+				const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
+				this.callRendererComponent = component;
+				renderContainer.addChild(this.createResultRegion(component));
+				hasContent = true;
+			} catch {
+				this.callRendererComponent = undefined;
 				renderContainer.addChild(this.createResultRegion(this.createCallFallback()));
 				hasContent = true;
+			}
+		}
+
+		if (this.result) {
+			const resultRenderer = this.getResultRenderer();
+			if (!resultRenderer) {
+				const component = this.createResultFallback();
+				if (component) {
+					renderContainer.addChild(this.createResultRegion(component));
+					hasContent = true;
+				}
 			} else {
 				try {
-					const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
-					this.callRendererComponent = component;
+					const component = resultRenderer(
+						{ content: this.result.content as any, details: this.result.details },
+						{ expanded: this.expanded, isPartial: this.isPartial },
+						theme,
+						this.getRenderContext(this.resultRendererComponent),
+					);
+					this.resultRendererComponent = component;
 					renderContainer.addChild(this.createResultRegion(component));
 					hasContent = true;
 				} catch {
-					this.callRendererComponent = undefined;
-					renderContainer.addChild(this.createResultRegion(this.createCallFallback()));
-					hasContent = true;
-				}
-			}
-
-			if (this.result) {
-				const resultRenderer = this.getResultRenderer();
-				if (!resultRenderer) {
+					this.resultRendererComponent = undefined;
 					const component = this.createResultFallback();
 					if (component) {
 						renderContainer.addChild(this.createResultRegion(component));
 						hasContent = true;
 					}
-				} else {
-					try {
-						const component = resultRenderer(
-							{ content: this.result.content as any, details: this.result.details },
-							{ expanded: this.expanded, isPartial: this.isPartial },
-							theme,
-							this.getRenderContext(this.resultRendererComponent),
-						);
-						this.resultRendererComponent = component;
-						renderContainer.addChild(this.createResultRegion(component));
-						hasContent = true;
-					} catch {
-						this.resultRendererComponent = undefined;
-						const component = this.createResultFallback();
-						if (component) {
-							renderContainer.addChild(this.createResultRegion(component));
-							hasContent = true;
-						}
-					}
 				}
 			}
-		} else {
-			this.contentText.setCustomBgFn(bgFn);
-			this.contentText.setText(this.formatToolExecution());
-			hasContent = true;
 		}
 
 		for (const img of this.imageComponents) {
@@ -409,25 +408,12 @@ export class ToolExecutionComponent extends Container {
 			}
 		}
 
-		if (this.hasRendererDefinition() && !hasContent && this.imageComponents.length === 0) {
+		if (!hasContent && this.imageComponents.length === 0) {
 			this.hideComponent = true;
 		}
 	}
 
 	private getTextOutput(): string {
 		return getRenderedTextOutput(this.result, this.showImages);
-	}
-
-	private formatToolExecution(): string {
-		let text = theme.fg("toolTitle", theme.bold(this.toolName));
-		const content = JSON.stringify(this.args, null, 2);
-		if (content) {
-			text += `\n\n${content}`;
-		}
-		const output = this.getTextOutput();
-		if (output) {
-			text += `\n${output}`;
-		}
-		return text;
 	}
 }

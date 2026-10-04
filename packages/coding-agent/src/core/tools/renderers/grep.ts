@@ -13,6 +13,7 @@ import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/t
 import type { GrepToolDetails } from "../grep.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "../render-utils.ts";
 import { DEFAULT_MAX_BYTES, formatSize } from "../truncate.ts";
+import { formatToolHeader, getToolDisplayName } from "./tool-header.ts";
 
 function formatGrepCall(
 	args: { pattern: string; path?: string; glob?: string; limit?: number } | undefined,
@@ -24,14 +25,12 @@ function formatGrepCall(
 	const glob = str(args?.glob);
 	const limit = args?.limit;
 	const invalidArg = invalidArgText(theme);
-	let text =
-		theme.fg("toolTitle", theme.bold("grep")) +
-		" " +
-		(pattern === null ? invalidArg : theme.fg("accent", `/${pattern || ""}/`)) +
-		theme.fg("toolOutput", ` in ${path === null ? invalidArg : path}`);
-	if (glob) text += theme.fg("toolOutput", ` (${glob})`);
-	if (limit !== undefined) text += theme.fg("toolOutput", ` limit ${limit}`);
-	return text;
+	const header = formatToolHeader(theme, {
+		name: getToolDisplayName("grep"),
+		arg: pattern === null ? invalidArg : theme.fg("accent", `/${pattern || ""}/`),
+		meta: [path !== null && `in ${path}`, glob, limit != null && `limit ${limit}`],
+	});
+	return path === null ? `${header} ${invalidArg}` : header;
 }
 function formatGrepResult(
 	result: {

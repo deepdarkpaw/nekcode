@@ -161,7 +161,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [], details: { diff: "+1 after", firstChangedLine: 1 }, isError: false });
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("edit");
+		expect(rendered).toContain("Edit");
 		expect(rendered).toContain("README.md");
 		expect(rendered).not.toContain(":1");
 	});
@@ -177,7 +177,7 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("read");
+		expect(rendered).toContain("Read");
 		expect(rendered).toContain("README.md");
 	});
 
@@ -291,7 +291,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered.match(/\bread\b/g)?.length ?? 0).toBe(1);
+		expect(rendered.match(/\bRead\b/g)?.length ?? 0).toBe(1);
 	});
 
 	// Issue #9996: strict tool schemas make models send null for omitted optional fields.
@@ -306,7 +306,7 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("read src/example.ts");
+		expect(rendered).toContain("Read src/example.ts");
 		expect(rendered).not.toContain("src/example.ts:");
 	});
 
@@ -349,7 +349,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("read");
+		expect(rendered).toContain("Read");
 		expect(rendered).toContain("README.md");
 		expect(rendered).toContain("override result");
 	});
@@ -373,7 +373,7 @@ describe("ToolExecutionComponent parity", () => {
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		expect(rendered).toContain("override call");
 		expect(rendered).toContain("override result");
-		expect(rendered).not.toContain("read README.md");
+		expect(rendered).not.toContain("Read README.md");
 	});
 
 	test("uses custom renderers for built-in overrides that reuse wrapped built-in tool parameters", () => {
@@ -466,7 +466,8 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateResult({ content: [{ type: "text", text: output }], details: {}, isError: false }, false);
 
 		const collapsed = stripAnsi(component.render(120).join("\n"));
-		expect(collapsed).toContain("custom_tool");
+		expect(collapsed).toContain('Custom Tool foo="bar"');
+		expect(collapsed).not.toContain("custom_tool");
 		expect(collapsed).toContain("line-10");
 		expect(collapsed).not.toContain("line-11");
 		expect(collapsed).toContain("5 more lines");
@@ -476,6 +477,67 @@ describe("ToolExecutionComponent parity", () => {
 		const expanded = stripAnsi(component.render(120).join("\n"));
 		expect(expanded).toContain("line-15");
 		expect(expanded).not.toContain("more lines");
+	});
+
+	test("limits collapsed fallback results to wrapped lines, not logical lines", () => {
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-6b",
+			{},
+			{},
+			createBaseToolDefinition(),
+			createFakeTui(),
+			process.cwd(),
+		);
+		const longLine = Array.from({ length: 400 }, (_, index) => `item${index}`).join(",");
+		component.updateResult({ content: [{ type: "text", text: longLine }], details: {}, isError: false }, false);
+
+		const collapsedLines = component.render(80);
+		// Header, spacer, 10 preview lines, hint, and the box padding.
+		expect(collapsedLines.length).toBeLessThan(20);
+		expect(stripAnsi(collapsedLines.join("\n"))).toMatch(/\d+ more lines/);
+
+		component.setExpanded(true);
+		expect(component.render(80).length).toBeGreaterThan(30);
+	});
+
+	test("names fallback rows by label, else by the tool name in Title Case", () => {
+		const labeled = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-6c",
+			{},
+			{},
+			{ ...createBaseToolDefinition(), label: "Custom Thing" },
+			createFakeTui(),
+			process.cwd(),
+		);
+		expect(stripAnsi(labeled.render(120).join("\n"))).toContain("Custom Thing");
+
+		const bare = new ToolExecutionComponent(
+			"fetch_page_title",
+			"tool-6d",
+			{ url: "https://example.com" },
+			{},
+			undefined,
+			createFakeTui(),
+			process.cwd(),
+		);
+		const rendered = stripAnsi(bare.render(120).join("\n"));
+		expect(rendered).toContain('Fetch Page Title url="https://example.com"');
+		expect(rendered).not.toContain("fetch_page_title");
+	});
+
+	test("names generated MCP tool rows server › tool when no definition is known", () => {
+		const component = new ToolExecutionComponent(
+			"mcp__github__create_issue",
+			"tool-6e",
+			{},
+			{},
+			undefined,
+			createFakeTui(),
+			process.cwd(),
+		);
+		expect(stripAnsi(component.render(120).join("\n"))).toContain("github › create_issue");
 	});
 
 	test("trims trailing blank display lines from write previews", () => {
@@ -585,7 +647,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 
 		const collapsed = stripAnsi(component.render(120).join("\n"));
-		expect(collapsed).toContain("read");
+		expect(collapsed).toContain("Read");
 		expect(collapsed).toContain("notes.txt");
 		expect(collapsed).not.toContain("hidden content");
 
@@ -599,15 +661,15 @@ describe("ToolExecutionComponent parity", () => {
 			title: "SKILL.md",
 			path: join(process.cwd(), "attio", "SKILL.md"),
 			content: "---\nname: attio\ndescription: CRM helper\n---\n\n# Hidden skill instructions",
-			compact: "[skill] attio",
+			compact: "Read attio skill",
 			hidden: "Hidden skill instructions",
-			absent: "read skill attio",
+			absent: "[skill]",
 		},
 		{
 			title: "AGENTS.md",
 			path: join(process.cwd(), ".pi", "AGENTS.md"),
 			content: "Hidden resource instructions",
-			compact: "read resource .pi/AGENTS.md",
+			compact: "Read .pi/AGENTS.md resource",
 			hidden: "Hidden resource instructions",
 			absent: undefined,
 		},
@@ -615,7 +677,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "AGENTS.override.md",
 			path: join(process.cwd(), ".pi", "AGENTS.override.md"),
 			content: "Hidden override instructions",
-			compact: "read resource .pi/AGENTS.override.md",
+			compact: "Read .pi/AGENTS.override.md resource",
 			hidden: "Hidden override instructions",
 			absent: undefined,
 		},
@@ -623,7 +685,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "outside AGENTS.md",
 			path: resolve(process.cwd(), "..", "AGENTS.md"),
 			content: "Hidden outside resource instructions",
-			compact: `read resource ${resolve(process.cwd(), "..", "AGENTS.md").replace(/\\/g, "/")}`,
+			compact: `Read ${resolve(process.cwd(), "..", "AGENTS.md").replace(/\\/g, "/")} resource`,
 			hidden: "Hidden outside resource instructions",
 			absent: undefined,
 		},
@@ -631,7 +693,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "Pi documentation",
 			path: getReadmePath(),
 			content: "Hidden docs content",
-			compact: "read docs README.md",
+			compact: "Read README.md docs",
 			hidden: "Hidden docs content",
 			absent: undefined,
 		},
@@ -665,8 +727,8 @@ describe("ToolExecutionComponent parity", () => {
 	}
 
 	for (const scenario of [
-		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "[skill] attio:120-329" },
-		{ title: "Pi documentation", path: getReadmePath(), compact: "read docs README.md:120-329" },
+		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "Read attio:120-329 skill" },
+		{ title: "Pi documentation", path: getReadmePath(), compact: "Read README.md:120-329 docs" },
 	] as const) {
 		test(`shows the read line range in compact ${scenario.title} reads before the expand hint`, () => {
 			const component = new ToolExecutionComponent(

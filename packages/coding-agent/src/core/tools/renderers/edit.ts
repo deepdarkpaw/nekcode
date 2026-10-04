@@ -4,6 +4,7 @@ import type { ToolDefinition } from "../../extensions/types.ts";
 import type { EditToolDetails } from "../edit.ts";
 import { computeEditDiff } from "../edit-diff.ts";
 import { renderToolPath, str } from "../render-utils.ts";
+import { formatToolHeader, getToolDisplayName } from "./tool-header.ts";
 
 /** State retained by the edit renderer between the call and its result. */
 export type EditRenderState = {
@@ -82,7 +83,11 @@ export const editRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "rende
 		const container = new Container();
 		container.addChild(
 			new Text(
-				`${theme.fg("toolTitle", theme.bold("edit"))} ${renderToolPath(str(typedArgs?.file_path), theme, context.cwd)}`,
+				formatToolHeader(theme, {
+					name: getToolDisplayName("edit"),
+					arg: renderToolPath(str(typedArgs?.file_path), theme, context.cwd),
+					meta: [typedArgs?.replace_all === true || typedArgs?.replace_all === "true" ? "replace all" : undefined],
+				}),
 				0,
 				0,
 			),

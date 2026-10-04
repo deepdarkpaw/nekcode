@@ -13,6 +13,7 @@ import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/t
 import type { AstGrepToolDetails } from "../ast-grep.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "../render-utils.ts";
 import { DEFAULT_MAX_BYTES, formatSize } from "../truncate.ts";
+import { formatToolHeader, getToolDisplayName } from "./tool-header.ts";
 
 function formatAstGrepCall(
 	args: { pattern: string; lang?: string; path?: string; limit?: number } | undefined,
@@ -24,14 +25,12 @@ function formatAstGrepCall(
 	const lang = str(args?.lang);
 	const limit = args?.limit;
 	const invalidArg = invalidArgText(theme);
-	let text =
-		theme.fg("toolTitle", theme.bold("ast-grep")) +
-		" " +
-		(pattern === null ? invalidArg : theme.fg("accent", `\`${pattern || ""}\``)) +
-		theme.fg("toolOutput", ` in ${path === null ? invalidArg : path}`);
-	if (lang) text += theme.fg("toolOutput", ` (${lang})`);
-	if (limit !== undefined) text += theme.fg("toolOutput", ` limit ${limit}`);
-	return text;
+	const header = formatToolHeader(theme, {
+		name: getToolDisplayName("ast_grep"),
+		arg: pattern === null ? invalidArg : theme.fg("accent", pattern || ""),
+		meta: [path !== null && `in ${path}`, lang, limit != null && `limit ${limit}`],
+	});
+	return path === null ? `${header} ${invalidArg}` : header;
 }
 
 function formatAstGrepWarnings(details: AstGrepToolDetails | undefined, theme: Theme): string {

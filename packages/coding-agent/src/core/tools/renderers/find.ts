@@ -13,6 +13,7 @@ import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/t
 import type { FindToolDetails } from "../find.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "../render-utils.ts";
 import { DEFAULT_MAX_BYTES, formatSize } from "../truncate.ts";
+import { formatToolHeader, getToolDisplayName } from "./tool-header.ts";
 
 function formatFindCall(args: { pattern: string; path?: string; limit?: number } | undefined, theme: Theme): string {
 	const pattern = str(args?.pattern);
@@ -20,15 +21,12 @@ function formatFindCall(args: { pattern: string; path?: string; limit?: number }
 	const path = rawPath !== null ? shortenPath(rawPath || ".") : null;
 	const limit = args?.limit;
 	const invalidArg = invalidArgText(theme);
-	let text =
-		theme.fg("toolTitle", theme.bold("find")) +
-		" " +
-		(pattern === null ? invalidArg : theme.fg("accent", pattern || "")) +
-		theme.fg("toolOutput", ` in ${path === null ? invalidArg : path}`);
-	if (limit !== undefined) {
-		text += theme.fg("toolOutput", ` (limit ${limit})`);
-	}
-	return text;
+	const header = formatToolHeader(theme, {
+		name: getToolDisplayName("find"),
+		arg: pattern === null ? invalidArg : theme.fg("accent", pattern || ""),
+		meta: [path !== null && `in ${path}`, limit != null && `limit ${limit}`],
+	});
+	return path === null ? `${header} ${invalidArg}` : header;
 }
 function formatFindResult(
 	result: {

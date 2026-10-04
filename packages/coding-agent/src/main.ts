@@ -30,6 +30,7 @@ import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
+import { launchOpenTui } from "./cli/opentui-launcher.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
@@ -602,6 +603,20 @@ export async function main(args: string[], options?: MainOptions) {
 	if (parsed.version) {
 		console.log(VERSION);
 		process.exit(0);
+	}
+
+	// The OpenTUI frontend runs on Bun and starts this CLI again as its `--mode rpc` backend.
+	if (parsed.ui === "opentui" && !parsed.help) {
+		if (parsed.mode !== undefined || parsed.print) {
+			console.error(chalk.red("Error: --ui opentui cannot be combined with --mode or --print"));
+			process.exit(1);
+		}
+		process.exitCode = await launchOpenTui(args, {
+			messages: parsed.messages,
+			fileArgs: parsed.fileArgs,
+			useTheme: parsed.useTheme,
+		});
+		return;
 	}
 
 	if (parsed.export) {
