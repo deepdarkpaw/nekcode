@@ -6,7 +6,6 @@ import {
 	type ModelType,
 	type Provider,
 } from "@earendil-works/pi-ai";
-import { VERSION } from "../config.ts";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 
@@ -105,7 +104,7 @@ export function withRemoteCatalog(
 				{
 					headers: {
 						accept: "application/json",
-						"User-Agent": getPiUserAgent(VERSION),
+						"User-Agent": getPiUserAgent(),
 						...(validator ? { "if-none-match": validator } : {}),
 					},
 					signal: context.signal,

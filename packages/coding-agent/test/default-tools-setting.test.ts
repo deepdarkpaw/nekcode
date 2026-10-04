@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -154,6 +154,42 @@ describe("defaultTools setting", () => {
 				.sort(),
 		).toEqual(["ast_grep", "bash", "edit", "find", "grep", "ls", "powershell", "read", "web_search", "write"]);
 		expect(session.getActiveToolNames()).toEqual(["ls"]);
+		session.dispose();
+	});
+	// Regression #10245, ported from db6cc71dc without the deferred +name/-name syntax.
+	it("enables newly configured defaults on reload without re-enabling disabled tools", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		await settingsManager.flush();
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(tempDir),
+		});
+		session.setActiveToolsByName(["read"]);
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "grep"] }));
+		await session.reload();
+		expect(session.getActiveToolNames().sort()).toEqual(["grep", "read"]);
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read"] }));
+		await session.reload();
+		expect(session.getActiveToolNames().sort()).toEqual(["grep", "read"]);
+		session.dispose();
+	});
+
+	it("retains explicit tool allowlists on reload", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			tools: ["read"],
+			sessionManager: SessionManager.inMemory(tempDir),
+		});
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["grep"] }));
+		await session.reload();
+		expect(session.getActiveToolNames()).toEqual(["read"]);
 		session.dispose();
 	});
 });

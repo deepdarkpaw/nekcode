@@ -86,6 +86,17 @@ describe("Cloudflare Workers AI System One", () => {
 		expect(result.answers.department).toMatchObject({ type: "choice", choice: "billing", confidence: 0.8 });
 	});
 
+	it("parses Cloudflare-hosted classifier output without a run record", async () => {
+		// Upstream 4812cb268: Clef returns the output directly in result.
+		const { models, jev } = setup();
+		const result = await models.classify({ ...jev, id: "@cf/cloudflare/clef" }, context, {
+			...auth,
+			fetch: async () => Response.json({ success: true, result: jevOutput }),
+		});
+		expect(result.stopReason).toBe("stop");
+		expect(result.answers.is_urgent).toEqual({ type: "bool", probability: 0.95 });
+	});
+
 	it("reports runs that did not complete", async () => {
 		const { models, jev } = setup();
 		const result = await models.classify(jev, context, {

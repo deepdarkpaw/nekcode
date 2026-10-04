@@ -30,6 +30,7 @@ const transport: SystemOneTransport = {
 		if (body.success === false) throw new Error(cloudflareErrorMessage(body.errors));
 		const run = body.result;
 		if (!isRecord(run)) throw new Error(`${LABEL} returned an unexpected response`);
+		if ("answers" in run) return run.answers;
 		if (run.state !== "Completed") {
 			throw new Error(`${LABEL} run did not complete (state: ${String(run.state)})`);
 		}
