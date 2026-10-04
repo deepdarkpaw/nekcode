@@ -119,6 +119,7 @@ process.stdin.on("end", () => {
 			Invoke-Native 'git' @('-C', $InstallDir, 'merge', '--ff-only', $targetRef)
 		} else { Invoke-Native 'git' @('-C', $InstallDir, 'checkout', '-q', '-b', $Branch, $targetRef) }
 	}
+	if ($Channel -eq 'dev') { Invoke-Native 'git' @('-C', $InstallDir, 'branch', "--set-upstream-to=origin/$Branch", $Branch) }
 	Write-Host "at $(Get-Git @('-C', $InstallDir, 'log', '-1', '--format=%h %s'))"
 }
 

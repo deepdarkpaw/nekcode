@@ -105,6 +105,9 @@ process.stdin.on("end", () => {
 	else
 		git -C "$INSTALL_DIR" checkout -q -b "$BRANCH" "$target_ref"
 	fi
+	if [ "$CHANNEL" = dev ]; then
+		git -C "$INSTALL_DIR" branch --set-upstream-to="origin/$BRANCH" "$BRANCH"
+	fi
 	echo "at $(git -C "$INSTALL_DIR" log -1 --format='%h %s')"
 }
 
@@ -141,13 +144,13 @@ write_launcher() {
 }
 
 setup_tools() {
-	[ "$SKIP_TOOLS" != 1 ] || return
+	[ "$SKIP_TOOLS" != 1 ] || return 0
 	step "Setting up fd, rg, ast-grep"
 	(cd "$INSTALL_DIR" && node --import "./$RESOLVER" scripts/setup-tools.ts) || fail "search tool setup failed; install the listed tools and rerun"
 }
 
 install_bun() {
-	[ "$INSTALL_BUN" = 1 ] || return
+	[ "$INSTALL_BUN" = 1 ] || return 0
 	command -v bun >/dev/null 2>&1 && return
 	step "Installing Bun for the optional OpenTUI frontend"
 	require_command curl "Install curl with your package manager."

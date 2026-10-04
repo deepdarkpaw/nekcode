@@ -24,6 +24,11 @@ export const workspaceSourcePaths = {
 } as const;
 
 export default defineConfig({
+	test: {
+		server: {
+			deps: { inline: [/@earendil-works\/pi-(client|protocol)/] },
+		},
+	},
 	resolve: {
 		alias: [
 			{ find: /^@earendil-works\/chord$/, replacement: workspaceSourcePaths.chordIndex },

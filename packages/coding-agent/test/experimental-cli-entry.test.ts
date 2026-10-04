@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { ENV_AGENT_DIR, VERSION } from "../src/config.ts";
+import { APP_NAME, ENV_AGENT_DIR, NEK_VERSION, VERSION } from "../src/config.ts";
 
 // --import takes a module specifier, not a filesystem path.
 const sourceResolverUrl = pathToFileURL(resolve(__dirname, "../src/experimental/source-resolver.ts")).href;
@@ -49,7 +49,7 @@ describe("stable and development CLI entrypoints", () => {
 	it("does not dispatch experimental commands from the stable entrypoint", () => {
 		const result = runEntry("cli.ts", true);
 		expect(result.status, result.stderr).toBe(0);
-		expect(result.stdout.trim()).toBe(VERSION);
+		expect(result.stdout.trim()).toBe(`${APP_NAME} ${NEK_VERSION} (pi ${VERSION})`);
 	});
 
 	it("keeps experimental dispatch in the development entrypoint", () => {
@@ -62,6 +62,6 @@ describe("stable and development CLI entrypoints", () => {
 	it("falls back to the stable CLI when experiments are disabled", () => {
 		const result = runEntry("experimental/cli.ts", false);
 		expect(result.status, result.stderr).toBe(0);
-		expect(result.stdout.trim()).toBe(VERSION);
+		expect(result.stdout.trim()).toBe(`${APP_NAME} ${NEK_VERSION} (pi ${VERSION})`);
 	});
 });

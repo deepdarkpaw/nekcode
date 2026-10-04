@@ -6,6 +6,7 @@ import {
 	type ModelType,
 	type Provider,
 } from "@earendil-works/pi-ai";
+import { VERSION } from "../config.ts";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 
@@ -99,6 +100,7 @@ export function withRemoteCatalog(
 			const validator = stored && stored.models.length > 0 ? stored.etag : undefined;
 			const url = new URL(`/api/models/providers/${encodeURIComponent(provider.id)}`, catalogBaseUrl);
 			url.searchParams.set("types", REMOTE_CATALOG_MODEL_TYPES.join(","));
+			url.searchParams.set("pi-version", VERSION);
 			const response = await fetchWithRetry(
 				url,
 				{
