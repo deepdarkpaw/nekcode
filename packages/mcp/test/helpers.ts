@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { listenOnBrowserSafePort } from "../src/oauth/callback.ts";
 
 export type HttpHandler = (request: IncomingMessage, response: ServerResponse, origin: string) => Promise<void>;
 
@@ -19,10 +20,9 @@ export async function listen(handler: HttpHandler): Promise<string> {
 			response.end(String(error));
 		});
 	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const address = server.address();
-	if (!address || typeof address === "string") throw new Error("HTTP test server did not bind to TCP");
-	origin = `http://127.0.0.1:${address.port}`;
+	// Ephemeral ranges that start low (e.g. Windows 1024-15000) can hand out Fetch "bad ports" such as 6000.
+	const port = await listenOnBrowserSafePort(server, { host: "127.0.0.1" });
+	origin = `http://127.0.0.1:${port}`;
 	servers.push(server);
 	return origin;
 }
