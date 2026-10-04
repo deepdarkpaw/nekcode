@@ -18,6 +18,7 @@ import { resolveToCwd } from "../path-utils.ts";
 import type { ReadToolDetails } from "../read.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "../render-utils.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "../truncate.ts";
+import { formatToolHeader, getToolDisplayName } from "./tool-header.ts";
 
 interface CompactReadClassification {
 	kind: "docs" | "resource" | "skill";
@@ -30,11 +31,14 @@ function formatReadLineRange(args: ReadRenderArgs | undefined, theme: Theme): st
 	if (args?.offset == null && args?.limit == null) return "";
 	const startLine = args.offset ?? 1;
 	const endLine = args.limit != null ? startLine + args.limit - 1 : "";
-	return theme.fg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
+	return theme.fg("muted", `:${startLine}${endLine ? `-${endLine}` : ""}`);
 }
 function formatReadCall(args: ReadRenderArgs | undefined, theme: Theme, cwd: string): string {
 	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
-	return `${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}${formatReadLineRange(args, theme)}`;
+	return formatToolHeader(theme, {
+		name: getToolDisplayName("read"),
+		arg: pathDisplay + formatReadLineRange(args, theme),
+	});
 }
 function trimTrailingEmptyLines(lines: string[]): string[] {
 	let end = lines.length;
@@ -100,23 +104,12 @@ function formatCompactReadCall(
 	args: ReadRenderArgs | undefined,
 	theme: Theme,
 ): string {
-	const expandHint = theme.fg("dim", ` (${keyText("app.tools.expand")} to expand)`);
-	if (classification.kind === "skill") {
-		return (
-			theme.fg("customMessageLabel", `\x1b[1m[skill]\x1b[22m `) +
-			theme.fg("customMessageText", classification.label) +
-			formatReadLineRange(args, theme) +
-			expandHint
-		);
-	}
-
-	return (
-		theme.fg("toolTitle", theme.bold(`read ${classification.kind}`)) +
-		" " +
-		theme.fg("accent", classification.label) +
-		formatReadLineRange(args, theme) +
-		expandHint
-	);
+	return formatToolHeader(theme, {
+		name: getToolDisplayName("read"),
+		arg: theme.fg("accent", classification.label) + formatReadLineRange(args, theme),
+		meta: [classification.kind],
+		suffix: theme.fg("dim", ` (${keyText("app.tools.expand")} to expand)`),
+	});
 }
 function formatReadResult(
 	args: ReadRenderArgs | undefined,

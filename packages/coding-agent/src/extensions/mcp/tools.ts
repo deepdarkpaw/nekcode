@@ -27,6 +27,7 @@ import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import type { ToolAnnotations, ToolDefinition, ToolExposure, ToolNamespace } from "../../core/extensions/types.ts";
 import { formatToolCallWithArgs, getTextOutput, replaceTabs } from "../../core/tools/render-utils.ts";
+import { formatMcpToolName } from "../../core/tools/renderers/tool-names.ts";
 import { formatSize, truncateMiddle } from "../../core/tools/truncate.ts";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.ts";
@@ -260,7 +261,7 @@ export function createMcpToolDefinition(options: {
 	const { server, tool } = options;
 	const title = tool.title ?? tool.annotations?.title;
 	const annotations = toToolAnnotations(tool);
-	const label = `${server}/${tool.name}`;
+	const label = formatMcpToolName(server, tool.name);
 	return {
 		name: options.name,
 		label,

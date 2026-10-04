@@ -11,6 +11,7 @@ import { keyHint } from "../../../modes/interactive/components/keybinding-hints.
 import { getLanguageFromPath, highlightCode, type Theme } from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
 import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "../render-utils.ts";
+import { formatToolHeader, getToolDisplayName } from "./tool-header.ts";
 
 type WriteHighlightCache = {
 	rawPath: string | null;
@@ -103,7 +104,12 @@ function formatWriteCall(
 	const rawPath = str(args?.file_path ?? args?.path);
 	const fileContent = str(args?.content);
 	const pathDisplay = renderToolPath(rawPath, theme, cwd);
-	let text = `${theme.fg("toolTitle", theme.bold("write"))} ${pathDisplay}`;
+	const lineCount = fileContent ? trimTrailingEmptyLines(normalizeDisplayText(fileContent).split("\n")).length : 0;
+	let text = formatToolHeader(theme, {
+		name: getToolDisplayName("write"),
+		arg: pathDisplay,
+		meta: [lineCount > 0 && `${lineCount} line${lineCount === 1 ? "" : "s"}`],
+	});
 
 	if (fileContent === null) {
 		text += `\n\n${theme.fg("error", "[invalid content arg - expected string]")}`;

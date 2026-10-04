@@ -1,5 +1,6 @@
 /** BM25-based discovery over registered deferred tools. */
 
+import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type {
 	ExtensionAPI,
@@ -8,6 +9,8 @@ import type {
 	ToolInfo,
 	ToolNamespace,
 } from "../../core/extensions/types.ts";
+import { formatToolHeader, getToolDisplayName } from "../../core/tools/renderers/tool-header.ts";
+import type { Theme } from "../../modes/interactive/theme/theme.ts";
 
 export const TOOL_SEARCH_TOOL_NAME = "tool_search";
 export const DEFAULT_TOOL_SEARCH_LIMIT = 8;
@@ -203,16 +206,59 @@ export function createToolSearchDescription(sources: readonly ToolNamespace[] = 
 	return `# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nYou have access to tools from the following sources:\n${listed}\n\nSome tools may not have been provided upfront; use \`${TOOL_SEARCH_TOOL_NAME}\` to search for required tools.`;
 }
 
+/** `Tool Search <query> limit N`. */
+export function formatToolSearchCall(args: unknown, theme: Theme): string {
+	const input =
+		typeof args === "object" && args !== null ? (args as Partial<Record<keyof ToolSearchInput, unknown>>) : {};
+	const query = typeof input.query === "string" ? input.query : "";
+	return formatToolHeader(theme, {
+		name: getToolDisplayName(TOOL_SEARCH_TOOL_NAME),
+		arg: query ? theme.fg("accent", query) : theme.fg("toolOutput", "..."),
+		meta: [typeof input.limit === "number" && `limit ${input.limit}`],
+	});
+}
+
+/** A muted count followed by the display names of the loaded tools, or the error text. */
+export function formatToolSearchResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: ToolSearchToolDetails },
+	isError: boolean,
+	theme: Theme,
+): string {
+	if (isError || !result.details) {
+		const output = result.content
+			.filter((block) => block.type === "text")
+			.map((block) => block.text ?? "")
+			.join("\n")
+			.trim();
+		return output ? `\n${theme.fg(isError ? "error" : "toolOutput", output)}` : "";
+	}
+	const loaded = result.details.loaded;
+	if (loaded.length === 0) return `\n${theme.fg("muted", "No matching tools")}`;
+	const count = theme.fg("muted", `Loaded ${loaded.length} tool${loaded.length === 1 ? "" : "s"}`);
+	const names = loaded.map((name) => getToolDisplayName(name)).join(", ");
+	return `\n${count} ${theme.fg("toolOutput", names)}`;
+}
+
 export function createToolSearchToolDefinition(
 	options: ToolSearchToolOptions = {},
 ): ToolDefinition<typeof toolSearchSchema, ToolSearchToolDetails> {
 	return {
 		name: TOOL_SEARCH_TOOL_NAME,
-		label: TOOL_SEARCH_TOOL_NAME,
+		label: getToolDisplayName(TOOL_SEARCH_TOOL_NAME),
 		description: createToolSearchDescription(),
 		promptSnippet: "Search for tools that are not loaded yet and load the matches",
 		parameters: toolSearchSchema,
 		exposure: "model-only",
+		renderCall(args, theme, context) {
+			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+			text.setText(formatToolSearchCall(args, theme));
+			return text;
+		},
+		renderResult(result, _options, theme, context) {
+			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+			text.setText(formatToolSearchResult(result, context.isError, theme));
+			return text;
+		},
 		async execute(_toolCallId, { query, limit }, signal) {
 			if (query.trim() === "") throw new Error("query must not be empty");
 			const max = limit ?? DEFAULT_TOOL_SEARCH_LIMIT;
