@@ -13,8 +13,8 @@
 	],
 	"scripts": {
 		"clean": "npm run clean --workspaces",
-		"build": "cd packages/chord && npm run build && cd ../tui && npm run build && cd ../telemetry && npm run build && cd ../mcp && npm run build && cd ../ai && npm run build && cd ../durable && npm run build && cd ../agent && npm run build && cd ../session-backends/sqlite-node && npm run build && cd ../../protocol && npm run build && cd ../client && npm run build && cd ../server && npm run build && cd ../coding-agent && npm run build",
-		"build:offline": "cd packages/chord && npm run build && cd ../tui && npm run build && cd ../telemetry && npm run build && cd ../mcp && npm run build && cd ../ai && npm run build:offline && cd ../durable && npm run build && cd ../agent && npm run build && cd ../session-backends/sqlite-node && npm run build && cd ../../protocol && npm run build && cd ../client && npm run build && cd ../server && npm run build && cd ../coding-agent && npm run build",
+		"build": "cd packages/chord && npm run build && cd ../tui && npm run build && cd ../mcp && npm run build && cd ../ai && npm run build && cd ../durable && npm run build && cd ../agent && npm run build && cd ../session-backends/sqlite-node && npm run build && cd ../../server && npm run build && cd ../coding-agent && npm run build",
+		"build:offline": "cd packages/chord && npm run build && cd ../tui && npm run build && cd ../mcp && npm run build && cd ../ai && npm run build:offline && cd ../durable && npm run build && cd ../agent && npm run build && cd ../session-backends/sqlite-node && npm run build && cd ../../server && npm run build && cd ../coding-agent && npm run build",
 		"build:native:darwin": "npm --prefix packages/tui run build:native:darwin",
 		"build:native:linux": "npm --prefix packages/tui run build:native:linux",
 		"build:native:win32": "npm --prefix packages/tui run build:native:win32",
@@ -52,7 +52,8 @@
 		"release:minor": "node scripts/release.mjs minor",
 		"release:major": "node scripts/release.mjs major",
 		"release:fix-links": "node scripts/release-notes.mjs fix-github-releases",
-		"prepare": "husky"
+		"prepare": "husky",
+		"nek:release": "node scripts/nek-release.mjs"
 	},
 	"devDependencies": {
 		"@anthropic-ai/sandbox-runtime": "0.0.26",
@@ -61,7 +62,10 @@
 		"esbuild": "0.28.2",
 		"husky": "9.1.7",
 		"shx": "0.4.0",
-		"typescript": "7.0.2"
+		"typescript": "7.0.2",
+		"@earendil-works/pi-client": "1.0.2",
+		"@earendil-works/pi-protocol": "1.0.2",
+		"@earendil-works/pi-telemetry": "1.0.2"
 	},
 	"engines": {
 		"node": ">=22.19.0"
