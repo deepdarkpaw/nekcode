@@ -30,7 +30,7 @@ irm https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.ps
 The installer:
 
 1. checks the Git, Node.js, and npm versions;
-2. downloads the source (`~/.local/share/nekcode` on Linux/macOS, `%LOCALAPPDATA%\nekcode` on Windows);
+2. downloads the source (`~/.local/share/nekcode` on Linux/macOS, `%LOCALAPPDATA%\nekcode` on Windows), by default the latest release (`nek-v*` tag, see [Update](#update));
 3. installs dependencies and generates the built-in model catalog;
 4. creates the `nek` command (`~/.local/bin` on Linux/macOS; `%LOCALAPPDATA%\nekcode\bin` on Windows, added to PATH automatically);
 5. sets up the search tools fd, rg, and ast-grep (see [Search tools](#search-tools)).
@@ -45,9 +45,28 @@ nek --version
 
 ## Update
 
-Run the install command again. It pulls the latest code and reinstalls dependencies only when they changed. Running nek sessions keep the old code until you restart them.
+```bash
+nek --version          # e.g. nek 0.1.0 (pi 1.0.2): the nek version, with the pi base in parentheses
+nek update --check     # check only; changes nothing
+nek update             # update to the latest version of the selected channel
+```
 
-If you edited the source in the install directory, the installer stops instead of overwriting your changes.
+There are two update channels:
+
+| Channel | Tracks | Notes |
+|---|---|---|
+| `stable` (default) | the highest `nek-v*` release tag | released versions |
+| `dev` | the latest commit on the `nek` branch | work in progress, updated more often |
+
+Switch with `nek update --channel dev` (or `stable`). The choice is saved in the global setting `updateChannel`; `--check` does not save it.
+
+- `nek update --check` only runs `git ls-remote` against the checkout's `origin`. It does not call the GitHub API. Exit codes: `0` no update, `2` update available, `1` could not check.
+- nek never checks for updates on its own at startup.
+- `nek update` reruns the installer with your original install options, which are saved in `.nek-install-state.json` in the source directory. It reinstalls dependencies only when they changed.
+- Running the one-line install command again also updates.
+- Running nek sessions keep the old code until you restart them.
+
+If you edited the source in the install directory or committed there, the installer stops instead of overwriting your work.
 
 ## Getting started
 
@@ -72,6 +91,18 @@ Common actions:
 | `/mcp` | Show MCP server status |
 | `nek -c` | Continue the latest session in this directory |
 | `nek -p "question"` | Non-interactive: print the answer and exit |
+
+## Interface
+
+nek runs in fullscreen mode by default, and scrolls the transcript itself:
+
+- Use `PageUp` / `PageDown` to page, `Home` / `End` to jump to the start or the latest message, or the mouse wheel.
+- In tmux, the mouse wheel needs `set -g mouse on`; keyboard paging always works. See [tmux](packages/coding-agent/docs/tmux.md).
+- To use your terminal's own scrollbar and scrollback instead, run `nek --tui-mode regular`, or set the TUI mode to regular in `/settings`.
+
+When a plan is ready in Plan mode, the full plan appears in the transcript, where it scrolls like any other message. The editor area shows only the actions: implement, implement in a fresh session, keep planning, or exit Plan.
+
+**OpenTUI interface (experimental)**: `nek --ui opentui` starts a new interface built on [OpenTUI](https://opentui.com). The default interface is unchanged. It needs [Bun](https://bun.sh) 1.3 or newer; set `NEK_INSTALL_BUN=1` before running the installer to install Bun automatically. `/login`, `/settings`, the session tree, and images are not supported yet; see [OpenTUI frontend](packages/coding-agent/docs/opentui.md).
 
 ## Search tools
 
@@ -107,9 +138,11 @@ Set these environment variables before running the installer:
 |---|---|---|
 | `NEK_INSTALL_DIR` | source directory | `~/.local/share/nekcode` / `%LOCALAPPDATA%\nekcode` |
 | `NEK_BIN_DIR` | directory of the `nek` command | `~/.local/bin` / `%LOCALAPPDATA%\nekcode\bin` |
-| `NEK_BRANCH` | branch to track | `nek` |
+| `NEK_CHANNEL` | update channel: `stable` or `dev` | `stable` |
+| `NEK_BRANCH` | branch the `dev` channel tracks | `nek` |
 | `NEK_REPO_URL` | repository URL (for example a mirror) | `https://github.com/deepdarkpaw/nekcode.git` |
 | `NEK_SKIP_TOOLS=1` | skip the fd / rg / ast-grep setup | not skipped |
+| `NEK_INSTALL_BUN=1` | install Bun when missing (needed by the OpenTUI interface) | not installed |
 
 For example:
 

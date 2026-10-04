@@ -30,7 +30,7 @@ irm https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.ps
 安装脚本会依次：
 
 1. 检查 Git、Node.js、npm 的版本；
-2. 下载源码（Linux/macOS 放在 `~/.local/share/nekcode`，Windows 放在 `%LOCALAPPDATA%\nekcode`）；
+2. 下载源码（Linux/macOS 放在 `~/.local/share/nekcode`，Windows 放在 `%LOCALAPPDATA%\nekcode`），默认取最新的正式版本（`nek-v*` 标签，见[更新](#更新)）；
 3. 安装依赖，生成内置的模型列表；
 4. 创建 `nek` 命令（Linux/macOS 放在 `~/.local/bin`；Windows 放在 `%LOCALAPPDATA%\nekcode\bin`，并自动加入 PATH）；
 5. 准备好搜索工具 fd、rg、ast-grep（见[搜索工具](#搜索工具)）。
@@ -45,9 +45,28 @@ nek --version
 
 ## 更新
 
-再运行一次安装命令即可。脚本会拉取最新代码，只有依赖变化时才重新安装依赖。已打开的 nek 会话需要退出后重新运行才会用上新版本。
+```bash
+nek --version          # 例如 nek 0.1.0 (pi 1.0.2)：nek 自己的版本，括号里是基于的 pi 版本
+nek update --check     # 只检查，不改任何文件
+nek update             # 更新到所选通道的最新版本
+```
 
-如果你改过安装目录里的源码，脚本会停下并提示，不会覆盖你的改动。
+有两个更新通道：
+
+| 通道 | 跟踪 | 说明 |
+|---|---|---|
+| `stable`（默认） | 最新的 `nek-v*` 发布标签 | 正式版本 |
+| `dev` | `nek` 分支最新提交 | 开发中的代码，更新更快 |
+
+用 `nek update --channel dev`（或 `stable`）切换通道，选择会保存在全局设置 `updateChannel` 中；`--check` 不会保存。
+
+- `nek update --check` 只通过 `git ls-remote` 访问源码仓库的 `origin`，不调用 GitHub API。退出码：`0` 没有更新，`2` 有更新，`1` 无法检查。
+- nek 启动时不会自动检查更新。
+- `nek update` 会以原来的安装选项重新运行安装脚本，这些选项保存在源码目录的 `.nek-install-state.json` 中。只有依赖变化时才会重新安装依赖。
+- 再运行一次一键安装命令也能更新。
+- 已打开的 nek 会话需要退出后重新运行，才会用上新版本。
+
+如果你改过安装目录里的源码，或者在里面有自己的提交，脚本会停下并提示，不会覆盖你的改动。
 
 ## 开始使用
 
@@ -72,6 +91,18 @@ nek
 | `/mcp` | 查看 MCP 服务器状态 |
 | `nek -c` | 继续当前目录最近的会话 |
 | `nek -p "问题"` | 非交互模式，直接输出结果 |
+
+## 界面
+
+nek 默认以全屏模式运行，对话记录由 nek 自己滚动：
+
+- `PageUp` / `PageDown` 翻页，`Home` / `End` 跳到开头或最新消息，也可以用鼠标滚轮。
+- 在 tmux 里使用鼠标滚轮需要先 `set -g mouse on`；键盘翻页始终可用。见 [tmux](packages/coding-agent/docs/tmux.md)。
+- 想用终端自己的滚动条和回滚记录，可以用 `nek --tui-mode regular`，或在 `/settings` 里把 TUI mode 改成 regular。
+
+Plan 模式写完计划后，完整计划会出现在对话记录里，可以像普通消息一样滚动查看；输入框位置只保留"实现 / 新会话实现 / 继续规划 / 退出 Plan"几个选项。
+
+**OpenTUI 界面（实验性）**：`nek --ui opentui` 启动一个基于 [OpenTUI](https://opentui.com) 的新界面，原来的界面不受影响。它需要 [Bun](https://bun.sh) 1.3 或更高版本；运行安装脚本前设置 `NEK_INSTALL_BUN=1` 可以自动安装 Bun。目前不支持 `/login`、`/settings`、会话树和图片，详见 [OpenTUI 前端](packages/coding-agent/docs/opentui.md)。
 
 ## 搜索工具
 
@@ -107,9 +138,11 @@ node --import ./packages/coding-agent/src/experimental/source-resolver.ts script
 |---|---|---|
 | `NEK_INSTALL_DIR` | 源码目录 | `~/.local/share/nekcode` / `%LOCALAPPDATA%\nekcode` |
 | `NEK_BIN_DIR` | `nek` 命令所在目录 | `~/.local/bin` / `%LOCALAPPDATA%\nekcode\bin` |
-| `NEK_BRANCH` | 跟踪的分支 | `nek` |
+| `NEK_CHANNEL` | 更新通道：`stable` 或 `dev` | `stable` |
+| `NEK_BRANCH` | `dev` 通道跟踪的分支 | `nek` |
 | `NEK_REPO_URL` | 仓库地址（例如换成镜像） | `https://github.com/deepdarkpaw/nekcode.git` |
 | `NEK_SKIP_TOOLS=1` | 跳过 fd / rg / ast-grep 的准备 | 不跳过 |
+| `NEK_INSTALL_BUN=1` | 没有 Bun 时自动安装（OpenTUI 界面需要） | 不安装 |
 
 例如：
 
