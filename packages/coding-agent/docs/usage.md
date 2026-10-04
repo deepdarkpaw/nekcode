@@ -72,7 +72,7 @@ Press `Ctrl+X` or run `/copy` to copy the last response. Use `/export` to save t
 
 ## Adjust the terminal
 
-Regular mode uses normal scrollback. Fullscreen mode keeps the editor and status area fixed while the transcript scrolls within the terminal window. Choose a mode through `/settings` or `--tui-mode`.
+Fullscreen mode is the default: it keeps the editor and status area fixed while the transcript scrolls within the terminal window. Regular mode uses normal scrollback. Choose a mode through `/settings`, the `tuiMode` setting, or `--tui-mode regular|fullscreen`.
 
 Terminal support for mouse input, keyboard shortcuts, and inline images varies. See [Terminal Setup](terminal-setup.md) and [Keybindings](keybindings.md). Run `/hotkeys` to inspect active shortcuts.
 
