@@ -48,6 +48,8 @@ export interface Args {
 	listModels?: string | true;
 	offline?: boolean;
 	tuiMode?: TuiMode;
+	/** Interactive frontend: the built-in TUI (default) or the OpenTUI frontend (`--ui opentui`). */
+	ui?: "tui" | "opentui";
 	verbose?: boolean;
 	projectTrustOverride?: boolean;
 	messages: string[];
@@ -224,6 +226,16 @@ export function parseArgs(args: string[]): Args {
 					message: `Invalid TUI mode "${mode}". Valid values: regular, fullscreen`,
 				});
 			}
+		} else if (arg === "--ui" || arg.startsWith("--ui=")) {
+			const value = arg === "--ui" ? args[++i] : arg.slice("--ui=".length);
+			if (value === "tui" || value === "opentui") {
+				result.ui = value;
+			} else {
+				result.diagnostics.push({
+					type: "error",
+					message: value ? `Invalid UI "${value}". Valid values: tui, opentui` : "--ui requires tui or opentui",
+				});
+			}
 		} else if (arg === "--verbose") {
 			result.verbose = true;
 		} else if (arg === "--approve" || arg === "-a") {
@@ -318,6 +330,7 @@ ${chalk.bold("Options:")}
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --tui-mode <mode>              TUI mode: regular (default) or fullscreen
+  --ui <name>                    Interactive frontend: tui (default) or opentui (experimental, needs Bun)
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as NEK_OFFLINE=1)
