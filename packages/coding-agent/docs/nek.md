@@ -36,15 +36,15 @@ Enter Plan with `/plan`, switch modes with `alt+m`, or start in it with `nek --p
 
 `create_plan` creates a new plan file when `plan_id` is omitted. A session may contain multiple plans. To fully rewrite an existing plan, pass its stable `plan_id`; to make an incremental revision, read/edit the selected file and call `update_plan` (optionally with `plan_id`). The revision number increases only when the document changed, and the tool result shows only a diff for updates. `/plans` selects and previews a saved plan without printing it during mode changes. The review panel keeps its actions separate from the scrollable body: implement here, implement in a fresh session, keep planning, or exit Plan.
 
-Implementation runs in Agent, not in a third Plan execution mode. Approval covers one plan revision and its immutable body. Escape interrupts execution and revokes that authorization; old todos and completed progress are retained but cannot automatically resume after a new request. `/nek-build` explicitly starts or resumes a reviewed revision; `--fresh` starts it in a new session.
+Plan mode only plans; Agent mode implements. Approving a reviewed revision switches to Agent, writes the plan's todos as ordinary todos, and sends the approved plan body as a user message. There is no separate execution phase: Escape stops the current run like any other Agent run, and the todos stay as they are. `/nek-build` approves a reviewed revision the same way; `--fresh` does it in a new session.
 
-Re-entering Plan treats the previous plan as reference, following Claude Code's reentry rule: compare the latest request with the existing plan, replace it for a different task, or revise it for the same task. Ask new questions when a decision is genuinely unresolved, then save and review the revised plan. An older approval cannot execute a draft or a plan file changed after review.
+Re-entering Plan treats the previous plan as reference, following Claude Code's reentry rule: compare the latest request with the existing plan, replace it for a different task, or revise it for the same task. Ask new questions when a decision is genuinely unresolved, then save and review the revised plan. A pending approval never applies to a draft or to a plan file changed after review.
 
 Subagent rows render like Cursor: a status icon, the title, and a muted `model · type · elapsed` line, with the current `activity` on the second line. Rows update live while the subagent runs, and expand to the full Markdown result with `ctrl+o`.
 
 ## Subagents
 
-`subagent` runs a child session in the same process. The child shares the parent's model credentials, but it has its own tools, its own read history, and read-only settings, and it cannot start further subagents. Background subagents notify the parent once they finish, unless the parent already collected the result with `await`. After a parent interruption, or while plan execution is no longer authorized, completion notices wait for the next explicit user request instead of restarting the old subagent. Background child cancellation itself remains controlled by `/subagents`.
+`subagent` runs a child session in the same process. The child shares the parent's model credentials, but it has its own tools, its own read history, and read-only settings, and it cannot start further subagents. Background subagents notify the parent once they finish, unless the parent already collected the result with `await`. After a parent interruption, completion notices wait for the next explicit user request instead of restarting the old subagent. Background child cancellation itself remains controlled by `/subagents`.
 
 Built-in subagent types:
 
@@ -84,7 +84,7 @@ Use `/subagents` to list subagents, show a result, or cancel a running subagent.
 | `/plan [text]` | Enter Plan silently; with text, submit a planning request |
 | `/agent` | Exit Plan without implementing anything |
 | `/plans` | Select and preview one saved plan |
-| `/nek-build [plan_id] [--fresh]` | Start or resume a selected reviewed revision, optionally in a new session |
+| `/nek-build [plan_id] [--fresh]` | Implement a selected reviewed revision in Agent, optionally in a new session |
 | `/todos` | Show the todo list of the current branch |
 | `/subagents` | List, inspect, or cancel subagents |
 | `/agents` | List configured subagent presets |

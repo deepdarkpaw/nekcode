@@ -18,10 +18,10 @@ export interface Todo {
 	status: TodoStatus;
 }
 
-/** Persisted todo list, optionally owned by one approved plan revision. */
+/** Persisted todo list; `planning` todos belong to Plan mode and are inactive in Agent mode. */
 export interface TodoListData {
 	todos: Todo[];
-	owner?: PlanReference | "planning";
+	owner?: "planning";
 }
 
 /** Identity of the exact plan revision being reviewed or implemented. */
@@ -33,17 +33,11 @@ export interface PlanReference {
 /** Plan readiness, independent of the agent's interaction mode. */
 export type PlanStatus = "draft" | "ready";
 
-/** Execution authorization is revoked on interruption, never restored by changing modes. */
-export interface PlanExecution extends PlanReference {
-	status: "active" | "interrupted" | "completed";
-}
-
 /** Full lifecycle snapshot persisted separately from the plan artifact. */
 export interface PlanLifecycleData {
 	status: PlanStatus;
-	/** Path of the selected plan; selection alone never grants execution authorization. */
+	/** Path of the selected plan. */
 	active?: string;
-	execution?: PlanExecution;
 }
 
 /** The current plan of a session, written by create_plan. */
@@ -59,12 +53,11 @@ export interface PlanRecord extends PlanReference {
 export interface NekSessionState {
 	mode: Mode;
 	todos: Todo[];
-	todoOwner?: PlanReference | "planning";
+	todoOwner?: "planning";
 	plans: PlanData[];
 	/** Path of the plan selected for review or implementation. */
 	activePlan?: string;
 	planStatus?: PlanStatus;
-	execution?: PlanExecution;
 }
 
 /** Terminal and non-terminal states of a subagent run. */

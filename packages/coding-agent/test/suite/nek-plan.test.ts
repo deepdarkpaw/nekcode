@@ -25,6 +25,7 @@ interface UiRecord {
 	confirmResult: boolean;
 	onApproval?: () => Promise<PlanApprovalChoice | undefined>;
 	selectResult?: string;
+	planWidget: boolean;
 }
 
 function createUiContext(record: UiRecord): ExtensionUIContext {
@@ -41,7 +42,9 @@ function createUiContext(record: UiRecord): ExtensionUIContext {
 		setWorkingVisible: () => {},
 		setWorkingIndicator: () => {},
 		setHiddenThinkingLabel: () => {},
-		setWidget: () => {},
+		setWidget: (key: string, content: unknown) => {
+			if (key === "nek.plan") record.planWidget = content !== undefined;
+		},
 		setFooter: () => {},
 		setHeader: () => {},
 		setTitle: () => {},
@@ -68,7 +71,7 @@ function createUiContext(record: UiRecord): ExtensionUIContext {
 }
 
 function createRecord(): UiRecord {
-	return { modeStatus: undefined, approval: undefined, approvalShown: 0, confirmResult: false };
+	return { modeStatus: undefined, approval: undefined, approvalShown: 0, confirmResult: false, planWidget: false };
 }
 
 function toolCallMessage(name: string, args: JsonObject) {
@@ -278,7 +281,6 @@ describe("nek plan mode", () => {
 			activePlan: firstPlan.path,
 			plans: [{ plan: { path: firstPlan.path, revision: 2 } }],
 		});
-		expect(currentState(harness).execution).toBeUndefined();
 		expect(record.approvalShown).toBe(2);
 		expect(readFileSync(firstPlan.path, "utf-8")).toContain("# Add auth v2");
 	});
@@ -394,10 +396,17 @@ describe("nek plan mode", () => {
 			{ id: "schema", content: "Add the schema", status: "in_progress" },
 			{ id: "routes", content: "Add routes", status: "pending" },
 		]);
+		expect(state.todoOwner).toBeUndefined();
+		expect(state.planStatus).toBe("ready");
+		expect(activePlan(state)?.plan.name).toBe("Add auth");
+		expect(JSON.stringify(harness.sessionManager.getBranch())).not.toContain('"execution"');
 		expect(record.modeStatus).toBeUndefined();
+		expect(record.planWidget).toBe(false);
 		expect(harness.session.getActiveToolNames()).not.toContain("create_plan");
 		expect(requests[0]).toContain("You are now in Agent mode. You have EXITED your previous mode.");
 		expect(requests[0]).toContain("Implement the plan.");
+		expect(requests[0]).toContain("Approved plan: ");
+		expect(requests[0]).not.toContain("approval covers");
 		expect(requests[0]).not.toContain("Plan mode is active.");
 	});
 
@@ -426,7 +435,7 @@ describe("nek plan mode", () => {
 		expect(harness.faux.state.callCount).toBe(0);
 	});
 
-	it("does not resume interrupted plan todos after answering a new request", async () => {
+	it("keeps plan todos as ordinary todos after an interrupted Agent run, with no plan row", async () => {
 		const record = createRecord();
 		record.approval = "implement";
 		const harness = await createNekHarness(record);
@@ -436,13 +445,16 @@ describe("nek plan mode", () => {
 			fauxAssistantMessage("interrupted", { stopReason: "aborted" }),
 		]);
 		await harness.session.prompt("plan auth");
+		expect(record.planWidget).toBe(false);
+		expect(currentState(harness)).toMatchObject({ mode: "agent", planStatus: "ready" });
+		expect(currentState(harness).todos.map((todo) => todo.status)).toEqual(["in_progress", "pending"]);
 
 		const requests: string[] = [];
-		harness.setResponses([captureRequest(requests, "answer to the new question")]);
+		harness.setResponses([captureRequest(requests, "answer to the new question"), captureRequest(requests)]);
 		await harness.session.prompt("Stop auth. Explain the new requirement first.");
 
-		expect(harness.faux.state.callCount).toBe(3);
 		expect(requests[0]).toContain("Explain the new requirement first.");
+		expect(requests[0]).not.toContain("Implement the plan.");
 		expect(currentState(harness).todos).toHaveLength(2);
 		expect(harness.session.pendingMessageCount).toBe(0);
 	});
@@ -547,7 +559,7 @@ describe("nek plan mode", () => {
 			expect(harness.faux.state.callCount).toBe(2);
 			expect(currentState(harness).mode).toBe("plan");
 			expect(currentState(harness).planStatus).toBe("draft");
-			expect(currentState(harness).execution).toBeUndefined();
+			expect(currentState(harness).todos).toEqual([]);
 		},
 	);
 
@@ -572,7 +584,6 @@ describe("nek plan mode", () => {
 		await Promise.all([prompt, abort]);
 		expect(record.approvalShown).toBe(0);
 		expect(currentState(harness).mode).toBe("plan");
-		expect(currentState(harness).execution).toBeUndefined();
 	});
 
 	it("exit from plan review changes mode without starting implementation", async () => {
@@ -583,7 +594,7 @@ describe("nek plan mode", () => {
 		harness.setResponses([createPlanCall({ name: "Add auth" })]);
 		await harness.session.prompt("design auth");
 		expect(currentState(harness).mode).toBe("agent");
-		expect(currentState(harness).execution).toBeUndefined();
+		expect(currentState(harness).todos).toEqual([]);
 		expect(harness.faux.state.callCount).toBe(1);
 	});
 
@@ -618,7 +629,9 @@ describe("nek plan mode", () => {
 		expect(state.todos.map((todo) => todo.status)).toEqual(["in_progress", "pending"]);
 		expect(activePlan(state)?.plan).toMatchObject({ name: "Add auth", revision: 1 });
 		expect(activePlan(state)?.markdown).toBe("# Add auth\n\n- Add the schema");
-		expect(state.execution).toMatchObject({ path: activePlan(state)?.plan.path, revision: 1, status: "active" });
+		expect(state.planStatus).toBe("ready");
+		expect(state.todoOwner).toBeUndefined();
+		expect(JSON.stringify(created.getBranch())).not.toContain('"execution"');
 		expect(sent).toEqual([`${IMPLEMENT_FRESH_PREFIX}\n\n# Add auth\n\n- Add the schema`]);
 	});
 
@@ -634,46 +647,41 @@ describe("nek plan mode", () => {
 		writeFileSync(plan.path, "# Changed plan\n\nA different task.");
 		await harness.session.prompt("/nek-build");
 		expect(errors).toContainEqual(expect.stringContaining("changed after review"));
-		expect(currentState(harness).execution).toBeUndefined();
+		expect(currentState(harness).mode).toBe("plan");
 		expect(harness.faux.state.callCount).toBe(1);
 	});
 
-	it.each(["restart", "tree"] as const)(
-		"retains progress but revokes execution authorization after %s",
-		async (restore) => {
-			const record = createRecord();
-			record.approval = "implement";
-			const harness = await createNekHarness(record);
-			await harness.session.prompt("/plan");
-			harness.setResponses([
-				createPlanCall({ name: "Add auth" }),
-				fauxAssistantMessage("partial work"),
-				fauxAssistantMessage("paused for user"),
-			]);
-			await harness.session.prompt("plan auth");
-			expect(currentState(harness).execution?.status).toBe("active");
-			const leaf = harness.sessionManager.getLeafId();
-			if (!leaf) throw new Error("Expected session leaf");
-			if (restore === "restart")
-				await harness.session.bindExtensions({ uiContext: createUiContext(record), mode: "tui" });
-			else {
-				const previous = harness.sessionManager
-					.getBranch()
-					.find((entry) => entry.type === "message" && entry.message.role === "user")?.id;
-				if (!previous) throw new Error("Expected earlier branch node");
-				await harness.session.navigateTree(previous);
-				await harness.session.navigateTree(leaf);
-			}
-			expect(currentState(harness).execution?.status).toBe("interrupted");
-			expect(currentState(harness).todos.map((todo) => todo.status)).toEqual(["pending", "pending"]);
-			expect(currentSnapshot(harness)?.markdown).toBe("# Add auth\n\n- Add the schema");
-			harness.setResponses([fauxAssistantMessage("answer to the new question")]);
-			await harness.session.prompt("Explain caching. Do not resume auth.");
-			expect(harness.faux.state.callCount).toBe(4);
-		},
-	);
+	it.each(["restart", "tree"] as const)("keeps implementation todos and the ready plan after %s", async (restore) => {
+		const record = createRecord();
+		record.approval = "implement";
+		const harness = await createNekHarness(record);
+		await harness.session.prompt("/plan");
+		harness.setResponses([
+			createPlanCall({ name: "Add auth" }),
+			fauxAssistantMessage("partial work"),
+			fauxAssistantMessage("paused for user"),
+		]);
+		await harness.session.prompt("plan auth");
+		const before = currentState(harness);
+		const leaf = harness.sessionManager.getLeafId();
+		if (!leaf) throw new Error("Expected session leaf");
+		if (restore === "restart")
+			await harness.session.bindExtensions({ uiContext: createUiContext(record), mode: "tui" });
+		else {
+			const previous = harness.sessionManager
+				.getBranch()
+				.find((entry) => entry.type === "message" && entry.message.role === "user")?.id;
+			if (!previous) throw new Error("Expected earlier branch node");
+			await harness.session.navigateTree(previous);
+			await harness.session.navigateTree(leaf);
+		}
+		expect(currentState(harness)).toEqual(before);
+		expect(currentState(harness)).toMatchObject({ mode: "agent", planStatus: "ready" });
+		expect(currentState(harness).todos.map((todo) => todo.status)).toEqual(["in_progress", "pending"]);
+		expect(record.planWidget).toBe(false);
+	});
 
-	it("resumes only matching plan-owned progress after explicit approval", async () => {
+	it("re-approving a plan writes its todos again as ordinary todos", async () => {
 		const record = createRecord();
 		record.approval = "implement";
 		const harness = await createNekHarness(record);
@@ -690,11 +698,12 @@ describe("nek plan mode", () => {
 			fauxAssistantMessage("interrupted", { stopReason: "aborted" }),
 		]);
 		await harness.session.prompt("plan auth");
-		expect(currentState(harness).execution?.status).toBe("interrupted");
-		expect(currentState(harness).todos.map((todo) => todo.status)).toEqual(["completed", "pending"]);
-		harness.setResponses([fauxAssistantMessage("completed", { stopReason: "aborted" })]);
+		expect(currentState(harness).todos.map((todo) => todo.status)).toEqual(["completed", "in_progress"]);
+		harness.setResponses([fauxAssistantMessage("started", { stopReason: "aborted" })]);
 		await harness.session.prompt("/nek-build");
-		expect(currentState(harness).todos.map((todo) => todo.status)).toEqual(["completed", "pending"]);
+		const state = currentState(harness);
+		expect(state.todos.map((todo) => todo.status)).toEqual(["in_progress", "pending"]);
+		expect(state.todoOwner).toBeUndefined();
 	});
 
 	it("restores the mode and the tools after tree navigation", async () => {

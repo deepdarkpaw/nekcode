@@ -31,35 +31,24 @@ export const renderPlanPreview: MessageRenderer<PlanData> = (message, options, t
 	return view;
 };
 
-/** A compact lifecycle row stays separate from the editor's persistent PLAN badge. */
+/** A compact lifecycle row, shown only in Plan mode, stays separate from the editor's persistent PLAN badge. */
 export function syncPlanUi(ctx: ExtensionContext, state: NekSessionState, shortcut: string): void {
 	if (!ctx.hasUI) return;
-	const planning = state.mode === "plan";
-	const selected = activePlan(state);
-	const interrupted = state.execution?.status === "interrupted";
-	if (!planning && !interrupted) {
+	if (state.mode !== "plan") {
 		ctx.ui.setWidget("nek.plan", undefined);
 		return;
 	}
+	const selected = activePlan(state);
 	ctx.ui.setWidget("nek.plan", () => ({
 		invalidate: () => {},
 		dispose: () => {},
 		render: (width) => {
 			const theme = ctx.ui.theme;
-			const status = planning
-				? state.planStatus === "ready"
-					? "Ready for review"
-					: selected
-						? "Revising plan"
-						: "Drafting plan"
-				: "Plan execution interrupted";
+			const status =
+				state.planStatus === "ready" ? "Ready for review" : selected ? "Revising plan" : "Drafting plan";
 			const name = selected ? `  ${selected.plan.name} / r${selected.plan.revision}` : "";
-			const action = planning ? `  ${rawKeyHint(shortcut, "switch mode")}  ${theme.fg("muted", "/agent exit")}` : "";
-			return new Text(
-				theme.fg(planning ? "accent" : "warning", status) + theme.fg("muted", name) + action,
-				1,
-				0,
-			).render(width);
+			const action = `  ${rawKeyHint(shortcut, "switch mode")}  ${theme.fg("muted", "/agent exit")}`;
+			return new Text(theme.fg("accent", status) + theme.fg("muted", name) + action, 1, 0).render(width);
 		},
 	}));
 }
