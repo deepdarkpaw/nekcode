@@ -100,6 +100,23 @@ Choose the conservative end of any published range. A model without a lifetime f
 
 Compatibility settings should describe verified differences in the endpoint's request or response behavior. Do not enable them based only on an endpoint advertising OpenAI or Anthropic compatibility.
 
+## Per-Thinking-Level Sampling
+
+Models and model overrides can define `samplingByThinkingLevel` for `temperature`, `topP`, and `topK` keyed by thinking level. These fields use the model's provider-resolved level; a value of `null` suppresses that parameter. Explicit stream options take precedence, including explicit `null` to suppress a field.
+
+```json
+{
+  "id": "custom-reasoning-model",
+  "sampling": { "temperature": 0.8 },
+  "samplingByThinkingLevel": {
+    "off": { "temperature": 0.4 },
+    "high": { "temperature": null, "topP": 0.95 }
+  }
+}
+```
+
+Cloudflare Workers AI classifier models include `typesafe/jev`, `@cf/cloudflare/clef`, and `@cf/cloudflare/clef-flash`. They accept classifier contexts through the pi-ai classifier API, not interactive chat sessions.
+
 ## Add a custom provider
 
 Use an extension when the provider needs custom streaming, model discovery, or authentication behavior. See [Custom Providers](custom-provider.md) for the extension workflow.

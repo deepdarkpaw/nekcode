@@ -1,4 +1,6 @@
-export function getPiUserAgent(version: string): string {
+import { NEK_VERSION } from "../config.ts";
+
+export function getPiUserAgent(): string {
 	const runtime = process.versions.bun ? `bun/${process.versions.bun}` : `node/${process.version}`;
-	return `pi/${version} (${process.platform}; ${runtime}; ${process.arch})`;
+	return `nek/${NEK_VERSION} (${process.platform}; ${runtime}; ${process.arch})`;
 }

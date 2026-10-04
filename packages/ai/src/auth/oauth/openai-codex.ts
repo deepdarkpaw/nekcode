@@ -365,30 +365,29 @@ function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
 		}
 	});
 
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		server
 			.listen(1455, getCallbackHost(), () => {
 				resolve({
-					close: () => server.close(),
+					close: () => {
+						server.close();
+						server.closeAllConnections();
+					},
 					cancelWait: () => {
 						settleWait?.(null);
 					},
 					waitForCode: () => waitForCodePromise,
 				});
 			})
-			.on("error", (_err: NodeJS.ErrnoException) => {
+			.on("error", (error: NodeJS.ErrnoException) => {
 				settleWait?.(null);
-				resolve({
-					close: () => {
-						try {
-							server.close();
-						} catch {
-							// ignore
-						}
-					},
-					cancelWait: () => {},
-					waitForCode: async () => null,
-				});
+				reject(
+					error.code === "EADDRINUSE"
+						? new Error(
+								"Port 1455 is in use, probably by another login or the Codex CLI. Cancel that login and try again.",
+							)
+						: error,
+				);
 			});
 	});
 }

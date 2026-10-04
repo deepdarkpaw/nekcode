@@ -39,7 +39,7 @@ See [Choose a Model](models.md) for model selection and thinking controls.
 |---|---|---|---|
 | `defaultTools` | `string[]` | `read`, `bash`, `edit`, `write` | Built-in tools enabled at startup. An empty array disables all built-in tools but not extension or SDK tools. |
 
-Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, and `ls`. CLI tool options override this setting for one invocation. See [Command Line](cli.md#tools).
+Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, and `ls`. `/reload` enables tools newly added to `defaultTools`, keeps removed tools active, and does not re-enable unchanged tools disabled during the session. CLI tool options override this setting, including on reload. See [Command Line](cli.md#tools).
 
 ## Sessions and context
 
@@ -144,7 +144,8 @@ Resource arrays support glob exclusions with `!pattern`, exact inclusion with `+
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
+| `updateChannel` | `"stable" \| "dev"` | `"stable"` | Global update preference, persisted by `nek update --channel`. Stable selects the highest `nek-v*` tag; dev follows the installed branch (default `nek`). There is no automatic startup update check. |
 | `collapseChangelog` | boolean | `false` | Show a condensed changelog after an update. |
-| `enableInstallTelemetry` | boolean | `true` | Enable anonymous install/update reporting and selected provider attribution headers. Does not control update checks. |
+| `enableInstallTelemetry` | boolean | `true` | Enable selected provider attribution headers. nekcode does not send pi.dev install/update reports. |
 | `enableAnalytics` | boolean | `false` | Opt in to analytics data sharing. Currently used only by the experimental first-run setup. |
 | `warnings.anthropicExtraUsage` | boolean | `true` | Warn when Anthropic subscription authentication may use paid extra usage. |

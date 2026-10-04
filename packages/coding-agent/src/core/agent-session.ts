@@ -237,6 +237,8 @@ export interface AgentSessionConfig {
 	cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
+	/** Reload activates only new entries in defaultTools when no explicit tool selection was supplied. */
+	usesDefaultTools?: boolean;
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
 	/** Optional denylist of tool names. When provided, these tool names are not exposed. */
@@ -394,6 +396,7 @@ export class AgentSession {
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
+	private _usesDefaultTools: boolean;
 	/** Restored loadout tools waiting for background registration, until the next run or a replacement loadout. */
 	private _pendingToolNames = new Set<string>();
 	private _allowedToolNames?: Set<string>;
@@ -439,6 +442,7 @@ export class AgentSession {
 		}
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
+		this._usesDefaultTools = config.usesDefaultTools ?? false;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
@@ -3399,12 +3403,20 @@ export class AgentSession {
 		const previousToolNames = this.getActiveToolNames();
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 		oldRunner.invalidate();
+		const previousDefaults = new Set(this.settingsManager.getDefaultTools() ?? DEFAULT_ACTIVE_TOOL_NAMES);
 		await this.settingsManager.reload();
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
 		await this._resourceLoader.reload();
 		this._buildRuntime({
-			activeToolNames: previousToolNames,
+			activeToolNames: [
+				...previousToolNames,
+				...(this._usesDefaultTools
+					? (this.settingsManager.getDefaultTools() ?? DEFAULT_ACTIVE_TOOL_NAMES).filter(
+							(name) => !previousDefaults.has(name),
+						)
+					: []),
+			],
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});

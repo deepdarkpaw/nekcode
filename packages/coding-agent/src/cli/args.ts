@@ -141,7 +141,10 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--session-dir" && i + 1 < args.length) {
 			result.sessionDir = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
-			result.models = args[++i].split(",").map((s) => s.trim());
+			result.models = args[++i]
+				.split(",")
+				.map((s) => s.trim())
+				.filter((pattern) => pattern.length > 0);
 		} else if (arg === "--no-tools" || arg === "-nt") {
 			result.noTools = true;
 		} else if (arg === "--no-builtin-tools" || arg === "-nbt") {
@@ -289,11 +292,13 @@ ${chalk.bold("Usage:")}
 ${chalk.bold("Commands:")}
   ${APP_NAME} mcp <command>             Add, remove, list, sign in to, or sign out of MCP servers
   ${APP_NAME} mcp --help                Show help for MCP
+  ${APP_NAME} update [options]           Update the source checkout
+  ${APP_NAME} update --help              Show help for update
   ${APP_NAME} auth <command>            Print credentials or check provider readiness
   ${APP_NAME} auth --help               Show help for auth
 
 ${chalk.bold("Options:")}
-  --provider <name>              Provider name (default: google)
+  --provider <name>              Provider to search for --model (requires --model)
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
@@ -337,6 +342,10 @@ ${chalk.bold("Options:")}
   --                             End option parsing; treat remaining arguments as messages/files
   --help, -h                     Show this help
   --version, -v                  Show version number
+
+Update command options:
+  update --channel stable|dev     Select and persist the update channel
+  update --check                  Check the configured origin without changing files
 
 Built-in features and -e extensions can register additional flags.${extensionFlagsText}
 

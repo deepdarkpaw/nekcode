@@ -29,13 +29,9 @@ function isSupportedModelType(model: { type?: unknown }): boolean {
 }
 
 function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynamic: readonly TModel[]): TModel[] {
-	const merged = [...baseline];
-	for (const model of dynamic) {
-		const index = merged.findIndex((entry) => getModelType(entry) === getModelType(model) && entry.id === model.id);
-		if (index >= 0) merged[index] = model;
-		else merged.push(model);
-	}
-	return merged;
+	const merged = new Map<string, TModel>();
+	for (const model of [...baseline, ...dynamic]) merged.set(`${getModelType(model)}\0${model.id}`, model);
+	return [...merged.values()];
 }
 
 function parseCatalog(providerId: string, value: unknown): AnyModel[] {
@@ -104,12 +100,13 @@ export function withRemoteCatalog(
 			const validator = stored && stored.models.length > 0 ? stored.etag : undefined;
 			const url = new URL(`/api/models/providers/${encodeURIComponent(provider.id)}`, catalogBaseUrl);
 			url.searchParams.set("types", REMOTE_CATALOG_MODEL_TYPES.join(","));
+			url.searchParams.set("pi-version", VERSION);
 			const response = await fetchWithRetry(
 				url,
 				{
 					headers: {
 						accept: "application/json",
-						"User-Agent": getPiUserAgent(VERSION),
+						"User-Agent": getPiUserAgent(),
 						...(validator ? { "if-none-match": validator } : {}),
 					},
 					signal: context.signal,

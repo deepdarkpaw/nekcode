@@ -67,7 +67,7 @@ function collectEnvironment() {
 	const env = (name: string): string | null => process.env[name] || null;
 	return {
 		version: VERSION,
-		userAgent: getPiUserAgent(VERSION),
+		userAgent: getPiUserAgent(),
 		runtime: process.versions.bun ? `bun/${process.versions.bun}` : `node/${process.version}`,
 		platform: process.platform,
 		arch: process.arch,

@@ -54,6 +54,7 @@ reference/
 !/SECURITY.md
 !/tui-plan.md
 .gitignore.workspace
+.nek-install-state.json
 __pycache__/
 *.py[cod]
 .venv/

@@ -1,6 +1,6 @@
 {
 	"name": "@nekcode/opentui",
-	"version": "0.87.1",
+	"version": "1.0.2",
 	"private": true,
 	"description": "OpenTUI frontend for nek (runs on Bun, talks JSONL RPC to `nek --mode rpc`)",
 	"type": "module",

@@ -34,7 +34,8 @@ import { launchOpenTui } from "./cli/opentui-launcher.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
-import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, VERSION } from "./config.ts";
+import { loadUpdateCommand } from "./cli/update.lazy.ts";
+import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, NEK_VERSION, VERSION } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
@@ -465,6 +466,12 @@ function buildSessionOptions(
 	// Model from CLI
 	// - supports --provider <name> --model <pattern>
 	// - supports --model <provider>/<pattern>
+	if (parsed.provider && !parsed.model) {
+		diagnostics.push({
+			type: "error",
+			message: `--provider requires --model (for example: --provider ${parsed.provider} --model <pattern>)`,
+		});
+	}
 	if (parsed.model) {
 		const resolved = resolveCliModel({
 			cliProvider: parsed.provider,
@@ -569,7 +576,6 @@ export async function main(args: string[], options?: MainOptions) {
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.NEK_OFFLINE);
 	if (offlineMode) {
 		process.env.NEK_OFFLINE = "1";
-		process.env.NEK_SKIP_VERSION_CHECK = "1";
 	}
 
 	if (await runAuthCommand(args)) {
@@ -588,6 +594,12 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
+	if (args[0] === "update") {
+		const { runUpdateCommand } = await loadUpdateCommand();
+		process.exitCode = await runUpdateCommand(args.slice(1), { settingsManager: bootstrapSettingsManager });
+		return;
+	}
+
 	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
@@ -601,7 +613,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("parseArgs");
 
 	if (parsed.version) {
-		console.log(VERSION);
+		console.log(`${APP_NAME} ${NEK_VERSION} (pi ${VERSION})`);
 		process.exit(0);
 	}
 

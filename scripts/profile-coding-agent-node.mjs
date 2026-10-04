@@ -37,7 +37,7 @@ Options:
   --agent-dir <dir>      Use a specific NEK_CODING_AGENT_DIR for the benchmark run
   --isolated-agent-dir   Use a fresh temporary agent dir instead of the normal one
   --bundle               Build and profile the bundled Node entrypoint instead of dist/cli.js
-  --no-offline           Do not force NEK_OFFLINE=1 / NEK_SKIP_VERSION_CHECK=1
+  --no-offline           Do not force NEK_OFFLINE=1
   --skip-build           Reuse the selected build output without rebuilding first (Node only)
   --cpu-profile          Write CPU profiles for benchmark runs
   --help                 Show this help
@@ -300,15 +300,9 @@ async function runBuild(bundle) {
 				"--workspace",
 				"packages/tui",
 				"--workspace",
-				"packages/telemetry",
-				"--workspace",
 				"packages/ai",
 				"--workspace",
 				"packages/agent",
-				"--workspace",
-				"packages/protocol",
-				"--workspace",
-				"packages/client",
 			],
 		},
 		{
@@ -392,7 +386,6 @@ function createBenchmarkEnv(options, isolatedAgentDir) {
 	}
 	if (options.offline) {
 		env.NEK_OFFLINE = "1";
-		env.NEK_SKIP_VERSION_CHECK = "1";
 	}
 	return env;
 }
