@@ -116,6 +116,9 @@ function buildRules(
 	return rules.map((rule) => `- ${rule}`).join("\n");
 }
 
+/** One-sentence identity that opens every structured prompt, including custom prompts (SYSTEM.md, `--system-prompt`). */
+export const NEKCODE_IDENTITY = "You are working inside nekcode, a terminal coding agent.";
+
 /** Build the ordered, independently replaceable sections of the structured system prompt. */
 export function buildSystemPromptSections(input: BuildSystemPromptOptions): SystemPromptSections {
 	const options = normalizeBuildSystemPromptOptions(input);
@@ -140,10 +143,9 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 
 	const promptSections: Record<string, string> = {};
 	if (customPrompt) {
-		promptSections.preamble = customPrompt;
+		promptSections.preamble = `${NEKCODE_IDENTITY}\n\n${customPrompt}`;
 	} else {
-		promptSections.preamble =
-			"You are an expert coding assistant operating inside nekcode, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
+		promptSections.preamble = NEKCODE_IDENTITY;
 		const visibleTools = selectedTools.filter((name) => !!toolSnippets[name]);
 		const tools =
 			visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets[name]}`).join("\n") : "(none)";
