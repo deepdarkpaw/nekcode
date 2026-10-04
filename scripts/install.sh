@@ -23,15 +23,22 @@ check_prerequisites() {
 }
 
 read_state() {
-	local saved_bin="" saved_channel="" saved_branch=""
+	local saved_bin="" saved_channel="" saved_branch="" saved_skip="0" saved_bun="0"
 	if [ -f "$STATE_FILE" ]; then
 		saved_bin="$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(s.binDir||"")' "$STATE_FILE")"
 		saved_channel="$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(s.channel||"")' "$STATE_FILE")"
 		saved_branch="$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(s.branch||"")' "$STATE_FILE")"
+		saved_skip="$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(s.skipTools ? "1" : "0")' "$STATE_FILE")"
+		saved_bun="$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(s.installBun ? "1" : "0")' "$STATE_FILE")"
 	fi
 	BIN_DIR="${NEK_BIN_DIR:-${saved_bin:-$HOME/.local/bin}}"
 	CHANNEL="${NEK_CHANNEL:-${saved_channel:-stable}}"
 	BRANCH="${NEK_BRANCH:-${saved_branch:-nek}}"
+	SKIP_TOOLS="${NEK_SKIP_TOOLS:-$saved_skip}"
+	INSTALL_BUN="${NEK_INSTALL_BUN:-$saved_bun}"
+	INSTALL_DIR="$(node -e 'process.stdout.write(require("path").resolve(process.argv[1]))' "$INSTALL_DIR")"
+	BIN_DIR="$(node -e 'process.stdout.write(require("path").resolve(process.argv[1]))' "$BIN_DIR")"
+	STATE_FILE="$INSTALL_DIR/.nek-install-state.json"
 	case "$CHANNEL" in stable|dev) ;; *) fail "NEK_CHANNEL must be stable or dev." ;; esac
 }
 
@@ -130,17 +137,17 @@ write_launcher() {
 	resolver="$(node -e 'process.stdout.write(require("url").pathToFileURL(require("path").resolve(process.argv[1])).href)' "$root/$RESOLVER")"
 	printf '#!/usr/bin/env bash\nexec node --import %q %q "$@"\n' "$resolver" "$root/packages/coding-agent/src/cli.ts" > "$BIN_DIR/nek"
 	chmod +x "$BIN_DIR/nek"
-	node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify({binDir:process.argv[2],channel:process.argv[3],branch:process.argv[4]},null,2)+"\n")' "$STATE_FILE" "$BIN_DIR" "$CHANNEL" "$BRANCH"
+	node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify({binDir:process.argv[2],channel:process.argv[3],branch:process.argv[4],skipTools:process.argv[5]==="1",installBun:process.argv[6]==="1"},null,2)+"\n")' "$STATE_FILE" "$BIN_DIR" "$CHANNEL" "$BRANCH" "$SKIP_TOOLS" "$INSTALL_BUN"
 }
 
 setup_tools() {
-	[ "${NEK_SKIP_TOOLS:-}" != 1 ] || return
+	[ "$SKIP_TOOLS" != 1 ] || return
 	step "Setting up fd, rg, ast-grep"
 	(cd "$INSTALL_DIR" && node --import "./$RESOLVER" scripts/setup-tools.ts) || fail "search tool setup failed; install the listed tools and rerun"
 }
 
 install_bun() {
-	[ "${NEK_INSTALL_BUN:-}" = 1 ] || return
+	[ "$INSTALL_BUN" = 1 ] || return
 	command -v bun >/dev/null 2>&1 && return
 	step "Installing Bun for the optional OpenTUI frontend"
 	require_command curl "Install curl with your package manager."

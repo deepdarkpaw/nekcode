@@ -1061,7 +1061,7 @@ export class SettingsManager {
 	}
 
 	getUpdateChannel(): "stable" | "dev" {
-		return this.settings.updateChannel === "dev" ? "dev" : "stable";
+		return this.globalSettings.updateChannel === "dev" ? "dev" : "stable";
 	}
 
 	setUpdateChannel(channel: "stable" | "dev"): void {

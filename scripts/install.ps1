@@ -21,17 +21,23 @@ function Get-Git([string[]]$Arguments) {
 }
 
 $RepoUrl = Get-Option 'NEK_REPO_URL' 'https://github.com/deepdarkpaw/nekcode.git'
-$InstallDir = Get-Option 'NEK_INSTALL_DIR' (Join-Path $env:LOCALAPPDATA 'nekcode')
+$InstallDir = [IO.Path]::GetFullPath((Get-Option 'NEK_INSTALL_DIR' (Join-Path $env:LOCALAPPDATA 'nekcode')))
 $StateFile = Join-Path $InstallDir '.nek-install-state.json'
 $state = $null
 if (Test-Path $StateFile) { $state = Get-Content $StateFile -Raw | ConvertFrom-Json }
 $savedBin = Join-Path $InstallDir 'bin'
 $savedChannel = 'stable'
 $savedBranch = 'nek'
+$savedSkip = '0'
+$savedBun = '0'
+if ($state.skipTools) { $savedSkip = '1' }
+if ($state.installBun) { $savedBun = '1' }
 if ($state.binDir) { $savedBin = $state.binDir }
 if ($state.channel) { $savedChannel = $state.channel }
 if ($state.branch) { $savedBranch = $state.branch }
-$BinDir = Get-Option 'NEK_BIN_DIR' $savedBin
+$BinDir = [IO.Path]::GetFullPath((Get-Option 'NEK_BIN_DIR' $savedBin))
+$SkipTools = Get-Option 'NEK_SKIP_TOOLS' $savedSkip
+$InstallBun = Get-Option 'NEK_INSTALL_BUN' $savedBun
 $Channel = Get-Option 'NEK_CHANNEL' $savedChannel
 $Branch = Get-Option 'NEK_BRANCH' $savedBranch
 if ($Channel -ne 'stable' -and $Channel -ne 'dev') { Stop-Install 'NEK_CHANNEL must be stable or dev.' }
@@ -150,7 +156,7 @@ function Write-Launchers {
 	$oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
 	[IO.File]::WriteAllText((Join-Path $BinDir 'nek.cmd'), $cmd, $oem)
 	[IO.File]::WriteAllText((Join-Path $BinDir 'nek'), $bash, (New-Object Text.UTF8Encoding $false))
-	$json = @{ binDir = $BinDir; channel = $Channel; branch = $Branch } | ConvertTo-Json
+	$json = @{ binDir = $BinDir; channel = $Channel; branch = $Branch; skipTools = ($SkipTools -eq '1'); installBun = ($InstallBun -eq '1') } | ConvertTo-Json
 	[IO.File]::WriteAllText($StateFile, $json + "`n", (New-Object Text.UTF8Encoding $false))
 }
 function Add-ToUserPath {
@@ -166,13 +172,13 @@ function Add-ToUserPath {
 	$env:Path = "$BinDir;$env:Path"
 }
 function Install-Tools {
-	if ($env:NEK_SKIP_TOOLS -eq '1') { return }
+	if ($SkipTools -eq '1') { return }
 	Write-Step 'Setting up fd, rg, ast-grep'
 	Push-Location $InstallDir
 	try { Invoke-Native 'node' @('--import', "./$Resolver", 'scripts/setup-tools.ts') } finally { Pop-Location }
 }
 function Install-Bun {
-	if ($env:NEK_INSTALL_BUN -ne '1' -or (Get-Command bun -ErrorAction SilentlyContinue)) { return }
+	if ($InstallBun -ne '1' -or (Get-Command bun -ErrorAction SilentlyContinue)) { return }
 	Write-Step 'Installing Bun for the optional OpenTUI frontend'
 	Invoke-RestMethod https://bun.sh/install.ps1 | Invoke-Expression
 }

@@ -1217,7 +1217,7 @@ export class InteractiveMode {
 		const entries = parseChangelog(changelogPath);
 
 		if (!lastVersion) {
-			// Fresh install - record the version, send telemetry, don't show changelog
+			// Fresh install: record the upstream changelog version without displaying it.
 			this.settingsManager.setLastChangelogVersion(VERSION);
 			return undefined;
 		}

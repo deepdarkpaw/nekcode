@@ -23,6 +23,8 @@ interface InstallState {
 	binDir?: string;
 	channel?: UpdateChannel;
 	branch?: string;
+	skipTools?: boolean;
+	installBun?: boolean;
 }
 
 interface RemoteRef {
@@ -102,24 +104,35 @@ function readInstallState(checkout: string): InstallState {
 	if (!existsSync(path)) return {};
 	try {
 		const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (typeof value !== "object" || value === null) return {};
+		if (typeof value !== "object" || value === null || Array.isArray(value)) {
+			throw new Error("expected an object");
+		}
 		const state = value as Record<string, unknown>;
+		if (state.channel !== undefined && state.channel !== "stable" && state.channel !== "dev") {
+			throw new Error("channel must be stable or dev");
+		}
 		return {
 			binDir: typeof state.binDir === "string" ? state.binDir : undefined,
-			channel: state.channel === "stable" || state.channel === "dev" ? state.channel : undefined,
+			channel: state.channel,
 			branch: typeof state.branch === "string" ? state.branch : undefined,
+			skipTools: typeof state.skipTools === "boolean" ? state.skipTools : undefined,
+			installBun: typeof state.installBun === "boolean" ? state.installBun : undefined,
 		};
 	} catch (error) {
 		throw new Error(`Invalid installer state at ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
-function parseRemoteRefs(output: string, prefix: "refs/tags/" | "refs/heads/"): RemoteRef[] {
-	return output
-		.split("\n")
-		.map((line) => line.trim().split(/\s+/u))
-		.filter((parts): parts is [string, string] => parts.length === 2 && parts[1].startsWith(prefix))
-		.map(([commit, ref]) => ({ commit, name: ref.slice(prefix.length) }));
+/** Read ls-remote output, using peeled commits for annotated release tags. */
+export function parseRemoteRefs(output: string, prefix: "refs/tags/" | "refs/heads/"): RemoteRef[] {
+	const refs = new Map<string, RemoteRef>();
+	const lines = output.split("\n").map((line) => line.trim().split(/\s+/u));
+	for (const [commit, ref] of lines) {
+		if (!commit || !ref?.startsWith(prefix)) continue;
+		const name = ref.slice(prefix.length).replace(/\^\{\}$/u, "");
+		if (!refs.has(name) || ref.endsWith("^{}")) refs.set(name, { commit, name });
+	}
+	return [...refs.values()];
 }
 
 function readCurrentRef(checkout: string): { commit: string; tag?: string } {
@@ -148,14 +161,15 @@ function printCheckResult(
 	console.log(available ? "Update available." : "Already up to date.");
 }
 
-function updateIsAvailable(
+export function updateIsAvailable(
 	channel: UpdateChannel,
 	current: { commit: string; tag?: string },
 	target: RemoteRef,
 ): boolean {
-	if (channel === "dev") return current.commit !== target.commit;
-	if (!current.tag?.startsWith("nek-v")) return current.commit !== target.commit;
-	const currentVersion = current.tag.slice("nek-v".length);
+	if (current.commit === target.commit) return false;
+	if (channel === "dev") return true;
+	const currentVersion = current.tag?.startsWith("nek-v") ? valid(current.tag.slice("nek-v".length)) : null;
+	if (!currentVersion) return true;
 	const targetVersion = target.name.slice("nek-v".length);
 	return compareVersions(targetVersion, currentVersion) > 0;
 }
@@ -173,6 +187,12 @@ async function runInstaller(checkout: string, channel: UpdateChannel, state: Ins
 		NEK_CHANNEL: channel,
 		...(state.binDir ? { NEK_BIN_DIR: state.binDir } : {}),
 		...(state.branch ? { NEK_BRANCH: state.branch } : {}),
+		...(state.skipTools !== undefined && process.env.NEK_SKIP_TOOLS === undefined
+			? { NEK_SKIP_TOOLS: state.skipTools ? "1" : "0" }
+			: {}),
+		...(state.installBun !== undefined && process.env.NEK_INSTALL_BUN === undefined
+			? { NEK_INSTALL_BUN: state.installBun ? "1" : "0" }
+			: {}),
 	};
 	const child = spawnProcess(command, args, { cwd: checkout, env, stdio: "inherit" });
 	return (await waitForChildProcess(child)) ?? 1;
@@ -205,12 +225,8 @@ export async function runUpdateCommand(args: readonly string[], context: UpdateC
 		}
 		const checkout = resolveCheckout();
 		const state = readInstallState(checkout);
-		const settingsChannel = context.settingsManager?.getUpdateChannel() ?? "stable";
 		const channel =
-			parsed.channel ??
-			context.settingsManager?.getGlobalSettings().updateChannel ??
-			state.channel ??
-			settingsChannel;
+			parsed.channel ?? context.settingsManager?.getGlobalSettings().updateChannel ?? state.channel ?? "stable";
 		if (parsed.channel && context.settingsManager) {
 			context.settingsManager.setUpdateChannel(parsed.channel);
 			await context.settingsManager.flush();
@@ -223,7 +239,7 @@ export async function runUpdateCommand(args: readonly string[], context: UpdateC
 		if (parsed.check) {
 			const remoteOutput =
 				channel === "stable"
-					? runGit(checkout, ["ls-remote", "--tags", "--refs", "origin", "refs/tags/nek-v*"])
+					? runGit(checkout, ["ls-remote", "--tags", "origin", "refs/tags/nek-v*"])
 					: runGit(checkout, ["ls-remote", "--heads", "origin", `refs/heads/${branch}`]);
 			const refs = parseRemoteRefs(remoteOutput, channel === "stable" ? "refs/tags/" : "refs/heads/");
 			if (channel === "stable") {

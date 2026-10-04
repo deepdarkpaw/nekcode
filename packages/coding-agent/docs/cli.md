@@ -223,7 +223,7 @@ nek update
 
 Without `--check`, the command runs the checkout's Bash installer on Linux/macOS or PowerShell installer on Windows, streams output, and returns its exit code. The installer refuses tracked local changes and divergent/local commits. It moves an ordinary checkout only by fast-forward; a detached checkout exactly on a release tag may move to another release. Stable checkouts stay detached.
 
-Installer options are `NEK_INSTALL_DIR`, `NEK_BIN_DIR`, `NEK_REPO_URL`, `NEK_BRANCH`, `NEK_CHANNEL`, `NEK_SKIP_TOOLS=1`, and `NEK_INSTALL_BUN=1`. The gitignored `.nek-install-state.json` in the install root stores `binDir`, `channel`, and `branch`; update reuses these values. Explicit installer environment options override saved state. A missing stable release stops installation and suggests `NEK_CHANNEL=dev`.
+Installer options are `NEK_INSTALL_DIR`, `NEK_BIN_DIR`, `NEK_REPO_URL`, `NEK_BRANCH`, `NEK_CHANNEL`, `NEK_SKIP_TOOLS=1`, and `NEK_INSTALL_BUN=1`. The gitignored `.nek-install-state.json` in the install root stores `binDir`, `channel`, `branch`, `skipTools`, and `installBun`; update reuses these values. Explicit installer environment options override saved state. A missing stable release stops installation and suggests `NEK_CHANNEL=dev`.
 
 `npm run nek:release -- patch|minor|<x.y.z>` prepares a nek release from a clean tree on branch `nek`. It changes only `nekConfig.version`, commits `Release nek v<x.y.z>`, and creates `nek-v<x.y.z>`. It never pushes and prints the push commands for review.
 

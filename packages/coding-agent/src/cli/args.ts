@@ -326,13 +326,13 @@ ${chalk.bold("Options:")}
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as NEK_OFFLINE=1)
-
-Update command options:
-  update --channel stable|dev      Select and persist the update channel
-  update --check                   Check the configured origin without changing files
   --                             End option parsing; treat remaining arguments as messages/files
   --help, -h                     Show this help
   --version, -v                  Show version number
+
+Update command options:
+  update --channel stable|dev     Select and persist the update channel
+  update --check                  Check the configured origin without changing files
 
 Built-in features and -e extensions can register additional flags.${extensionFlagsText}
 

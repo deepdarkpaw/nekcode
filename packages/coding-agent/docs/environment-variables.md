@@ -47,7 +47,6 @@ These variables are injected into model-facing `bash` and `powershell` tools. Th
 | `NEK_CODING_AGENT_SESSION_DIR` | Override session storage; overridden by `--session-dir` |
 | `NEK_PACKAGE_DIR` | Override the package directory, useful for Nix or Guix store paths |
 | `NEK_OFFLINE` | Disable startup network activity and model catalog refreshes |
-| `NEK_SKIP_VERSION_CHECK` | Disable version metadata requests |
 | `NEK_EXPERIMENTAL` | Enable experimental server/client commands when set to `1` |
 | `NEK_TELEMETRY` | Override install/update telemetry and provider attribution headers |
 | `NEK_SHARE_VIEWER_URL` | Override the base URL used by `/share` |
