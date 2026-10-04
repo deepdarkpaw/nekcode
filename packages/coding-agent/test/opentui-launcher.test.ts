@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
-import { buildBackendCommand, findBun, getOpenTuiEntryPath, stripUiFlag } from "../src/cli/opentui-launcher.ts";
+import { buildBunArgs, findBun, getOpenTuiEntryPath } from "../src/cli/opentui-launcher.ts";
 
 function lookup(files: string[], env: NodeJS.ProcessEnv, platform: NodeJS.Platform = "linux") {
 	const set = new Set(files);
@@ -16,26 +16,13 @@ describe("--ui flag", () => {
 		expect(parseArgs(["--ui"]).diagnostics[0]?.message).toContain("--ui requires");
 	});
 
-	test("is removed from the forwarded backend arguments", () => {
-		expect(stripUiFlag(["--model", "x", "--ui", "opentui", "-c"])).toEqual(["--model", "x", "-c"]);
-		expect(stripUiFlag(["--ui=opentui", "--", "--ui", "literal"])).toEqual(["--", "--ui", "literal"]);
-	});
-
-	test("builds the backend command from the Node runtime and CLI path", () => {
-		const command = buildBackendCommand(
-			["--ui", "opentui", "--continue"],
-			"/usr/bin/node",
-			["--import", "./resolver.ts"],
-			"/repo/cli.ts",
-		);
-		expect(command).toEqual([
-			"/usr/bin/node",
-			"--import",
-			"./resolver.ts",
-			"/repo/cli.ts",
-			"--mode",
-			"rpc",
+	test("forwards the CLI arguments unchanged to the Bun entry", () => {
+		expect(buildBunArgs("/repo/packages/opentui/src/main.ts", ["--ui", "opentui", "--continue", "hi"])).toEqual([
+			"/repo/packages/opentui/src/main.ts",
+			"--ui",
+			"opentui",
 			"--continue",
+			"hi",
 		]);
 	});
 

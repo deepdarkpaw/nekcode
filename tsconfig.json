@@ -81,6 +81,7 @@
 				"./packages/coding-agent/src/core/hooks/index.ts"
 			],
 			"@earendil-works/pi-coding-agent/*": [
+				"./packages/coding-agent/src/*.ts",
 				"./packages/coding-agent/src/*"
 			],
 			"@earendil-works/pi-server": [

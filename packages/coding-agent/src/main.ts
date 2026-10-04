@@ -5,7 +5,6 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
-import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -32,8 +31,8 @@ import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { launchOpenTui } from "./cli/opentui-launcher.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
-import { selectSession } from "./cli/session-picker.ts";
-import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
+import { shouldRunFirstTimeSetup } from "./cli/startup-ui.ts";
+import { defaultStartupUiHooks, resolveStartupUiHooks, type StartupUiHooks } from "./cli/startup-ui-hooks.ts";
 import { loadUpdateCommand } from "./cli/update.lazy.ts";
 import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, NEK_VERSION, VERSION } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
@@ -65,8 +64,10 @@ import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { loadMcpCommand } from "./extensions/mcp/cli.lazy.ts";
-import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
+import { runMigrations } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
+import type { InteractiveModeOptions } from "./modes/interactive/interactive-mode.ts";
+import type { CreateInteractiveMode, InteractiveModeLike } from "./modes/interactive/interactive-mode-factory.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "./modes/interactive/theme/theme-json.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
@@ -282,20 +283,6 @@ async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: 
 	return { type: "not_found", arg: sessionArg };
 }
 
-/** Prompt user for yes/no confirmation */
-async function promptConfirm(message: string): Promise<boolean> {
-	return new Promise((resolve) => {
-		const rl = createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-		rl.question(`${message} [y/N] `, (answer) => {
-			rl.close();
-			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-		});
-	});
-}
-
 function validateForkFlags(parsed: Args): void {
 	if (!parsed.fork) return;
 
@@ -360,6 +347,7 @@ export async function createSessionManager(
 	cwd: string,
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
+	startupUi: StartupUiHooks = defaultStartupUiHooks,
 ): Promise<SessionManager> {
 	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
 		return SessionManager.inMemory(cwd, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
@@ -398,7 +386,7 @@ export async function createSessionManager(
 
 			case "global": {
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
-				const shouldFork = await promptConfirm("Fork this session into current directory?");
+				const shouldFork = await startupUi.confirm(settingsManager, "Fork this session into current directory?");
 				if (!shouldFork) {
 					console.log(chalk.dim("Aborted."));
 					process.exit(0);
@@ -414,7 +402,7 @@ export async function createSessionManager(
 
 	if (parsed.resume) {
 		try {
-			const selectedPath = await selectSession(
+			const selectedPath = await startupUi.selectSession(
 				(onProgress, signal) => SessionManager.list(cwd, sessionDir, onProgress, signal),
 				(onProgress, signal) => SessionManager.listAll(sessionDir, onProgress, signal),
 				settingsManager,
@@ -559,8 +547,9 @@ function resolveCliPaths(cwd: string, paths: string[] | undefined): string[] | u
 async function promptForMissingSessionCwd(
 	issue: SessionCwdIssue,
 	settingsManager: SettingsManager,
+	startupUi: StartupUiHooks,
 ): Promise<string | undefined> {
-	return showStartupSelector(settingsManager, formatMissingSessionCwdPrompt(issue), [
+	return startupUi.select(settingsManager, formatMissingSessionCwdPrompt(issue), [
 		{ label: "Continue", value: issue.fallbackCwd },
 		{ label: "Cancel", value: undefined },
 	]);
@@ -568,10 +557,18 @@ async function promptForMissingSessionCwd(
 
 export interface MainOptions {
 	extensionFactories?: InlineExtension[];
+	/**
+	 * Alternative interactive frontend. When set, interactive mode is built with this factory, and
+	 * `--ui opentui` runs in this process instead of relaunching the OpenTUI entry.
+	 */
+	createInteractiveMode?: CreateInteractiveMode;
+	/** Overrides for the prompts shown before the interactive mode starts. */
+	startupUi?: Partial<StartupUiHooks>;
 }
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	const startupUi = resolveStartupUiHooks(options?.startupUi);
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.NEK_OFFLINE);
 	if (offlineMode) {
@@ -617,18 +614,17 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(0);
 	}
 
-	// The OpenTUI frontend runs on Bun and starts this CLI again as its `--mode rpc` backend.
+	// The OpenTUI frontend runs on Bun. Node relaunches this CLI under Bun; the Bun entry passes
+	// `createInteractiveMode`, so that process continues here instead of relaunching again.
 	if (parsed.ui === "opentui" && !parsed.help) {
 		if (parsed.mode !== undefined || parsed.print) {
 			console.error(chalk.red("Error: --ui opentui cannot be combined with --mode or --print"));
 			process.exit(1);
 		}
-		process.exitCode = await launchOpenTui(args, {
-			messages: parsed.messages,
-			fileArgs: parsed.fileArgs,
-			useTheme: parsed.useTheme,
-		});
-		return;
+		if (!options?.createInteractiveMode) {
+			process.exitCode = await launchOpenTui(args);
+			return;
+		}
 	}
 
 	if (parsed.export) {
@@ -669,7 +665,7 @@ export async function main(args: string[], options?: MainOptions) {
 	// Experimental first-time setup: theme choice and analytics opt-in.
 	// Runs before any runtime services are created so the chosen settings apply everywhere.
 	if (appMode === "interactive" && !parsed.help && parsed.listModels === undefined && shouldRunFirstTimeSetup()) {
-		await showFirstTimeSetup(startupSettingsManager);
+		await startupUi.firstTimeSetup(startupSettingsManager);
 		time("firstTimeSetup");
 	}
 
@@ -687,11 +683,15 @@ export async function main(args: string[], options?: MainOptions) {
 		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
 		startupSettingsManager.getSessionDir();
-	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
+	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager, startupUi);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		if (appMode === "interactive") {
-			const selectedCwd = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
+			const selectedCwd = await promptForMissingSessionCwd(
+				missingSessionCwdIssue,
+				startupSettingsManager,
+				startupUi,
+			);
 			if (!selectedCwd) {
 				process.exit(0);
 			}
@@ -765,6 +765,7 @@ export async function main(args: string[], options?: MainOptions) {
 										mode: isInitialRuntime ? trustPromptMode : appMode,
 										settingsManager: startupSettingsManager,
 										hasUI: isInitialRuntime && trustPromptMode === "interactive",
+										startupUi,
 									}),
 								onExtensionError: (message) => projectTrustDiagnostics.push({ type: "warning", message }),
 							});
@@ -904,7 +905,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	// Show deprecation warnings in interactive mode
 	if (appMode === "interactive" && deprecationWarnings.length > 0) {
-		await showDeprecationWarnings(deprecationWarnings);
+		await startupUi.showDeprecationWarnings(deprecationWarnings);
 	}
 
 	time("resolveModelScope");
@@ -946,7 +947,7 @@ export async function main(args: string[], options?: MainOptions) {
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {
-		const interactiveMode = new InteractiveMode(runtime, {
+		const interactiveModeOptions: InteractiveModeOptions = {
 			migratedProviders,
 			startupDiagnostics,
 			modelFallbackMessage,
@@ -957,7 +958,10 @@ export async function main(args: string[], options?: MainOptions) {
 			verbose: parsed.verbose,
 			tuiMode: parsed.tuiMode,
 			initialThemeSetting: parsed.useTheme,
-		});
+		};
+		const interactiveMode: InteractiveModeLike = options?.createInteractiveMode
+			? options.createInteractiveMode(runtime, interactiveModeOptions)
+			: new InteractiveMode(runtime, interactiveModeOptions);
 		if (startupBenchmark) {
 			await interactiveMode.init();
 			time("interactiveMode.init");
