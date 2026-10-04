@@ -20,6 +20,7 @@ import {
 	buildSystemPromptSections,
 	buildSystemPromptState,
 	diffSystemPromptSections,
+	NEKCODE_IDENTITY,
 } from "../src/core/system-prompt.ts";
 import type { ExtensionFactory } from "../src/index.ts";
 import { createHarness } from "./suite/harness.ts";
@@ -94,8 +95,8 @@ describe("system prompt updates", () => {
 	test("keeps the preamble untagged and replaces it like any section", () => {
 		const previous = buildSystemPromptSections({ customPrompt: "You are A.", cwd: "/tmp" });
 		const current = buildSystemPromptSections({ customPrompt: "You are B.", cwd: "/tmp" });
-		expect(previous.preamble).toBe("You are A.");
-		expect(diffSystemPromptSections(previous, current)).toEqual({ preamble: "You are B." });
+		expect(previous.preamble).toBe(`${NEKCODE_IDENTITY}\n\nYou are A.`);
+		expect(diffSystemPromptSections(previous, current)).toEqual({ preamble: `${NEKCODE_IDENTITY}\n\nYou are B.` });
 
 		expect(buildSystemPromptState({ forceSystemPrompt: "Exact prompt.", cwd: "/tmp" })).toEqual({
 			content: "Exact prompt.",

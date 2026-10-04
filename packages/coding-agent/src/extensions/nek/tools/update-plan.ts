@@ -85,7 +85,7 @@ export function createUpdatePlanToolDefinition(
 ): ToolDefinition<typeof updatePlanSchema, UpdatePlanDetails> {
 	return {
 		name: UPDATE_PLAN_TOOL_NAME,
-		label: "update_plan",
+		label: "Plan update",
 		description: UPDATE_PLAN,
 		parameters: updatePlanSchema,
 		executionMode: "sequential",

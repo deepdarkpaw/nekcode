@@ -61,7 +61,7 @@ export function createAwaitToolDefinition(
 ): ToolDefinition<typeof awaitSchema, AwaitToolData> {
 	return {
 		name: AWAIT_TOOL_NAME,
-		label: "await",
+		label: "Waiting",
 		description: AWAIT_DESCRIPTION,
 		parameters: awaitSchema,
 		async execute(_toolCallId, { subagent_id, block_until_ms }: AwaitToolInput, signal) {

@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type {
 	AgentSettledEvent,
@@ -25,7 +26,6 @@ import {
 	NEK_TODOS_ENTRY_TYPE,
 	samePlanRevision,
 } from "./state/session-state.ts";
-import { openTodos } from "./state/todos.ts";
 import { createAskQuestionToolDefinition } from "./tools/ask-question.ts";
 import { createCreatePlanToolDefinition } from "./tools/create-plan.ts";
 import { createSwitchModeToolDefinition } from "./tools/switch-mode.ts";
@@ -64,14 +64,18 @@ export interface PlanWiring {
 	pendingImplementation?: PendingImplementation;
 }
 
-/** Register planning, review, explicit mode exit, and revision-bound execution. */
+/** Register planning, review, explicit mode exit, and approval that hands the plan to Agent mode. */
 export function registerPlanMode(pi: ExtensionAPI, nek: NekRuntime): void {
 	const wiring: PlanWiring = { pi, nek, announcedMode: nek.session.mode, epoch: 0 };
 	registerPlanTools(wiring);
 	registerPlanCommands(wiring);
 	pi.registerMessageRenderer(PLAN_PREVIEW_TYPE, renderPlanPreview);
+	pi.on("context", (event) => {
+		const messages = event.messages.filter((message) => !isPlanPreview(message));
+		return messages.length === event.messages.length ? undefined : { messages };
+	});
 	pi.on("session_start", (event, ctx) => onSessionStart(wiring, event, ctx));
-	pi.on("session_tree", (_event, ctx) => restoreMode(wiring, ctx, true));
+	pi.on("session_tree", (_event, ctx) => restoreMode(wiring, ctx));
 	pi.on("input", (event, ctx) => onPlanInput(wiring, event, ctx));
 	pi.on("before_agent_start", (event) => {
 		nek.automaticWorkAllowed = true;
@@ -106,7 +110,6 @@ function registerPlanTools(wiring: PlanWiring): void {
 				: nek.session.plans.map((item, itemIndex) => (itemIndex === index ? snapshot : item));
 		nek.session.activePlan = plan.path;
 		nek.session.planStatus = "ready";
-		delete nek.session.execution;
 		wiring.planCreated = { path: plan.path, revision: plan.revision };
 		wiring.epoch++;
 		syncPlanUi(ctx, nek.session, nek.config.plan.shortcut);
@@ -163,25 +166,21 @@ function onSessionStart(wiring: PlanWiring, event: SessionStartEvent, ctx: Exten
 		handler: (shortcutCtx) =>
 			changeUserMode(wiring, shortcutCtx, wiring.nek.session.mode === "plan" ? "agent" : "plan"),
 	});
-	restoreMode(wiring, ctx, event.reason !== "new");
+	restoreMode(wiring, ctx);
 	if (event.reason === "startup" && wiring.pi.getFlag(PLAN_FLAG) === true) setMode(wiring, ctx, "plan");
 }
 
-function restoreMode(wiring: PlanWiring, ctx: ExtensionContext, revoke: boolean): void {
-	wiring.epoch++;
-	delete wiring.planCreated;
-	if (wiring.pendingImplementation) wiring.pendingImplementation.cancelled = true;
-	if (revoke) interruptExecution(wiring, ctx);
+function restoreMode(wiring: PlanWiring, ctx: ExtensionContext): void {
+	cancelPendingWork(wiring);
 	wiring.announcedMode = wiring.nek.session.mode;
 	syncMode(wiring, ctx);
 }
 
-/** Change interaction mode without granting execution permission. */
+/** Change interaction mode; a stale approval panel or deferred approved-plan message no longer applies. */
 export function setMode(wiring: PlanWiring, ctx: ExtensionContext, next: Mode): void {
 	if (wiring.nek.session.mode === next) return;
 	wiring.epoch++;
 	if (wiring.pendingImplementation) wiring.pendingImplementation.cancelled = true;
-	interruptExecution(wiring, ctx);
 	wiring.pi.appendEntry<ModeEntryData>(NEK_MODE_ENTRY_TYPE, { mode: next });
 	wiring.nek.session.mode = next;
 	if (next === "plan") markDraft(wiring, ctx);
@@ -208,27 +207,19 @@ function persistLifecycle(wiring: PlanWiring, ctx: ExtensionContext): void {
 	wiring.pi.appendEntry<PlanLifecycleData>(NEK_PLAN_ENTRY_TYPE, {
 		status: state.planStatus ?? "draft",
 		...(state.activePlan ? { active: state.activePlan } : {}),
-		...(state.execution ? { execution: { ...state.execution } } : {}),
 	});
 	syncPlanUi(ctx, state, wiring.nek.config.plan.shortcut);
 }
 
-function interruptExecution(wiring: PlanWiring, ctx: ExtensionContext): void {
-	const state = wiring.nek.session;
-	if (state.execution?.status !== "active") return;
-	state.execution = { ...state.execution, status: "interrupted" };
-	wiring.nek.automaticWorkAllowed = false;
-	state.todos = state.todos.map((todo) => (todo.status === "in_progress" ? { ...todo, status: "pending" } : todo));
-	wiring.pi.appendEntry<TodoListData>(NEK_TODOS_ENTRY_TYPE, { todos: state.todos, owner: state.todoOwner });
-	syncTodoUi(ctx, state.todos, wiring.nek.config.todo.widgetMaxLines);
-	persistLifecycle(wiring, ctx);
-}
-
-function markDraft(wiring: PlanWiring, ctx: ExtensionContext): void {
+/** Invalidate an open approval panel, the pending plan review, and any deferred approved-plan message. */
+function cancelPendingWork(wiring: PlanWiring): void {
 	wiring.epoch++;
 	delete wiring.planCreated;
 	if (wiring.pendingImplementation) wiring.pendingImplementation.cancelled = true;
-	interruptExecution(wiring, ctx);
+}
+
+function markDraft(wiring: PlanWiring, ctx: ExtensionContext): void {
+	cancelPendingWork(wiring);
 	wiring.nek.session.planStatus = "draft";
 	persistLifecycle(wiring, ctx);
 }
@@ -242,7 +233,6 @@ function onPlanInput(wiring: PlanWiring, event: InputEvent, ctx: ExtensionContex
 		return undefined;
 	}
 	if (pending) pending.cancelled = true;
-	if (event.source !== "extension" || pending) interruptExecution(wiring, ctx);
 	if (wiring.nek.session.mode === "plan") markDraft(wiring, ctx);
 	return undefined;
 }
@@ -278,15 +268,19 @@ async function plansCommand(wiring: PlanWiring, ctx: ExtensionCommandContext): P
 	const selected = snapshots[labels.indexOf(selectedLabel ?? "")];
 	if (!selected) return;
 	activatePlan(wiring, ctx, selected);
+	showPlanPreview(wiring, selected);
+}
+
+/** Append a display-only copy of the snapshot to the transcript; the `context` handler keeps it out of model input. */
+function showPlanPreview(wiring: PlanWiring, snapshot: PlanData): void {
 	wiring.pi.sendMessage<PlanData>(
-		{
-			customType: PLAN_PREVIEW_TYPE,
-			content: selected.markdown,
-			display: true,
-			details: selected,
-		},
+		{ customType: PLAN_PREVIEW_TYPE, content: snapshot.markdown, display: true, details: snapshot },
 		{ triggerTurn: false },
 	);
+}
+
+function isPlanPreview(message: AgentMessage): boolean {
+	return message.role === "custom" && message.customType === PLAN_PREVIEW_TYPE;
 }
 
 function planLabel(wiring: PlanWiring, snapshot: PlanData): string {
@@ -299,10 +293,6 @@ function activatePlan(wiring: PlanWiring, ctx: ExtensionContext, snapshot: PlanD
 	if (state.activePlan === snapshot.plan.path && activePlan(state)) return;
 	wiring.epoch++;
 	if (wiring.pendingImplementation) wiring.pendingImplementation.cancelled = true;
-	if (state.execution?.path !== snapshot.plan.path) {
-		if (state.execution?.status === "active") interruptExecution(wiring, ctx);
-		delete state.execution;
-	}
 	state.activePlan = snapshot.plan.path;
 	state.planStatus = "ready";
 	persistLifecycle(wiring, ctx);
@@ -310,14 +300,8 @@ function activatePlan(wiring: PlanWiring, ctx: ExtensionContext, snapshot: PlanD
 
 async function onPlanSettled(wiring: PlanWiring, event: AgentSettledEvent, ctx: ExtensionContext): Promise<void> {
 	if (event.outcome !== "completed") {
-		interruptExecution(wiring, ctx);
 		delete wiring.planCreated;
 		return;
-	}
-	const state = wiring.nek.session;
-	if (state.execution?.status === "active" && openTodos(state.todos).length === 0) {
-		state.execution = { ...state.execution, status: "completed" };
-		persistLifecycle(wiring, ctx);
 	}
 	await offerPlanApproval(wiring, ctx);
 }
@@ -338,6 +322,7 @@ async function offerPlanApproval(wiring: PlanWiring, ctx: ExtensionContext): Pro
 	)
 		return;
 	if (ctx.ui.getEditorText().trim() || ctx.hasPendingMessages()) return;
+	showPlanPreview(wiring, selected);
 	const epoch = wiring.epoch;
 	const choice = await showPlanApproval(ctx, selected);
 	if (
@@ -367,25 +352,21 @@ function reviewedMarkdown(wiring: PlanWiring, plan: PlanRecord): string {
 	return selected.markdown;
 }
 
-/** Approve only this snapshot; unrelated subsequent user input cancels any deferred implementation. */
+/**
+ * Hand the approved snapshot to Agent mode: its todos become ordinary todos and the lifecycle stays `ready`.
+ * Unrelated subsequent user input cancels the deferred approved-plan message.
+ */
 export function implementPlan(wiring: PlanWiring, ctx: ExtensionContext, plan: PlanRecord): void {
 	const markdown = reviewedMarkdown(wiring, plan);
 	const { pi, nek } = wiring;
-	const resume =
-		nek.session.execution?.status === "interrupted" &&
-		nek.session.todoOwner !== "planning" &&
-		samePlanRevision(nek.session.todoOwner, plan) &&
-		samePlanRevision(nek.session.execution, plan);
 	setMode(wiring, ctx, "agent");
-	const owner = { path: plan.path, revision: plan.revision };
-	nek.session.execution = { ...owner, status: "active" };
-	nek.session.todos = resume ? nek.session.todos.map((todo) => ({ ...todo })) : planTodos(plan);
-	nek.session.todoOwner = owner;
-	pi.appendEntry<TodoListData>(NEK_TODOS_ENTRY_TYPE, { todos: nek.session.todos, owner });
+	nek.session.todos = planTodos(plan);
+	delete nek.session.todoOwner;
+	pi.appendEntry<TodoListData>(NEK_TODOS_ENTRY_TYPE, { todos: nek.session.todos });
 	persistLifecycle(wiring, ctx);
 	syncTodoUi(ctx, nek.session.todos, nek.config.todo.widgetMaxLines);
 	const text = approvedPlanMessage(plan.path, plan.revision, markdown);
-	wiring.pendingImplementation = { text, reference: owner, cancelled: false };
+	wiring.pendingImplementation = { text, reference: { path: plan.path, revision: plan.revision }, cancelled: false };
 	pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 }
 
@@ -434,18 +415,16 @@ async function buildCommand(wiring: PlanWiring, args: string, ctx: ExtensionComm
 	if (!parsed.fresh) return implementPlan(wiring, ctx, selected.plan);
 	const markdown = reviewedMarkdown(wiring, selected.plan);
 	const message = freshImplementMessage(markdown);
-	const owner = { path: selected.plan.path, revision: selected.plan.revision };
 	const todos = planTodos(selected.plan);
 	await ctx.newSession({
 		parentSession: ctx.sessionManager.getSessionFile(),
 		setup: async (manager) => {
 			manager.appendCustomEntry(NEK_MODE_ENTRY_TYPE, { mode: "agent" } satisfies ModeEntryData);
 			manager.appendCustomEntry(NEK_PLAN_SNAPSHOT_ENTRY_TYPE, { plan: selected.plan, markdown } satisfies PlanData);
-			manager.appendCustomEntry(NEK_TODOS_ENTRY_TYPE, { todos, owner } satisfies TodoListData);
+			manager.appendCustomEntry(NEK_TODOS_ENTRY_TYPE, { todos } satisfies TodoListData);
 			manager.appendCustomEntry(NEK_PLAN_ENTRY_TYPE, {
 				status: "ready",
-				active: owner.path,
-				execution: { ...owner, status: "active" },
+				active: selected.plan.path,
 			} satisfies PlanLifecycleData);
 		},
 		withSession: async (next) => next.sendUserMessage(message),

@@ -15,7 +15,7 @@ Set the user data directory with `NEK_CODING_AGENT_DIR` or the SDK's [`agentDir`
 | `<agent-dir>/models.json` | [Compatible endpoints, models, and model overrides](models.md#configure-a-compatible-endpoint) |
 | `<agent-dir>/auth.json` | Saved API keys and OAuth credentials |
 | `<agent-dir>/AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, or `CLAUDE.MD` | User instructions applied across working directories |
-| `<agent-dir>/SYSTEM.md` | Replaces the default system prompt |
+| `<agent-dir>/SYSTEM.md` | Replaces the default system prompt; the one-sentence nekcode identity line stays in front |
 | `<agent-dir>/APPEND_SYSTEM.md` | Adds instructions to the system prompt |
 | `<agent-dir>/extensions/` | User extensions loaded by the resource loader |
 | `<agent-dir>/skills/` | User skills and supporting files |
@@ -27,7 +27,7 @@ Set the user data directory with `NEK_CODING_AGENT_DIR` or the SDK's [`agentDir`
 | Path | Responsibility |
 |---|---|
 | `.nek/settings.json` | Project-level settings and resource paths |
-| `.nek/SYSTEM.md` | Replaces the system prompt for the project |
+| `.nek/SYSTEM.md` | Replaces the system prompt for the project; the one-sentence nekcode identity line stays in front |
 | `.nek/APPEND_SYSTEM.md` | Adds project-specific instructions to the system prompt |
 | `.nek/extensions/` | Project extensions |
 | `.nek/skills/` | Project skills and supporting files |

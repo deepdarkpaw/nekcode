@@ -5,7 +5,6 @@ import type {
 	ModeEntryData,
 	NekSessionState,
 	PlanData,
-	PlanExecution,
 	PlanLifecycleData,
 	PlanRecord,
 	PlanReference,
@@ -50,11 +49,9 @@ export function samePlanRevision(left: PlanReference | undefined, right: PlanRef
 	return left !== undefined && right !== undefined && left.path === right.path && left.revision === right.revision;
 }
 
-/** Ordinary todos remain active; plan-owned todos require an active authorization for their revision. */
+/** Ordinary todos are always active; planning todos are active only in Plan mode. */
 export function todosAreActive(state: NekSessionState): boolean {
-	if (!state.todoOwner) return true;
-	if (state.todoOwner === "planning") return state.mode === "plan";
-	return state.execution?.status === "active" && samePlanRevision(state.todoOwner, state.execution);
+	return state.todoOwner !== "planning" || state.mode === "plan";
 }
 
 /** Replay artifacts, lifecycle, modes, and todo ownership in branch order. Failed results do not change state. */
@@ -66,7 +63,7 @@ export function replayBranch(entries: readonly SessionEntry[]): NekSessionState 
 		const list = todoListFromEntry(entry);
 		if (list) {
 			state.todos = list.todos.map((todo) => ({ ...todo }));
-			if (list.owner) state.todoOwner = list.owner === "planning" ? "planning" : { ...list.owner };
+			if (list.owner) state.todoOwner = list.owner;
 			else delete state.todoOwner;
 		}
 		const artifact = planFromEntry(entry);
@@ -86,7 +83,6 @@ function applyPlanArtifact(state: NekSessionState, artifact: PlanData): void {
 			: state.plans.map((item, itemIndex) => (itemIndex === index ? snapshot : item));
 	state.activePlan = snapshot.plan.path;
 	state.planStatus = "ready";
-	delete state.execution;
 }
 
 function applyLifecycle(state: NekSessionState, lifecycle: PlanLifecycleData): void {
@@ -95,13 +91,9 @@ function applyLifecycle(state: NekSessionState, lifecycle: PlanLifecycleData): v
 	if (!selected) {
 		delete state.activePlan;
 		delete state.planStatus;
-		delete state.execution;
 		return;
 	}
 	state.planStatus = lifecycle.status;
-	if (lifecycle.execution && lifecycle.execution.path === selected.plan.path)
-		state.execution = { ...lifecycle.execution };
-	else delete state.execution;
 }
 
 function clonePlanData(snapshot: PlanData): PlanData {
@@ -117,13 +109,17 @@ function modeFromEntry(entry: SessionEntry): Mode | undefined {
 	return MODES.find((mode) => mode === data?.mode);
 }
 
+/** Owners other than `planning` (plan references written by older versions) are dropped: those todos are ordinary. */
 function todoListFromEntry(entry: SessionEntry): TodoListData | undefined {
 	const data =
 		entry.type === "custom" && entry.customType === NEK_TODOS_ENTRY_TYPE
 			? entry.data
 			: successfulToolDetails(entry, TODO_WRITE_TOOL_NAME);
-	if (!isTodoListData(data)) return undefined;
-	return data;
+	if (typeof data !== "object" || data === null || !("todos" in data)) return undefined;
+	const todos: unknown = data.todos;
+	if (!Array.isArray(todos) || !todos.every(isTodo)) return undefined;
+	const planning = "owner" in data && data.owner === "planning";
+	return { todos, ...(planning ? { owner: "planning" as const } : {}) };
 }
 
 function planFromEntry(entry: SessionEntry): PlanData | undefined {
@@ -144,13 +140,7 @@ function lifecycleFromEntry(entry: SessionEntry): PlanLifecycleData | undefined 
 	const record = data as Record<string, unknown>;
 	if (record.status !== "draft" && record.status !== "ready") return undefined;
 	if (record.active !== undefined && typeof record.active !== "string") return undefined;
-	const execution = record.execution;
-	if (execution !== undefined && !isPlanExecution(execution)) return undefined;
-	return {
-		status: record.status,
-		...(typeof record.active === "string" ? { active: record.active } : {}),
-		...(execution ? { execution } : {}),
-	};
+	return { status: record.status, ...(typeof record.active === "string" ? { active: record.active } : {}) };
 }
 
 function successfulToolDetails(entry: SessionEntry, toolName: string): unknown {
@@ -158,13 +148,6 @@ function successfulToolDetails(entry: SessionEntry, toolName: string): unknown {
 	const message = entry.message;
 	if (message.role !== "toolResult" || message.toolName !== toolName || message.isError) return undefined;
 	return message.details;
-}
-
-function isTodoListData(value: unknown): value is TodoListData {
-	if (typeof value !== "object" || value === null || !("todos" in value)) return false;
-	if ("owner" in value && value.owner !== undefined && value.owner !== "planning" && !isPlanReference(value.owner))
-		return false;
-	return Array.isArray(value.todos) && value.todos.every(isTodo);
 }
 
 function isTodo(value: unknown): value is Todo {
@@ -185,11 +168,6 @@ function isPlanReference(value: unknown): value is PlanReference {
 		Number.isSafeInteger(value.revision) &&
 		value.revision > 0
 	);
-}
-
-function isPlanExecution(value: unknown): value is PlanExecution {
-	if (!isPlanReference(value) || !("status" in value)) return false;
-	return value.status === "active" || value.status === "interrupted" || value.status === "completed";
 }
 
 function isPlanRecord(value: unknown): value is PlanRecord {

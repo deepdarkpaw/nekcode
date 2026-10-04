@@ -38,7 +38,7 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("prompt structure", () => {
-		test("keeps the default and custom prompt prefixes exact", () => {
+		test("opens the default prompt with the identity sentence and prepends it to a custom prompt", () => {
 			const defaultPrompt = buildSystemPrompt({ cwd: "/tmp", selectedTools: [], contextFiles: [], skills: [] });
 			const customPrompt = buildSystemPrompt({
 				customPrompt: "You are Exact.",
@@ -48,8 +48,14 @@ describe("buildSystemPrompt", () => {
 				skills: [],
 			});
 
-			expect(defaultPrompt.startsWith("You are an expert coding assistant operating inside nekcode")).toBe(true);
-			expect(customPrompt.startsWith("You are Exact.\n\n<cwd>")).toBe(true);
+			expect(defaultPrompt.startsWith("You are working inside nekcode, a terminal coding agent.\n\n<tools>")).toBe(
+				true,
+			);
+			expect(
+				customPrompt.startsWith(
+					"You are working inside nekcode, a terminal coding agent.\n\nYou are Exact.\n\n<cwd>",
+				),
+			).toBe(true);
 		});
 
 		test("preserves an exact forced prompt without sections", () => {

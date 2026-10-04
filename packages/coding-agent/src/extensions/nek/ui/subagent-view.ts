@@ -1,7 +1,8 @@
 /**
  * Presentation of subagents: subagent/await tool rows, the `nek.subagent_notice` message, the `/subagents` command,
  * and the running-subagent list above the editor. Cards follow the Cursor layout: a status icon and description with
- * muted metadata on the first line, the current action or a one-line result below.
+ * muted `model · type · tokens · elapsed` metadata on the first line, and below it the current activity with its age
+ * while running, or a one-line result once finished.
  */
 
 import { Box, type Component, Container, Markdown, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
@@ -11,6 +12,7 @@ import { getTextOutput } from "../../../core/tools/render-utils.ts";
 import { DynamicBorder } from "../../../modes/interactive/components/dynamic-border.ts";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
 import { getMarkdownTheme, type Theme } from "../../../modes/interactive/theme/theme.ts";
+import { formatTokens } from "../../../utils/format-tokens.ts";
 import type { SubagentRegistry } from "../services/subagent-registry.ts";
 import type { AwaitToolData, SubagentNoticeData, SubagentRecord, SubagentStatus, SubagentToolData } from "../types.ts";
 
@@ -58,11 +60,17 @@ function statusIcon(record: SubagentRecord, theme: Theme, now: number): string {
 	return theme.fg(iconColor(record.status), icon);
 }
 
-/** Elapsed seconds of a record, e.g. `12s`; minutes are shown once a run passes a minute. */
-export function subagentElapsed(record: SubagentRecord, now = Date.now()): string {
-	const seconds = Math.max(0, Math.round(((record.endedAt ?? now) - record.startedAt) / 1000));
+/** Compact duration, e.g. `12s`, `1m 5s`, `2h 3m`. */
+export function formatDuration(ms: number): string {
+	const seconds = Math.max(0, Math.round(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;
-	return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+	return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+/** Total run time of a record, from `startedAt` to `endedAt`, or to now while it runs. */
+export function subagentElapsed(record: SubagentRecord, now = Date.now()): string {
+	return formatDuration((record.endedAt ?? now) - record.startedAt);
 }
 
 /** Model id without the provider prefix (`anthropic/claude` -> `claude`). */
@@ -72,22 +80,28 @@ function modelId(record: SubagentRecord): string {
 	return oneLine(slash === -1 ? record.model : record.model.slice(slash + 1));
 }
 
-/** Token count, e.g. `3.2k tokens`. */
-function tokenText(tokens: number): string {
-	if (tokens < 1000) return `${tokens} tokens`;
-	if (tokens < 10000) return `${(tokens / 1000).toFixed(1)}k tokens`;
-	if (tokens < 1000000) return `${Math.round(tokens / 1000)}k tokens`;
-	return `${(tokens / 1000000).toFixed(1)}M tokens`;
+/** Input/output tokens, e.g. `↑12k ↓3.4k`; undefined for records from older sessions or before the first reply. */
+function tokenText(record: SubagentRecord): string | undefined {
+	const usage = record.usage;
+	if (!usage || (usage.input === 0 && usage.output === 0)) return undefined;
+	return `↑${formatTokens(usage.input)} ↓${formatTokens(usage.output)}`;
 }
 
 /**
  * First line of a subagent card, shared by tool rows, the completion notice, `/subagents`, and the running list:
- * `⠋ <description>  <model> · <type> · <elapsed>` while running, and the same metadata plus tokens once finished.
+ * `<status icon> <description>  <model> · <type> · ↑12k ↓3.4k · 1m 5s`.
  */
 export function subagentLine(record: SubagentRecord, theme: Theme, now = Date.now()): string {
-	const meta = [`${modelId(record)} · ${oneLine(record.type)}`, subagentElapsed(record, now)];
-	if (record.status !== "running") meta.push(tokenText(record.tokens));
+	const tokens = tokenText(record);
+	const meta = [modelId(record), oneLine(record.type), ...(tokens ? [tokens] : []), subagentElapsed(record, now)];
 	return `${statusIcon(record, theme, now)} ${oneLine(record.description)}  ${theme.fg("muted", meta.join(" · "))}`;
+}
+
+/** Second line of a running record: `<activity> · 5s ago`; undefined before the first activity. */
+export function subagentActivityLine(record: SubagentRecord, theme: Theme, now = Date.now()): string | undefined {
+	if (record.status !== "running" || !record.activity) return undefined;
+	const age = record.lastActivityAt === undefined ? "" : ` · ${formatDuration(now - record.lastActivityAt)} ago`;
+	return theme.fg("dim", `${oneLine(record.activity)}${age}`);
 }
 
 /** First non-empty line of a result body, used as the second card line. */
@@ -100,10 +114,11 @@ function firstLine(text: string | undefined): string | undefined {
 }
 
 /** Head lines of a card (without indentation) for the current record state. */
-function cardLines(record: SubagentRecord, theme: Theme): string[] {
-	const head = [subagentLine(record, theme)];
+function cardLines(record: SubagentRecord, theme: Theme, now = Date.now()): string[] {
+	const head = [subagentLine(record, theme, now)];
 	if (record.status === "running") {
-		if (record.activity) head.push(theme.fg("dim", oneLine(record.activity)));
+		const activity = subagentActivityLine(record, theme, now);
+		if (activity) head.push(activity);
 		return head;
 	}
 	if (record.status === "errored" || record.status === "aborted") {
@@ -120,8 +135,8 @@ function cardLines(record: SubagentRecord, theme: Theme): string[] {
 }
 
 /** First line and detail line, indented, truncated to the render width. */
-function renderCardLines(record: SubagentRecord, theme: Theme, width: number): string[] {
-	return cardLines(record, theme).map((line, index) =>
+function renderCardLines(record: SubagentRecord, theme: Theme, width: number, now = Date.now()): string[] {
+	return cardLines(record, theme, now).map((line, index) =>
 		truncateToWidth(`${" ".repeat(index === 0 ? CARD_PAD : DETAIL_PAD)}${line}`, width, ""),
 	);
 }
@@ -179,7 +194,7 @@ export const subagentRenderers: SubagentRenderers = {
 		const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 		const input = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
 		const description = typeof input.description === "string" ? oneLine(input.description) : "subagent";
-		text.setText(`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("text", description)}`);
+		text.setText(`${theme.fg("toolTitle", theme.bold("Subagent"))} ${theme.fg("text", description)}`);
 		return text;
 	},
 	renderResult(result, options, theme, context) {
@@ -229,7 +244,7 @@ export function awaitRenderers(getRegistry: () => SubagentRegistry): AwaitRender
 			const input = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
 			const id = typeof input.subagent_id === "string" ? input.subagent_id : undefined;
 			const description = id ? oneLine(getRegistry().get(id)?.description ?? id) : "any subagent";
-			text.setText(`${theme.fg("toolTitle", theme.bold("await"))} ${theme.fg("accent", description)}`);
+			text.setText(`${theme.fg("toolTitle", theme.bold("Waiting"))} ${theme.fg("accent", description)}`);
 			return text;
 		},
 		renderResult(result, _options, theme, context) {
@@ -284,8 +299,8 @@ export const renderSubagentNotice: MessageRenderer<SubagentNoticeData> = (messag
 };
 
 /**
- * Running background summaries for the widget above the editor, one line per running background subagent.
- * Undefined when none run, so the caller removes the widget key.
+ * Running background summaries for the widget above the editor: the card first line and, once known, the activity
+ * line of each running background subagent. Undefined when none run, so the caller removes the widget key.
  */
 export function subagentWidgetLines(
 	records: readonly SubagentRecord[],
@@ -294,7 +309,7 @@ export function subagentWidgetLines(
 ): string[] | undefined {
 	const running = records.filter((record) => record.background && record.status === "running");
 	if (running.length === 0) return undefined;
-	return running.map((record) => subagentLine(record, theme, now));
+	return running.flatMap((record) => cardLines(record, theme, now));
 }
 
 /** Widget component for the running list; refreshes elapsed every second while it is mounted. */
@@ -314,7 +329,7 @@ class SubagentWidgetComponent extends Container {
 		const now = Date.now();
 		return this.records
 			.filter((record) => record.background && record.status === "running")
-			.map((record) => truncateToWidth(subagentLine(record, this.theme, now), width, ""));
+			.flatMap((record) => renderCardLines(record, this.theme, width, now));
 	}
 
 	dispose(): void {

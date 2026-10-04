@@ -282,7 +282,7 @@ export class SubagentRegistry {
 		record.observed = false;
 		record.error = undefined;
 		record.endedAt = undefined;
-		record.activity = undefined;
+		setActivity(record, undefined);
 		entry.abortRequested = false;
 		this.onChange(record);
 		entry.done = this.run(entry, prompt, signal);
@@ -353,18 +353,23 @@ export class SubagentRegistry {
 		});
 	}
 
-	/** Keep the latest tool call or assistant text, and the token count. */
+	/** Keep the latest tool call or assistant text, and the input/output token totals. */
 	private trackProgress(entry: SubagentEntry, event: AgentSessionEvent): void {
 		const record = entry.record;
 		if (event.type === "agent_start" && entry.abortRequested) void entry.session.abort();
 		if (event.type === "tool_execution_start") {
-			record.activity = compactActivity(`${event.toolName} ${summarizeArgs(event.args)}`);
+			setActivity(record, compactActivity(`${event.toolName} ${summarizeArgs(event.args)}`));
 		} else if (event.type === "message_update" && event.message.role === "assistant") {
-			const text = assistantText(event.message);
-			const activity = compactActivity(text);
-			record.activity = activity ? activity : record.activity;
+			const activity = compactActivity(assistantText(event.message));
+			if (activity) setActivity(record, activity);
 		} else if (event.type === "message_end" && event.message.role === "assistant") {
-			record.tokens += event.message.usage.totalTokens;
+			const usage = event.message.usage;
+			const previous = record.usage ?? { input: 0, output: 0 };
+			// Replace rather than mutate: tool details and notices hold shallow snapshots of the record.
+			record.usage = {
+				input: previous.input + usage.input + usage.cacheRead + usage.cacheWrite,
+				output: previous.output + usage.output,
+			};
 		} else {
 			return;
 		}
@@ -419,8 +424,14 @@ function createRecord(session: AgentSession, description: string, type: string, 
 		startedAt: Date.now(),
 		observed: false,
 		model: sessionModelRef(session),
-		tokens: 0,
+		usage: { input: 0, output: 0 },
 	};
+}
+
+/** Set the activity text and stamp it; every new tool call or streamed text counts as fresh activity. */
+function setActivity(record: SubagentRecord, activity: string | undefined): void {
+	record.activity = activity;
+	record.lastActivityAt = activity === undefined ? undefined : Date.now();
 }
 
 function sessionModelRef(session: AgentSession): string | undefined {

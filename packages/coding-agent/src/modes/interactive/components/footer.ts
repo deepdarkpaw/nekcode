@@ -5,6 +5,7 @@ import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
+import { formatTokens } from "../../../utils/format-tokens.ts";
 import { theme } from "../theme/theme.ts";
 
 /**
@@ -19,16 +20,8 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
-/**
- * Format token counts for compact footer display.
- */
-export function formatTokens(count: number): string {
-	if (count < 1000) return count.toString();
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${Math.round(count / 1000000)}M`;
-}
+/** Re-exported so existing footer importers keep working; the implementation is shared with subagent rows. */
+export { formatTokens };
 
 export function formatCwdForFooter(cwd: string, home: string | undefined): string {
 	if (!home) return cwd;

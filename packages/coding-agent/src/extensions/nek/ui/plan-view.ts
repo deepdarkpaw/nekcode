@@ -4,9 +4,13 @@ import { rawKeyHint } from "../../../modes/interactive/components/keybinding-hin
 import { getMarkdownTheme } from "../../../modes/interactive/theme/theme.ts";
 import { activePlan } from "../state/session-state.ts";
 import type { NekSessionState, PlanData } from "../types.ts";
-import { formatPlanDocument } from "./renderers.ts";
+import { formatPlanDocument, planHeading } from "./renderers.ts";
 
-/** A saved revision can be reopened without executing or asking the model to regenerate it. */
+/**
+ * Display-only transcript copy of a saved revision, appended when a review opens and by `/plans`. It never reaches the
+ * model: plan-wiring drops it in the `context` handler, because the plan is already in context via the plan tool call
+ * or the approved-plan message.
+ */
 export const PLAN_PREVIEW_TYPE = "nek.plan_preview";
 
 /** Render the immutable preview as a document, not a collapsed generic tool result. */
@@ -14,13 +18,8 @@ export const renderPlanPreview: MessageRenderer<PlanData> = (message, options, t
 	const view = new Container();
 	const plan = message.details?.plan;
 	if (plan) {
-		view.addChild(
-			new Text(
-				theme.fg("muted", `${plan.name}  |  revision ${plan.revision}  |  ${plan.path}`),
-				options.outputPad,
-				0,
-			),
-		);
+		view.addChild(new Text(planHeading(plan.name, plan.revision, theme), options.outputPad, 0));
+		view.addChild(new Text(theme.fg("dim", plan.path), options.outputPad, 0));
 	}
 	const markdown = message.details
 		? formatPlanDocument(message.details)
@@ -31,35 +30,24 @@ export const renderPlanPreview: MessageRenderer<PlanData> = (message, options, t
 	return view;
 };
 
-/** A compact lifecycle row stays separate from the editor's persistent PLAN badge. */
+/** A compact lifecycle row, shown only in Plan mode, stays separate from the editor's persistent PLAN badge. */
 export function syncPlanUi(ctx: ExtensionContext, state: NekSessionState, shortcut: string): void {
 	if (!ctx.hasUI) return;
-	const planning = state.mode === "plan";
-	const selected = activePlan(state);
-	const interrupted = state.execution?.status === "interrupted";
-	if (!planning && !interrupted) {
+	if (state.mode !== "plan") {
 		ctx.ui.setWidget("nek.plan", undefined);
 		return;
 	}
+	const selected = activePlan(state);
 	ctx.ui.setWidget("nek.plan", () => ({
 		invalidate: () => {},
 		dispose: () => {},
 		render: (width) => {
 			const theme = ctx.ui.theme;
-			const status = planning
-				? state.planStatus === "ready"
-					? "Ready for review"
-					: selected
-						? "Revising plan"
-						: "Drafting plan"
-				: "Plan execution interrupted";
+			const status =
+				state.planStatus === "ready" ? "Ready for review" : selected ? "Revising plan" : "Drafting plan";
 			const name = selected ? `  ${selected.plan.name} / r${selected.plan.revision}` : "";
-			const action = planning ? `  ${rawKeyHint(shortcut, "switch mode")}  ${theme.fg("muted", "/agent exit")}` : "";
-			return new Text(
-				theme.fg(planning ? "accent" : "warning", status) + theme.fg("muted", name) + action,
-				1,
-				0,
-			).render(width);
+			const action = `  ${rawKeyHint(shortcut, "switch mode")}  ${theme.fg("muted", "/agent exit")}`;
+			return new Text(theme.fg("accent", status) + theme.fg("muted", name) + action, 1, 0).render(width);
 		},
 	}));
 }

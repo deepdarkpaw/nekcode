@@ -4,6 +4,7 @@ import { ASK_QUESTION } from "../prompts/tool-descriptions.ts";
 import { ASK_QUESTION_TOOL_NAME } from "../state/session-state.ts";
 import type { AskQuestionData, QuestionAnswer } from "../types.ts";
 import { askQuestion } from "../ui/question-dialog.ts";
+import { askQuestionRenderers } from "../ui/renderers.ts";
 
 const askQuestionSchema = Type.Object({
 	questions: Type.Array(
@@ -59,7 +60,7 @@ function textResult(text: string, answers: QuestionAnswer[], terminate = false) 
 export function createAskQuestionToolDefinition(): ToolDefinition<typeof askQuestionSchema, AskQuestionData> {
 	return {
 		name: ASK_QUESTION_TOOL_NAME,
-		label: "ask_question",
+		label: "Question",
 		description: ASK_QUESTION,
 		parameters: askQuestionSchema,
 		executionMode: "sequential",
@@ -75,5 +76,6 @@ export function createAskQuestionToolDefinition(): ToolDefinition<typeof askQues
 			}
 			return textResult(formatAnswers(answers), answers);
 		},
+		...askQuestionRenderers,
 	};
 }

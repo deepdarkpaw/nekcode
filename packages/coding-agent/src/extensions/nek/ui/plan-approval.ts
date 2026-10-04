@@ -1,16 +1,7 @@
-import {
-	type Component,
-	Markdown,
-	type SelectItem,
-	SelectList,
-	Text,
-	type TUI,
-	truncateToWidth,
-} from "@earendil-works/pi-tui";
+import { type Component, type SelectItem, SelectList, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import type { ExtensionContext } from "../../../core/extensions/types.ts";
-import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
-import { getMarkdownTheme, type Theme } from "../../../modes/interactive/theme/theme.ts";
+import type { Theme } from "../../../modes/interactive/theme/theme.ts";
 import {
 	clearContextDescription,
 	IMPLEMENT_CLEAR_CONTEXT,
@@ -23,7 +14,7 @@ import {
 	IMPLEMENT_YES_DESCRIPTION,
 } from "../prompts/implement.ts";
 import type { PlanData } from "../types.ts";
-import { formatPlanDocument } from "./renderers.ts";
+import { planHeading } from "./renderers.ts";
 
 /** Choices of the "Implement this plan?" panel. */
 export type PlanApprovalChoice = "implement" | "fresh" | "stay" | "exit";
@@ -35,8 +26,11 @@ export interface PlanApprovalOption {
 	description: string;
 }
 
-/** The persisted body and metadata being reviewed; no plan file is read by this UI. */
+/** The persisted snapshot being reviewed; its body is shown in the transcript, not in this panel. */
 export type PlanApprovalSnapshot = PlanData;
+
+/** Pointer from the compact panel to the plan preview appended to the transcript just before it. */
+export const PLAN_APPROVAL_TRANSCRIPT_HINT = "Full plan is above in the transcript";
 
 /** Four review actions; the fresh-session row shows context usage when it is known. */
 export function planApprovalOptions(percentUsed: number | undefined): PlanApprovalOption[] {
@@ -48,15 +42,15 @@ export function planApprovalOptions(percentUsed: number | undefined): PlanApprov
 	];
 }
 
-/** Review a plan inline, or use the same four actions through a non-TUI select. Dismissal changes nothing. */
+/** Ask for one of the four actions inline, or through a non-TUI select. Dismissal changes nothing. */
 export async function showPlanApproval(
 	ctx: ExtensionContext,
 	snapshot: PlanApprovalSnapshot,
 ): Promise<PlanApprovalChoice | undefined> {
 	const options = planApprovalOptions(ctx.getContextUsage()?.percent ?? undefined);
 	if (ctx.mode === "tui") {
-		return ctx.ui.custom<PlanApprovalChoice | undefined>((tui, theme, keybindings, done) =>
-			createApprovalView(options, theme, keybindings, tui, done, snapshot),
+		return ctx.ui.custom<PlanApprovalChoice | undefined>((tui, theme, _keybindings, done) =>
+			createApprovalView(options, theme, tui, done, snapshot),
 		);
 	}
 	const label = await ctx.ui.select(
@@ -73,10 +67,13 @@ const COMPACT_LABELS: Record<PlanApprovalChoice, string> = {
 	exit: "Exit Plan mode",
 };
 
+/**
+ * Compact panel in the editor slot: heading, actions, the selected action's description, and key hints. The plan body
+ * lives in the transcript, where fullscreen paging and native scrollback both work.
+ */
 function createApprovalView(
 	options: readonly PlanApprovalOption[],
 	theme: Theme,
-	keybindings: KeybindingsManager,
 	tui: TUI,
 	done: (choice: PlanApprovalChoice | undefined) => void,
 	snapshot: PlanApprovalSnapshot,
@@ -94,64 +91,28 @@ function createApprovalView(
 	});
 	list.onSelect = (item) => done(options.find((option) => option.choice === item.value)?.choice);
 	list.onCancel = () => done(undefined);
-	const markdown = new Markdown(formatPlanDocument(snapshot), 1, 0, getMarkdownTheme());
-	let offset = 0;
-	let pageHeight = 1;
-	let bodyLength = 0;
 	return {
 		render(width) {
 			if (width <= 0) return [];
 			const border = theme.fg("borderAccent", "─".repeat(width));
 			const selected = options.find((option) => option.choice === list.getSelectedItem()?.value);
-			const actionLines = [
+			const hints = `${keyHint("tui.select.up", "")}${keyHint("tui.select.down", "choose")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", "dismiss")}`;
+			return [
+				border,
+				...new Text(planHeading(snapshot.plan.name, snapshot.plan.revision, theme), 1, 0).render(width),
 				...new Text(theme.style(IMPLEMENT_TITLE, { fg: "borderAccent", bold: true }), 1, 0).render(width),
 				...list.render(width),
 				...new Text(theme.fg("muted", selected?.description ?? ""), 1, 0).render(width),
-				...new Text(
-					`${keyHint("tui.select.up", "")}${keyHint("tui.select.down", "choose")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", "dismiss")}`,
-					1,
-					0,
-				).render(width),
-			];
-			const revision = `  Revision ${snapshot.plan.revision}`;
-			const heading = new Text(
-				theme.style(" PLAN ", { fg: "borderAccent", bold: true, inverse: true }) +
-					` ${theme.style(snapshot.plan.name, { fg: "text", bold: true })}` +
-					theme.fg("muted", revision),
-				1,
-				0,
-			).render(width);
-			const body = markdown.render(width);
-			bodyLength = body.length;
-			// Leave room for transcript context above the inline review, and keep the actions outside the body viewport.
-			pageHeight = Math.max(
-				1,
-				Math.min(Math.floor(tui.terminal.rows / 2), tui.terminal.rows - actionLines.length - heading.length - 8),
-			);
-			offset = Math.max(0, Math.min(offset, body.length - pageHeight));
-			const bodyLines = body.slice(offset, offset + pageHeight);
-			const scrollHint = new Text(
-				theme.fg("muted", `${offset + 1}-${Math.min(body.length, offset + pageHeight)} / ${body.length}`) +
-					`  ${keyHint("tui.select.pageUp", "")}${keyHint("tui.select.pageDown", "review")}`,
-				1,
-				0,
-			).render(width);
-			return [border, ...heading, ...bodyLines, ...scrollHint, border, ...actionLines, border].map((line) =>
-				truncateToWidth(line, width, ""),
-			);
+				...new Text(theme.fg("dim", PLAN_APPROVAL_TRANSCRIPT_HINT), 1, 0).render(width),
+				...new Text(hints, 1, 0).render(width),
+				border,
+			].map((line) => truncateToWidth(line, width, ""));
 		},
 		invalidate() {
-			markdown.invalidate();
 			list.invalidate();
 		},
 		handleInput(data) {
-			if (keybindings.matches(data, "tui.select.pageUp")) {
-				offset = Math.max(0, offset - pageHeight);
-			} else if (keybindings.matches(data, "tui.select.pageDown")) {
-				offset = Math.min(Math.max(0, bodyLength - pageHeight), offset + pageHeight);
-			} else {
-				list.handleInput(data);
-			}
+			list.handleInput(data);
 			tui.requestRender();
 		},
 	};

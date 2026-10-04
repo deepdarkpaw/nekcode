@@ -40,7 +40,7 @@ export function createSwitchModeToolDefinition(
 ): ToolDefinition<typeof switchModeSchema, undefined> {
 	return {
 		name: SWITCH_MODE_TOOL_NAME,
-		label: "switch_mode",
+		label: "Mode",
 		description: SWITCH_MODE,
 		parameters: switchModeSchema,
 		executionMode: "sequential",

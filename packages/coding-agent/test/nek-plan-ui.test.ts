@@ -12,7 +12,12 @@ import type { ExtensionContext, ExtensionUIContext, ToolRenderContext } from "..
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { createSwitchModeToolDefinition } from "../src/extensions/nek/tools/switch-mode.ts";
 import type { Mode, PlanData } from "../src/extensions/nek/types.ts";
-import { planApprovalOptions, showPlanApproval } from "../src/extensions/nek/ui/plan-approval.ts";
+import {
+	PLAN_APPROVAL_TRANSCRIPT_HINT,
+	planApprovalOptions,
+	showPlanApproval,
+} from "../src/extensions/nek/ui/plan-approval.ts";
+import { PLAN_PREVIEW_TYPE, renderPlanPreview } from "../src/extensions/nek/ui/plan-view.ts";
 import { askQuestion } from "../src/extensions/nek/ui/question-dialog.ts";
 import { createPlanRenderers } from "../src/extensions/nek/ui/renderers.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
@@ -88,36 +93,56 @@ afterEach(() => {
 });
 
 describe("Plan documents and mode presentation", () => {
-	it.each(["dark", "light"])(
-		"renders the complete saved snapshot in %s without expansion or disk access",
-		(appearance) => {
-			initTheme(appearance);
-			const args = { plan: "# Wrong later body" };
-			const context = renderContext(args);
-			const component = createPlanRenderers.renderResult?.(
-				{ content: [{ type: "text", text: "saved" }], details: snapshot },
-				{ expanded: false, isPartial: false },
-				theme,
-				context,
-			);
-			if (!component) throw new Error("Missing plan renderer");
-			for (const width of [20, 40, 80, 120]) {
-				const lines = component.render(width);
-				expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
-				const rendered = stripAnsi(lines.join("\n"));
-				expect(rendered).toContain("Cache review");
-				expect(rendered).toContain("Implementation");
-				expect(rendered).not.toContain("Wrong later body");
-			}
-			args.plan = "# Another revision";
-			const document = stripAnsi(component.render(80).join("\n"));
-			expect(document).toContain("Add Redis caching.");
-			expect(document).toContain("Implementation Tasks");
-			expect(document).toContain("Add the cache");
-			expect(document).not.toContain("Another revision");
-			expect(createPlanRenderers.renderShell).toBe("self");
-		},
-	);
+	it.each(["dark", "light"])("renders only the heading and overview of the saved snapshot in %s", (appearance) => {
+		initTheme(appearance);
+		const args = { plan: "# Wrong later body" };
+		const context = renderContext(args);
+		const component = createPlanRenderers.renderResult?.(
+			{ content: [{ type: "text", text: "saved" }], details: snapshot },
+			{ expanded: false, isPartial: false },
+			theme,
+			context,
+		);
+		if (!component) throw new Error("Missing plan renderer");
+		for (const width of [20, 40, 80, 120]) {
+			const lines = component.render(width);
+			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+		}
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).toContain("PLAN");
+		expect(rendered).toContain("Cache review");
+		expect(rendered).toContain("Revision 2");
+		expect(rendered).toContain("Add Redis caching.");
+		expect(rendered).not.toContain("Implementation");
+		expect(rendered).not.toContain("Wrong later body");
+		expect(createPlanRenderers.renderShell).toBe("self");
+	});
+
+	it("renders the complete snapshot as a transcript plan preview", () => {
+		initTheme("dark");
+		const component = renderPlanPreview(
+			{
+				role: "custom",
+				customType: PLAN_PREVIEW_TYPE,
+				content: "ignored",
+				display: true,
+				details: snapshot,
+				timestamp: 0,
+			},
+			{ expanded: false, outputPad: 1 },
+			theme,
+		);
+		if (!component) throw new Error("Missing plan preview renderer");
+		for (const width of [20, 40, 80, 120]) {
+			expect(component.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
+		}
+		const document = stripAnsi(component.render(80).join("\n"));
+		expect(document).toContain("Cache review");
+		expect(document).toContain("Revision 2");
+		expect(document).toContain("Add Redis caching.");
+		expect(document).toContain("Implementation Tasks");
+		expect(document).toContain("Add the cache");
+	});
 
 	it("reports a missing final snapshot instead of displaying mutable arguments", () => {
 		initTheme("dark");
@@ -160,46 +185,46 @@ describe("Plan documents and mode presentation", () => {
 		}
 	});
 
-	it.each(["regular", "fullscreen"])(
-		"renders plan review and scrolls a long body with fixed actions in %s",
-		async (mode) => {
-			initTheme("dark");
-			const terminal = new VirtualTerminal(80, 24);
-			const tui = mode === "regular" ? new TuiMainScreen(terminal) : new TuiAltScreen(terminal);
-			const keybindings = new KeybindingsManager();
-			const ui = captureUi(tui, keybindings);
-			const long = {
-				...snapshot,
-				markdown: `# Long cache plan\n\n${Array.from({ length: 60 }, (_, i) => `Step ${i + 1}: verify caching behavior.`).join("\n\n")}`,
-			};
-			const review = showPlanApproval(ui.ctx, long);
-			const view = await ui.opened.promise;
-			tui.start();
-			try {
-				await terminal.waitForRender();
-				const first = terminal.getViewport().join("\n");
-				expect(first).toContain("PLAN");
-				expect(first).toContain("Implement");
-				expect(first).toContain("Exit Plan mode");
-				const before = stripAnsi(view.render(80).join("\n"));
-				view.handleInput?.("\x1b[6~");
-				await terminal.waitForRender();
-				const after = stripAnsi(view.render(80).join("\n"));
-				expect(after).not.toBe(before);
-				expect(after).toContain("Exit Plan mode");
-				for (const width of [20, 40, 80, 120]) {
-					expect(view.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
-				}
-				view.handleInput?.("\x1b[B");
-				view.handleInput?.("\x1b[B");
-				view.handleInput?.("\x1b[B");
-				view.handleInput?.("\r");
-				expect(await review).toBe("exit");
-			} finally {
-				tui.stop();
+	it.each(["regular", "fullscreen"])("renders a compact review panel without the plan body in %s", async (mode) => {
+		initTheme("dark");
+		const terminal = new VirtualTerminal(80, 24);
+		const tui = mode === "regular" ? new TuiMainScreen(terminal) : new TuiAltScreen(terminal);
+		const keybindings = new KeybindingsManager();
+		const ui = captureUi(tui, keybindings);
+		const long = {
+			...snapshot,
+			markdown: `# Long cache plan\n\n${Array.from({ length: 60 }, (_, i) => `Step ${i + 1}: verify caching behavior.`).join("\n\n")}`,
+		};
+		const review = showPlanApproval(ui.ctx, long);
+		const view = await ui.opened.promise;
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			const first = terminal.getViewport().join("\n");
+			expect(first).toContain("PLAN");
+			expect(first).toContain("Implement");
+			expect(first).toContain("Exit Plan mode");
+			const panel = stripAnsi(view.render(80).join("\n"));
+			expect(panel).toContain("Cache review");
+			expect(panel).toContain("Revision 2");
+			expect(panel).toContain("Switch to Agent and start coding");
+			expect(panel).toContain(PLAN_APPROVAL_TRANSCRIPT_HINT);
+			expect(panel).not.toContain("Step 1");
+			expect(view.render(80).length).toBeLessThan(12);
+			view.handleInput?.("\x1b[6~");
+			expect(stripAnsi(view.render(80).join("\n"))).toBe(panel);
+			for (const width of [20, 40, 80, 120]) {
+				expect(view.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
 			}
-		},
-	);
+			view.handleInput?.("\x1b[B");
+			view.handleInput?.("\x1b[B");
+			view.handleInput?.("\x1b[B");
+			view.handleInput?.("\r");
+			expect(await review).toBe("exit");
+		} finally {
+			tui.stop();
+		}
+	});
 
 	it("offers all four actions and supports dismissal without execution", async () => {
 		initTheme("light");

@@ -126,23 +126,31 @@ describe("modeReminder", () => {
 });
 
 describe("replayBranch with modes and plans", () => {
-	it("revokes plan todo continuation independently of preserving progress and the artifact", () => {
+	it("replays old plan-owned todos and execution lifecycle fields as ordinary state", () => {
 		const owner = { path: plan.path, revision: 1 };
 		const entries = [
 			toolResultEntry("1", "create_plan", { plan: { ...plan }, markdown: "# Add auth" }),
 			customEntry("2", "nek.todos", { todos: [todo], owner }),
-			customEntry("3", "nek.plan", { status: "ready", execution: { ...owner, status: "active" } }),
+			customEntry("3", "nek.plan", {
+				status: "ready",
+				active: plan.path,
+				execution: { ...owner, status: "active" },
+			}),
 			customEntry("4", "nek.plan", { status: "ready", execution: { ...owner, status: "interrupted" } }),
+			toolResultEntry("5", "todo_write", { todos: [todo, { ...todo, id: "b" }], owner }),
 		];
-		expect(todosAreActive(replayBranch(entries.slice(0, 3)))).toBe(true);
-		const stopped = replayBranch(entries);
-		expect(todosAreActive(stopped)).toBe(false);
-		expect(stopped.todos).toEqual([todo]);
-		expect(stopped.plans[0]?.markdown).toBe("# Add auth");
-		expect(todosAreActive(replayBranch([...entries, customEntry("5", "nek.todos", { todos: [todo] })]))).toBe(true);
+		const state = replayBranch(entries);
+		expect(state).toEqual({
+			mode: "agent",
+			todos: [todo, { ...todo, id: "b" }],
+			plans: [{ plan, markdown: "# Add auth" }],
+			activePlan: plan.path,
+			planStatus: "ready",
+		});
+		expect(todosAreActive(state)).toBe(true);
 	});
 
-	it("does not treat planning todos as approved execution after leaving Plan", () => {
+	it("keeps planning todos inactive after leaving Plan", () => {
 		const entries = [
 			customEntry("1", "nek.mode", { mode: "plan" }),
 			customEntry("2", "nek.todos", { todos: [todo], owner: "planning" }),
@@ -250,7 +258,7 @@ describe("plan store", () => {
 });
 
 describe("multiple saved plans", () => {
-	it("upserts by path and does not authorize execution for a different selection", () => {
+	it("upserts by path and keeps the selected plan", () => {
 		const other = { ...plan, name: "Cache", path: "/repo/.pi/plans/cache_def456.plan.md", revision: 1 };
 		const entries = [
 			toolResultEntry("1", "create_plan", { plan, markdown: "# Add auth" }),
@@ -270,7 +278,7 @@ describe("multiple saved plans", () => {
 		expect(state.plans).toHaveLength(2);
 		expect(findPlan(state, "add-auth_abc123")?.plan.revision).toBe(2);
 		expect(activePlan(state)?.plan.path).toBe(other.path);
-		expect(state.execution).toBeUndefined();
+		expect(state).not.toHaveProperty("execution");
 		expect(todosAreActive(state)).toBe(true);
 	});
 });

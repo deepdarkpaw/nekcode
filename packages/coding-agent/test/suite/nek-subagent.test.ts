@@ -150,6 +150,10 @@ describe("nek subagents", () => {
 		router.child.push(reply(fauxAssistantMessage("general done")));
 		await harness.session.prompt("delegate");
 
+		const identity = "You are working inside nekcode, a terminal coding agent.";
+		const childSystem = router.childRequests[0].find((message) => message.role === "system");
+		expect(JSON.stringify(childSystem)).toContain(identity);
+		expect(router.parentRequests[0]).toContain(identity);
 		const generalTools = requestToolNames(router.childRequests[0]);
 		expect(generalTools).toContain("edit");
 		expect(generalTools).toContain("todo_write");

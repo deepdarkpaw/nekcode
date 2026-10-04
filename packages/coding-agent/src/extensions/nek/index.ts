@@ -82,12 +82,7 @@ function registerTodos(pi: ExtensionAPI, nek: NekRuntime): void {
 	pi.registerTool(
 		createTodoWriteToolDefinition({
 			getTodos: () => (todosAreActive(nek.session) ? nek.session.todos : []),
-			getOwner: () =>
-				nek.session.mode === "plan"
-					? "planning"
-					: nek.session.execution?.status === "active"
-						? nek.session.todoOwner
-						: undefined,
+			getOwner: () => (nek.session.mode === "plan" ? "planning" : undefined),
 			setTodos: (todos, ctx, owner) => {
 				nek.session.todos = todos;
 				if (owner) nek.session.todoOwner = owner;
