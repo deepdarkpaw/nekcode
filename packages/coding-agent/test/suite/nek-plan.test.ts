@@ -459,33 +459,52 @@ describe("nek plan mode", () => {
 		expect(harness.session.pendingMessageCount).toBe(0);
 	});
 
-	it("publishes the immutable plan body before asking for approval and reopens it without a model call", async () => {
+	it("appends the reviewed plan to the transcript before approval and keeps previews out of model input", async () => {
 		const record = createRecord();
 		const harness = await createNekHarness(record);
+		const previews = () =>
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "nek.plan_preview",
+			);
 		record.onApproval = async () => {
 			const [saved] = toolResults(harness, "create_plan");
 			expect(JSON.stringify(saved.content)).toContain("# Add auth");
 			expect(saved.details).toMatchObject({ markdown: "# Add auth\n\n- Add the schema", plan: { revision: 1 } });
+			expect(previews()).toEqual([
+				expect.objectContaining({
+					display: true,
+					content: "# Add auth\n\n- Add the schema",
+					details: expect.objectContaining({ plan: expect.objectContaining({ revision: 1 }) }),
+				}),
+			]);
 			return undefined;
 		};
 		await harness.session.prompt("/plan");
 		harness.setResponses([createPlanCall({ name: "Add auth" })]);
 		await harness.session.prompt("design auth");
+		expect(record.approvalShown).toBe(1);
 		const savedPlan = currentPlan(harness);
 		if (!savedPlan) throw new Error("Expected saved plan");
 		record.selectResult = `${planId(savedPlan)} | ${savedPlan.name} | ${savedPlan.path} | revision ${savedPlan.revision} active`;
 		await harness.session.prompt("/plan");
 		expect(harness.faux.state.callCount).toBe(1);
 		expect(currentState(harness).mode).toBe("plan");
-		expect(
-			harness.session.messages.filter(
-				(message) => message.role === "custom" && message.customType === "nek.plan_preview",
-			),
-		).toHaveLength(0);
+		expect(previews()).toHaveLength(1);
 		await harness.session.prompt("/plans");
-		expect(harness.session.messages).toContainEqual(
-			expect.objectContaining({ role: "custom", customType: "nek.plan_preview" }),
-		);
+		expect(previews()).toHaveLength(2);
+
+		const userTexts: string[] = [];
+		harness.setResponses([
+			(context) => {
+				for (const message of context.messages) {
+					if (message.role === "user") userTexts.push(JSON.stringify(message.content));
+				}
+				return fauxAssistantMessage("ok");
+			},
+		]);
+		await harness.session.prompt("next question");
+		expect(userTexts.some((text) => text.includes("next question"))).toBe(true);
+		expect(userTexts.some((text) => text.includes("# Add auth"))).toBe(false);
 	});
 
 	it("re-evaluates the latest request and asks a new question before storing a revised plan", async () => {

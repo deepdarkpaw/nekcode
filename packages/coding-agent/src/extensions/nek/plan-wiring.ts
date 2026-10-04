@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type {
 	AgentSettledEvent,
@@ -69,6 +70,10 @@ export function registerPlanMode(pi: ExtensionAPI, nek: NekRuntime): void {
 	registerPlanTools(wiring);
 	registerPlanCommands(wiring);
 	pi.registerMessageRenderer(PLAN_PREVIEW_TYPE, renderPlanPreview);
+	pi.on("context", (event) => {
+		const messages = event.messages.filter((message) => !isPlanPreview(message));
+		return messages.length === event.messages.length ? undefined : { messages };
+	});
 	pi.on("session_start", (event, ctx) => onSessionStart(wiring, event, ctx));
 	pi.on("session_tree", (_event, ctx) => restoreMode(wiring, ctx));
 	pi.on("input", (event, ctx) => onPlanInput(wiring, event, ctx));
@@ -263,15 +268,19 @@ async function plansCommand(wiring: PlanWiring, ctx: ExtensionCommandContext): P
 	const selected = snapshots[labels.indexOf(selectedLabel ?? "")];
 	if (!selected) return;
 	activatePlan(wiring, ctx, selected);
+	showPlanPreview(wiring, selected);
+}
+
+/** Append a display-only copy of the snapshot to the transcript; the `context` handler keeps it out of model input. */
+function showPlanPreview(wiring: PlanWiring, snapshot: PlanData): void {
 	wiring.pi.sendMessage<PlanData>(
-		{
-			customType: PLAN_PREVIEW_TYPE,
-			content: selected.markdown,
-			display: true,
-			details: selected,
-		},
+		{ customType: PLAN_PREVIEW_TYPE, content: snapshot.markdown, display: true, details: snapshot },
 		{ triggerTurn: false },
 	);
+}
+
+function isPlanPreview(message: AgentMessage): boolean {
+	return message.role === "custom" && message.customType === PLAN_PREVIEW_TYPE;
 }
 
 function planLabel(wiring: PlanWiring, snapshot: PlanData): string {
@@ -313,6 +322,7 @@ async function offerPlanApproval(wiring: PlanWiring, ctx: ExtensionContext): Pro
 	)
 		return;
 	if (ctx.ui.getEditorText().trim() || ctx.hasPendingMessages()) return;
+	showPlanPreview(wiring, selected);
 	const epoch = wiring.epoch;
 	const choice = await showPlanApproval(ctx, selected);
 	if (

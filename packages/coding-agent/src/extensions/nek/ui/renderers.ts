@@ -8,7 +8,6 @@ import type { TSchema } from "typebox";
 import type { ToolDefinition, ToolRenderContext, ToolRenderResultOptions } from "../../../core/extensions/types.ts";
 import { getTextOutput } from "../../../core/tools/render-utils.ts";
 import { renderDiff } from "../../../modes/interactive/components/diff.ts";
-import { DynamicBorder } from "../../../modes/interactive/components/dynamic-border.ts";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
 import { getMarkdownTheme, type Theme } from "../../../modes/interactive/theme/theme.ts";
 import type { PlanData, TodoListData } from "../types.ts";
@@ -106,7 +105,7 @@ export function formatPlanDocument(snapshot: PlanData): string {
 }
 
 /** ` PLAN ` badge and the bold plan name with a muted revision. */
-function planHeading(name: string, revision: number, theme: Theme): string {
+export function planHeading(name: string, revision: number, theme: Theme): string {
 	return (
 		theme.style(" PLAN ", { fg: "borderAccent", bold: true, inverse: true }) +
 		` ${theme.style(name, { fg: "text", bold: true })}` +
@@ -114,7 +113,10 @@ function planHeading(name: string, revision: number, theme: Theme): string {
 	);
 }
 
-/** A plan is a document, not a collapsible tool log. All body sources belong to this historical call. */
+/**
+ * A saved plan row: the heading and the overview from the saved snapshot. The full document is appended to the
+ * transcript as a plan preview when the review opens, so it is not rendered a second time here.
+ */
 export const createPlanRenderers: CreatePlanRenderers = {
 	renderShell: "self",
 	renderCall(args: unknown, theme, context) {
@@ -139,12 +141,8 @@ export const createPlanRenderers: CreatePlanRenderers = {
 		}
 		const record = details.plan;
 		const view = new Container();
-		view.addChild(new DynamicBorder((text) => theme.fg("borderAccent", text)));
 		view.addChild(new LinesComponent([planHeading(record.name, record.revision, theme)]));
-		view.addChild(new LinesComponent([theme.fg("dim", record.path)]));
-		view.addChild(new Spacer(1));
-		view.addChild(new Markdown(formatPlanDocument(details), 1, 0, getMarkdownTheme()));
-		view.addChild(new DynamicBorder((text) => theme.fg("borderAccent", text)));
+		if (record.overview.trim()) view.addChild(new Text(theme.fg("muted", record.overview.trim()), 0, 0));
 		return view;
 	},
 };

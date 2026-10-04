@@ -4,9 +4,13 @@ import { rawKeyHint } from "../../../modes/interactive/components/keybinding-hin
 import { getMarkdownTheme } from "../../../modes/interactive/theme/theme.ts";
 import { activePlan } from "../state/session-state.ts";
 import type { NekSessionState, PlanData } from "../types.ts";
-import { formatPlanDocument } from "./renderers.ts";
+import { formatPlanDocument, planHeading } from "./renderers.ts";
 
-/** A saved revision can be reopened without executing or asking the model to regenerate it. */
+/**
+ * Display-only transcript copy of a saved revision, appended when a review opens and by `/plans`. It never reaches the
+ * model: plan-wiring drops it in the `context` handler, because the plan is already in context via the plan tool call
+ * or the approved-plan message.
+ */
 export const PLAN_PREVIEW_TYPE = "nek.plan_preview";
 
 /** Render the immutable preview as a document, not a collapsed generic tool result. */
@@ -14,13 +18,8 @@ export const renderPlanPreview: MessageRenderer<PlanData> = (message, options, t
 	const view = new Container();
 	const plan = message.details?.plan;
 	if (plan) {
-		view.addChild(
-			new Text(
-				theme.fg("muted", `${plan.name}  |  revision ${plan.revision}  |  ${plan.path}`),
-				options.outputPad,
-				0,
-			),
-		);
+		view.addChild(new Text(planHeading(plan.name, plan.revision, theme), options.outputPad, 0));
+		view.addChild(new Text(theme.fg("dim", plan.path), options.outputPad, 0));
 	}
 	const markdown = message.details
 		? formatPlanDocument(message.details)
