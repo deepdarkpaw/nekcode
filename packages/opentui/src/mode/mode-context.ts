@@ -92,11 +92,34 @@ export type StatusIndicatorSpec =
 	| { kind: "branchSummary" }
 	| { kind: "retry"; attempt: number; maxAttempts: number; delayMs: number };
 
+/**
+ * A hosted component with an explicit input target and cleanup, like the interactive mode's
+ * `showSelector` (`{ component, focus, dispose }`).
+ */
+export interface HostedComponent {
+	component: Component;
+	/** pi-tui component that receives keys (for example the settings list inside the settings selector). Default: `component`. */
+	focus?: Component;
+	/** Runs once when the overlay closes. When given, `component.dispose()` is not called automatically. */
+	dispose?: () => void;
+}
+
 /** Builds a pi-tui component for `showComponent`. Call `done` to close it with a result. */
-export type ComponentFactory<T> = (done: (result: T | undefined) => void, tui: FacadeTui) => Component;
+export type ComponentFactory<T> = (
+	done: (result: T | undefined) => void,
+	tui: FacadeTui,
+) => Component | HostedComponent;
+
+/** Whether a factory result is a `HostedComponent` rather than a bare component. */
+export function isHostedComponent(value: Component | HostedComponent): value is HostedComponent {
+	return typeof (value as Partial<Component>).render !== "function";
+}
 
 export interface ShowComponentOptions {
-	/** Wrap the component in a rounded raised panel with this title. Without it the component draws its own frame. */
+	/**
+	 * Show the component in a `DialogFrame` with this title. Without it the component sits in a
+	 * plain rounded raised panel, and its own leading/trailing `─` rule lines are hidden.
+	 */
 	title?: string;
 	layout?: OverlayLayout;
 	/** Resolve `undefined` and close when aborted. */

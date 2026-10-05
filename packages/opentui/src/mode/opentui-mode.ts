@@ -142,7 +142,7 @@ import {
 	TruncatedText,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { CliRenderEvents, type CliRenderer, type KeyEvent, MouseButton } from "@opentui/core";
+import { BoxRenderable, CliRenderEvents, type CliRenderer, type KeyEvent, MouseButton } from "@opentui/core";
 import { ComponentHostRenderable } from "../bridge/component-host.ts";
 import { FacadeTui } from "../bridge/facade-tui.ts";
 import { RawInputRouter } from "../bridge/input.ts";
@@ -162,15 +162,16 @@ import { openDialog, showConfirmDialog, showEditorDialog, showInputDialog, showS
 import { OverlayStack } from "../ui/overlay-stack.ts";
 import { ExpandableText, isExpandable } from "./expandable-text.ts";
 import { renderLoadedResources } from "./loaded-resources.ts";
-import type {
-	ComponentFactory,
-	DialogApi,
-	EditorApi,
-	ModeContext,
-	ShowComponentOptions,
-	StatusIndicatorKind,
-	StatusIndicatorSpec,
-	ThemeApi,
+import {
+	type ComponentFactory,
+	type DialogApi,
+	type EditorApi,
+	isHostedComponent,
+	type ModeContext,
+	type ShowComponentOptions,
+	type StatusIndicatorKind,
+	type StatusIndicatorSpec,
+	type ThemeApi,
 } from "./mode-context.ts";
 import { PiOverlayRegistry } from "./pi-overlays.ts";
 import type { RendererHost } from "./renderer-host.ts";
@@ -2321,12 +2322,38 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		return openDialog<T>(
 			this,
 			(controller) => {
-				const component: Component = factory((result) => controller.resolve(result), this.tui);
-				const host = new ComponentHostRenderable(this.renderer, { component, tui: this.tui, focusable: true });
-				if (!options?.title) return { root: host, focusTarget: host, layout: options?.layout };
-				const frame = new DialogFrame(this, { title: options.title });
-				frame.add(host);
-				return { root: frame.root, focusTarget: host, layout: options.layout };
+				const created = factory((result) => controller.resolve(result), this.tui);
+				const hosted = isHostedComponent(created) ? created : { component: created };
+				const focus = hosted.focus ?? hosted.component;
+				const host = new ComponentHostRenderable(this.renderer, {
+					component: hosted.component,
+					tui: this.tui,
+					focusable: true,
+					syncFocus: () => focus,
+					// With an explicit dispose (old `showSelector` contract) only that runs.
+					disposeComponent: hosted.dispose === undefined,
+					trimRules: !options?.title,
+				});
+				const dispose = hosted.dispose;
+				if (options?.title) {
+					const frame = new DialogFrame(this, { title: options.title });
+					frame.add(host);
+					return { root: frame.root, focusTarget: host, layout: options.layout, dispose };
+				}
+				// Opaque rounded panel: transparent cells would let the transcript show through.
+				const theme = this.uiTheme();
+				const panel = new BoxRenderable(this.renderer, {
+					flexDirection: "column",
+					border: true,
+					borderStyle: "rounded",
+					borderColor: theme.borderMuted,
+					backgroundColor: theme.raised,
+					paddingX: 1,
+					flexShrink: 1,
+					overflow: "hidden",
+				});
+				panel.add(host);
+				return { root: panel, focusTarget: host, layout: options?.layout, dispose };
 			},
 			{ signal: options?.signal },
 		);

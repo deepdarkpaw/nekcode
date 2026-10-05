@@ -210,9 +210,10 @@ export const settingsSelector = defineSelector<void, void>({
 			},
 			onCancel: () => {},
 		};
-		return openHosted<void>(
-			ctx,
-			(done, _tui) => new SettingsSelectorComponent(config, { ...callbacks, onCancel: () => done(undefined) }),
-		);
+		return openHosted<void>(ctx, (done, _tui) => {
+			const selector = new SettingsSelectorComponent(config, { ...callbacks, onCancel: () => done(undefined) });
+			// Keys go to the settings list (search, navigation, Esc), as in the interactive mode.
+			return { component: selector, focus: selector.getSettingsList() };
+		});
 	},
 });

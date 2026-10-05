@@ -21,7 +21,7 @@ export const modelSelector = defineSelector<{ search?: string }, Model<Api>>({
 		return openHosted<Model<Api>>(ctx, (done, tui) => {
 			const defaultProvider = ctx.settingsManager.getDefaultProvider();
 			const defaultModel = ctx.settingsManager.getDefaultModel();
-			return new ModelSelectorComponent(
+			const selector = new ModelSelectorComponent(
 				tui,
 				ctx.session.model,
 				ctx.session.modelRuntime,
@@ -37,6 +37,7 @@ export const modelSelector = defineSelector<{ search?: string }, Model<Api>>({
 				},
 				defaultProvider && defaultModel ? { provider: defaultProvider, id: defaultModel } : undefined,
 			);
+			return { component: selector, dispose: () => selector.dispose() };
 		});
 	},
 });

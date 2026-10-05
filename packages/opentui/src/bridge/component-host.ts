@@ -18,7 +18,7 @@ import {
 	type RGBA,
 	TextRenderable,
 } from "@opentui/core";
-import { ansiLinesToStyledText, type LineHighlights, parseAnsiLines } from "./ansi.ts";
+import { ansiLinesToStyledText, type LineHighlights, parseAnsiLine, parseAnsiLines } from "./ansi.ts";
 import type { FacadeTui } from "./facade-tui.ts";
 import { keyToSequence, pasteToSequence } from "./input.ts";
 
@@ -43,6 +43,30 @@ export interface ComponentHostOptions extends Omit<RenderableOptions<ComponentHo
 	 * (the editor slot) whose focus target is a component inside them.
 	 */
 	syncFocus?: boolean | (() => Component | null);
+	/**
+	 * Hide leading and trailing full-width `─` rule lines. pi-tui selectors frame themselves with
+	 * such rules; inside a rounded panel the panel border replaces them.
+	 */
+	trimRules?: boolean;
+}
+
+const RULE_LINE = /^─+$/;
+
+function isRuleLine(line: string): boolean {
+	const text = parseAnsiLine(line)
+		.segments.map((segment) => segment.text)
+		.join("")
+		.trim();
+	return RULE_LINE.test(text);
+}
+
+/** `lines` without leading and trailing rule lines (see `ComponentHostOptions.trimRules`). */
+export function trimRuleLines(lines: readonly string[]): string[] {
+	let start = 0;
+	let end = lines.length;
+	while (start < end && isRuleLine(lines[start] ?? "")) start++;
+	while (end > start && isRuleLine(lines[end - 1] ?? "")) end--;
+	return lines.slice(start, end);
 }
 
 export class ComponentHostRenderable extends Renderable {
@@ -51,6 +75,7 @@ export class ComponentHostRenderable extends Renderable {
 	private readonly text: TextRenderable;
 	private readonly disposeComponent: boolean;
 	private readonly focusTarget: (() => Component | null) | undefined;
+	private readonly trimRules: boolean;
 	private renderedWidth = -1;
 	private renderedGeneration = -1;
 	private seenInvalidation: number;
@@ -72,6 +97,7 @@ export class ComponentHostRenderable extends Renderable {
 			disposeComponent,
 			selectable,
 			syncFocus,
+			trimRules,
 			...renderableOptions
 		}: ComponentHostOptions = options;
 		super(ctx, {
@@ -84,6 +110,7 @@ export class ComponentHostRenderable extends Renderable {
 		this.component = component;
 		this.tui = tui;
 		this.disposeComponent = disposeComponent ?? true;
+		this.trimRules = trimRules ?? false;
 		this.focusTarget =
 			typeof syncFocus === "function" ? syncFocus : syncFocus === false ? undefined : () => component;
 		this.seenInvalidation = tui.invalidationGeneration;
@@ -153,8 +180,9 @@ export class ComponentHostRenderable extends Renderable {
 		if (key === this.renderedKey) return;
 		this.renderedKey = key;
 		this.contentVersion++;
-		this.cursorPosition = parseAnsiLines(lines).cursor;
-		this.text.content = ansiLinesToStyledText(lines, this.highlights);
+		const shown = this.trimRules ? trimRuleLines(lines) : lines;
+		this.cursorPosition = parseAnsiLines(shown).cursor;
+		this.text.content = ansiLinesToStyledText(shown, this.highlights);
 	}
 
 	/** Drop cached output: the component re-renders on the next frame. */
