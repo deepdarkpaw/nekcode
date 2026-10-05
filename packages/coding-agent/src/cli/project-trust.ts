@@ -2,14 +2,17 @@ import chalk from "chalk";
 import type { ProjectTrustContext } from "../core/extensions/types.ts";
 import type { AppMode } from "../core/project-trust.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
-import { showStartupInput, showStartupSelector } from "./startup-ui.ts";
+import { defaultStartupUiHooks, type StartupUiHooks } from "./startup-ui-hooks.ts";
 
 export function createProjectTrustContext(options: {
 	cwd: string;
 	mode: AppMode;
 	settingsManager: SettingsManager;
 	hasUI: boolean;
+	/** Prompt implementations. Defaults to the pi-tui startup prompts. */
+	startupUi?: Pick<StartupUiHooks, "select" | "input">;
 }): ProjectTrustContext {
+	const startupUi = options.startupUi ?? defaultStartupUiHooks;
 	return {
 		cwd: options.cwd,
 		mode: options.mode === "interactive" ? "tui" : options.mode,
@@ -22,7 +25,7 @@ export function createProjectTrustContext(options: {
 				if (options.mode !== "interactive") {
 					return undefined;
 				}
-				return showStartupSelector(
+				return startupUi.select(
 					options.settingsManager,
 					title,
 					selectOptions.map((option) => ({ label: option, value: option })),
@@ -36,7 +39,7 @@ export function createProjectTrustContext(options: {
 					return false;
 				}
 				return (
-					(await showStartupSelector(options.settingsManager, `${title}\n${message}`, [
+					(await startupUi.select(options.settingsManager, `${title}\n${message}`, [
 						{ label: "Yes", value: true },
 						{ label: "No", value: false },
 					])) ?? false
@@ -49,7 +52,7 @@ export function createProjectTrustContext(options: {
 				if (options.mode !== "interactive") {
 					return undefined;
 				}
-				return showStartupInput(options.settingsManager, title, placeholder);
+				return startupUi.input(options.settingsManager, title, placeholder);
 			},
 			notify: (message, type = "info") => {
 				if (options.mode !== "interactive") {

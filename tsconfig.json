@@ -81,6 +81,7 @@
 				"./packages/coding-agent/src/core/hooks/index.ts"
 			],
 			"@earendil-works/pi-coding-agent/*": [
+				"./packages/coding-agent/src/*.ts",
 				"./packages/coding-agent/src/*"
 			],
 			"@earendil-works/pi-server": [
@@ -99,6 +100,7 @@
 				"./packages/tui/src/index.ts"
 			],
 			"@earendil-works/pi-tui/*": [
+				"./packages/tui/src/*.ts",
 				"./packages/tui/src/*"
 			],
 			"@earendil-works/pi-agent-old": [
@@ -121,6 +123,7 @@
 	],
 	"exclude": [
 		"**/dist/**",
-		"packages/coding-agent/examples/extensions/gondolin/**"
+		"packages/coding-agent/examples/extensions/gondolin/**",
+		"packages/opentui/test/native/**"
 	]
 }
