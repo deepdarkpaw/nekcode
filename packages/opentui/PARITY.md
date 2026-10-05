@@ -122,7 +122,7 @@ Source abbreviations (coding-agent paths are relative to `packages/coding-agent/
 | [ ] | Terminal progress (OSC 9;4) per `showTerminalProgress` | `im:3212`, `im:3434` | native | open: M: progress in Windows Terminal (written to stdout, see docs) |
 | [ ] | Theme hot reload (`onThemeChange`), terminal color queries, auto light/dark | `im:1025`, `theme/theme-controller.ts` | native | open: `T:setTheme switches the theme and the shell shades`; terminal background queries are not forwarded (documented) |
 | [x] | Runtime settings re-apply (`applyRuntimeSettings`) | `im:1916` | native | `T:runtime settings re-apply editor padding` |
-| [x] | `/reload` progress box and rebind (mode side: `ModeContext.reload`) | `im:6037` | native | `T:/reload reloads resources and gives the editor back` |
+| [x] | `/reload` progress box and rebind (mode side: `ModeContext.reload`) | `im:6037` | native | `T:reload resets extension UI, rebinds, and reports` |
 | [ ] | Anthropic subscription auth warning | `im:4968` | native | open: ported (`maybeWarnAboutAnthropicSubscriptionAuth`); needs Anthropic auth to test |
 | [ ] | tmux keyboard setup warning | `im:1158` | native | open: startup flow (`commands`, `src/startup`); M: tmux without extended-keys |
 | [x] | Debug log (`ModeContext.writeDebugLog`) | `im:6524` | native | `T:debug log writes the rendered lines` |
@@ -200,7 +200,7 @@ Source abbreviations (coding-agent paths are relative to `packages/coding-agent/
 | [x] | `/logout` | `im:5686` | commands | `T:/login <provider> runs the API key flow; /logout removes the stored key` |
 | [x] | `/new` | `im:6509` | commands | `T:/new starts an empty session` |
 | [x] | `/compact [instructions]` | `im:6674` | commands | `T:/compact runs session compaction and reports its result` |
-| [ ] | `/reload` | `im:6037` | commands | T:/reload |
+| [x] | `/reload` | `im:6037` | commands | `T:/reload reloads resources and gives the editor back` |
 | [x] | `/debug` (hidden) | `im:6524` | commands | `T:/debug writes the debug log` |
 | [x] | `/resume` (`app.session.*` keys) | `im:5416`, `c/session-selector.ts` | commands | `T:/resume switches to a stored session`; H:live |
 | [x] | `/quit` | `im:3127` | commands | `T:/quit shuts down` |
