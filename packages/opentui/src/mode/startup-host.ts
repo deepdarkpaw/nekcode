@@ -3,9 +3,10 @@
  * trust prompts) a UI environment before `OpenTuiMode` exists.
  */
 
+import { KeybindingsManager } from "@earendil-works/pi-coding-agent/core/keybindings";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent/core/settings-manager";
 import { initTheme, theme } from "@earendil-works/pi-coding-agent/modes/interactive/theme/theme";
-import { getKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
 import { BoxRenderable } from "@opentui/core";
 import type { StartupHost } from "../startup/types.ts";
 import { createUiTheme } from "../theme/ui-theme.ts";
@@ -19,6 +20,8 @@ export function createStartupHost(rendererHost: RendererHost): StartupHost {
 		async environment(settingsManager: SettingsManager): Promise<UiEnvironment> {
 			if (environment && environment.renderer === rendererHost.current) return environment;
 			initTheme(settingsManager.getTheme(), false);
+			// App keybindings (session selector sort/rename/delete hints), as the built-in startup TUI does.
+			setKeybindings(KeybindingsManager.create());
 			rendererHost.setTuiMode(settingsManager.getTuiMode());
 			const renderer = await rendererHost.get();
 			// Regular mode: startup prompts get the whole screen; the mode sizes the footer afterwards.
