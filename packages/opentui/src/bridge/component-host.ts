@@ -52,20 +52,34 @@ export interface ComponentHostOptions extends Omit<RenderableOptions<ComponentHo
 
 const RULE_LINE = /^─+$/;
 
-function isRuleLine(line: string): boolean {
-	const text = parseAnsiLine(line)
+function plainText(line: string): string {
+	return parseAnsiLine(line)
 		.segments.map((segment) => segment.text)
 		.join("")
 		.trim();
-	return RULE_LINE.test(text);
 }
 
-/** `lines` without leading and trailing rule lines (see `ComponentHostOptions.trimRules`). */
+/**
+ * `lines` without the outer rule lines (see `ComponentHostOptions.trimRules`): leading rules and
+ * the blank lines before them, and trailing rules and the blank lines after them. Blank lines
+ * between a rule and the content stay (they are the component's own padding).
+ */
 export function trimRuleLines(lines: readonly string[]): string[] {
+	const text = lines.map(plainText);
 	let start = 0;
 	let end = lines.length;
-	while (start < end && isRuleLine(lines[start] ?? "")) start++;
-	while (end > start && isRuleLine(lines[end - 1] ?? "")) end--;
+	let next = start;
+	while (next < end && text[next] === "") next++;
+	if (next < end && RULE_LINE.test(text[next] ?? "")) {
+		start = next;
+		while (start < end && RULE_LINE.test(text[start] ?? "")) start++;
+	}
+	let previous = end;
+	while (previous > start && text[previous - 1] === "") previous--;
+	if (previous > start && RULE_LINE.test(text[previous - 1] ?? "")) {
+		end = previous;
+		while (end > start && RULE_LINE.test(text[end - 1] ?? "")) end--;
+	}
 	return lines.slice(start, end);
 }
 

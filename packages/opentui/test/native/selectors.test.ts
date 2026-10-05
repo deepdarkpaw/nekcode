@@ -148,5 +148,8 @@ describe("hosted selectors", () => {
 		const rule = "\x1b[38;5;240m────────\x1b[39m";
 		expect(trimRuleLines([rule, "", "body ─", rule, rule])).toEqual(["", "body ─"]);
 		expect(trimRuleLines(["body"])).toEqual(["body"]);
+		// Blank lines outside the outer rules go too; blank padding inside them stays.
+		expect(trimRuleLines(["", rule, "", "body", "", rule, ""])).toEqual(["", "body", ""]);
+		expect(trimRuleLines(["", "body", ""])).toEqual(["", "body", ""]);
 	});
 });
