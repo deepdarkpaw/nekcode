@@ -123,8 +123,9 @@ export class TranscriptView implements TranscriptApi {
 		const children = this.chat.children;
 		const last = children[children.length - 1];
 		const secondLast = children[children.length - 2];
-		if (this.chat.last === last && last === this.lastStatusText && secondLast === this.lastStatusSpacer) {
-			this.lastStatusText.setText(theme.fg("dim", message));
+		const statusText = this.lastStatusText;
+		if (statusText && this.chat.last === last && last === statusText && secondLast === this.lastStatusSpacer) {
+			statusText.setText(theme.fg("dim", message));
 			this.options.tui.requestRender();
 			return;
 		}

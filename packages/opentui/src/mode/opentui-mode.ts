@@ -954,7 +954,6 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 			hint("app.message.followUp", "to queue follow-up"),
 			hint("app.message.dequeue", "to edit all queued messages"),
 			hint("app.clipboard.pasteImage", "to paste image (with text fallback)"),
-			keyHint("tui.altScreen.search", "to search the transcript"),
 			rawKeyHint("drop files", "to attach"),
 		].join("\n");
 		const compactInstructions = [
