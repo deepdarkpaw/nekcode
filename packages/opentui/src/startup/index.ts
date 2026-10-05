@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent/config";
 import { takeUnnotifiedCrash } from "@earendil-works/pi-coding-agent/core/crash-log";
 import type { SessionListProgress } from "@earendil-works/pi-coding-agent/core/session-manager";
@@ -34,6 +35,37 @@ function startupFacade(env: UiEnvironment): FacadeTui {
 	});
 	tui.start();
 	return tui;
+}
+
+async function tmuxKeyboardWarning(): Promise<string | undefined> {
+	if (!process.env.TMUX) return undefined;
+	const query = (option: string): Promise<string | undefined> =>
+		new Promise((resolve) => {
+			const processHandle = spawn("tmux", ["show", "-gv", option], { stdio: ["ignore", "pipe", "ignore"] });
+			let output = "";
+			const timer = setTimeout(() => {
+				processHandle.kill();
+				resolve(undefined);
+			}, 2_000);
+			processHandle.stdout?.on("data", (data: Buffer) => {
+				output += data.toString();
+			});
+			processHandle.once("error", () => {
+				clearTimeout(timer);
+				resolve(undefined);
+			});
+			processHandle.once("close", (code) => {
+				clearTimeout(timer);
+				resolve(code === 0 ? output.trim() : undefined);
+			});
+		});
+	const [extendedKeys, format] = await Promise.all([query("extended-keys"), query("extended-keys-format")]);
+	if (extendedKeys === undefined) return undefined;
+	if (extendedKeys !== "on" && extendedKeys !== "always")
+		return "tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.";
+	if (format === "xterm")
+		return "tmux extended-keys-format is xterm. nek works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
+	return undefined;
 }
 
 function hostStartupComponent<T>(
@@ -157,6 +189,14 @@ export const MODE_STARTUP_FLOWS: readonly ModeStartupFlow[] = [
 		},
 	},
 	{ id: "model-auth-warning", phase: "run", run: (ctx) => ctx.maybeWarnAboutAnthropicSubscriptionAuth() },
+	{
+		id: "tmux-keyboard-check",
+		phase: "run",
+		run: async (ctx) => {
+			const warning = await tmuxKeyboardWarning();
+			if (warning) ctx.showWarning(warning);
+		},
+	},
 	{
 		id: "model-catalog-refresh",
 		phase: "run",
