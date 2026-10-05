@@ -1,15 +1,19 @@
-/**
- * `/new`: Start a new session.
- *
- * Stub: replace `run` (and add `getArgumentCompletions` where the interactive mode has them).
- */
-
 import type { CommandDefinition } from "./registry.ts";
-import { reportNotImplemented } from "./stub.ts";
 
 export const newCommand: CommandDefinition = {
 	name: "new",
 	acceptsArgs: false,
 	clearEditor: "before",
-	run: (ctx) => reportNotImplemented(ctx, "new"),
+	run: async (ctx) => {
+		try {
+			const result = await ctx.runtimeHost.newSession();
+			if (result.cancelled) return;
+			ctx.transcript.clear();
+			ctx.transcript.rebuildFromSession();
+			ctx.editor.setText("");
+			ctx.showStatus("New session started");
+		} catch (error) {
+			await ctx.handleFatalRuntimeError("Failed to create session", error);
+		}
+	},
 };

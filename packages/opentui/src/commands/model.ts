@@ -1,15 +1,22 @@
-/**
- * `/model`: Select a model; `/model <search>` switches directly on a unique match.
- *
- * Stub: replace `run` (and add `getArgumentCompletions` where the interactive mode has them).
- */
-
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { modelArgumentCompletions, modelSelector } from "../selectors/model.ts";
 import type { CommandDefinition } from "./registry.ts";
-import { reportNotImplemented } from "./stub.ts";
 
 export const modelCommand: CommandDefinition = {
 	name: "model",
 	acceptsArgs: true,
 	clearEditor: "before",
-	run: (ctx) => reportNotImplemented(ctx, "model"),
+	getArgumentCompletions: (ctx, prefix): AutocompleteItem[] | null => modelArgumentCompletions(ctx, prefix),
+	run: async (ctx, invocation) => {
+		const model = await modelSelector.open(ctx, { search: invocation.args });
+		if (!model) return;
+		try {
+			await ctx.session.setModel(model, { persist: false });
+			ctx.refreshChrome();
+			ctx.showStatus(`Model: ${model.id}`);
+			void ctx.maybeWarnAboutAnthropicSubscriptionAuth(model);
+		} catch (error) {
+			ctx.showError(error instanceof Error ? error.message : String(error));
+		}
+	},
 };
