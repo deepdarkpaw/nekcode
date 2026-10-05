@@ -167,12 +167,12 @@ Source abbreviations (coding-agent paths are relative to `packages/coding-agent/
 | [ ] | Extension shortcuts (`registerShortcut`) with conflict handling | `im:2049` | native | open: `T:extension shortcuts run their handlers`; conflict handling not tested |
 | [x] | `resetExtensionUI` on session invalidate/reload | `im:2267` | native | `T:reload resets extension UI, rebinds, and reports` |
 | [ ] | Command context actions: newSession, fork, navigateTree, switchSession, reload, waitForIdle | `im:1843-1891` | native | open: `T:command context actions: newSession and waitForIdle`; fork, navigateTree, switchSession, reload not tested |
-| [ ] | nek: plan approval (`custom`, `select`) | `extensions/nek/ui/plan-approval.ts:52` | native | M: /plan then approve |
+| [x] | nek: plan approval (`custom`, `select`) | `extensions/nek/ui/plan-approval.ts:52` | native | H:mgr-nek (live `create_plan`: plan preview in transcript, approval panel Implement/Fresh context/Keep planning/Exit; screen identical to the built-in TUI run H:mgr-old-plan) |
 | [x] | nek: question dialog (`custom`, `select`, `input`, `confirm`) | `extensions/nek/ui/question-dialog.ts:55` | native | H:live (`ask_question` dialog in the editor slot, answer `choice: A`) |
-| [ ] | nek: plan view and todo widgets (`setWidget`) | `extensions/nek/ui/plan-view.ts:41`, `todo-widget.ts:51` | native | open: todo panel verified in H:live (`Todos 0/2 ▶ Check docs`); plan view not exercised |
-| [ ] | nek: subagent view (`select`, `custom`) | `extensions/nek/ui/subagent-view.ts:369` | native | M: /subagents |
-| [ ] | nek: mode status (`setStatus`) | `extensions/nek/plan-wiring.ts:201` | native | M: footer shows plan |
-| [ ] | MCP: `/mcp` panel (`custom`), auth prompts (`select`, `input`) | `extensions/mcp/ui.ts:241`, `extensions/mcp/index.ts:879` | native | M: /mcp |
+| [x] | nek: plan view and todo widgets (`setWidget`) | `extensions/nek/ui/plan-view.ts:41`, `todo-widget.ts:51` | native | H:live (`Todos 0/2 ▶ Check docs`); H:mgr-nek (plan status widget `Ready for review  Print hello / r1`, `/plans` selector) |
+| [ ] | nek: subagent view (`select`, `custom`) | `extensions/nek/ui/subagent-view.ts:369` | native | open: H:mgr-nek `/agents` lists agent types; the `/subagents` view with live subagent records not exercised |
+| [x] | nek: mode status (`setStatus`) | `extensions/nek/plan-wiring.ts:201` | native | H:mgr-nek (`/plan`: `Drafting plan  alt+m switch mode  /agent exit`, `PLAN` in the editor border) |
+| [ ] | MCP: `/mcp` panel (`custom`), auth prompts (`select`, `input`) | `extensions/mcp/ui.ts:241`, `extensions/mcp/index.ts:879` | native | open: H:mgr-nek `/mcp` panel opens and closes with escape (no servers configured); server list and auth prompts need a configured server |
 | [x] | Easter egg components (Armin, Daxnuts, Earendil announcement) render via bridge | `c/armin.ts`, `c/daxnuts.ts` | commands | `T:/arminsayshi and /dementedelves render their components` |
 
 ## 6. Slash commands (phase 1-6, parallel)
