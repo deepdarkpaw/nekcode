@@ -1,4 +1,5 @@
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
+import { defaultModelPerProvider } from "@earendil-works/pi-coding-agent/core/model-resolver";
 import { openBrowser } from "@earendil-works/pi-coding-agent/utils/open-browser";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
@@ -108,6 +109,14 @@ export const loginCommand: CommandDefinition = {
 			});
 			ctx.showStatus(`${selected.authType === "oauth" ? "Logged in to" : "Saved API key for"} ${selected.name}`);
 			await ctx.session.modelRuntime.refresh({ providers: [selected.id], signal: AbortSignal.timeout(15_000) });
+			const defaultId = defaultModelPerProvider[selected.id as keyof typeof defaultModelPerProvider];
+			const current = ctx.session.model;
+			if ((!current || current.provider === "unknown") && defaultId) {
+				const defaultModel = ctx.session.modelRuntime
+					.getAvailableSnapshot()
+					.find((model) => model.provider === selected.id && model.id === defaultId);
+				if (defaultModel) await ctx.session.setModel(defaultModel, { persist: true });
+			}
 			ctx.refreshChrome();
 		} catch (error) {
 			if (controller.signal.aborted || (error instanceof Error && error.message === "Login cancelled")) return;
