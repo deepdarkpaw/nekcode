@@ -129,6 +129,11 @@ export class PiOverlayRegistry {
 		this.open[this.open.length - 1]?.hide();
 	}
 
+	/** Open pi-tui overlays, hidden ones included. */
+	get size(): number {
+		return this.open.length;
+	}
+
 	hasVisible(): boolean {
 		return this.open.some((handle) => !handle.isHidden());
 	}

@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent/core/agent-session-runtime";
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent/core/extensions/types";
 import { SessionManager } from "@earendil-works/pi-coding-agent/core/session-manager";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TuiMode } from "@earendil-works/pi-tui";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { OpenTuiMode } from "../../src/mode/opentui-mode.ts";
 import { RendererHost } from "../../src/mode/renderer-host.ts";
@@ -36,6 +36,9 @@ export interface FixtureOptions {
 	seed?: (sessionManager: SessionManager) => void;
 	/** Extra extension setup (shortcuts, commands). */
 	extension?: (pi: ExtensionAPI) => void;
+	/** `regular` runs the mode on a split-footer renderer (scrollback commits in `setup.externalOutput`). */
+	tuiMode?: TuiMode;
+	width?: number;
 }
 
 export async function createFixture(options: FixtureOptions = {}): Promise<ModeFixture> {
@@ -85,11 +88,20 @@ export async function createFixture(options: FixtureOptions = {}): Promise<ModeF
 	let setup: TestRendererSetup | undefined;
 	const rendererHost = new RendererHost({
 		create: async () => {
-			setup = await createTestRenderer({ width: 80, height: options.height ?? 24, exitOnCtrlC: false });
+			setup = await createTestRenderer({
+				width: options.width ?? 80,
+				height: options.height ?? 24,
+				exitOnCtrlC: false,
+				...(options.tuiMode === "regular"
+					? { screenMode: "split-footer", externalOutputMode: "capture-stdout", footerHeight: 12 }
+					: {}),
+			});
+			// Split-footer scrollback replays need a set-up terminal (the test renderer skips it).
+			if (options.tuiMode === "regular") await setup.renderer.setupTerminal();
 			return setup.renderer;
 		},
 	});
-	const mode = new OpenTuiMode(runtime, {}, rendererHost);
+	const mode = new OpenTuiMode(runtime, options.tuiMode ? { tuiMode: options.tuiMode } : {}, rendererHost);
 	await mode.init();
 	if (!setup) throw new Error("renderer was not created");
 	const testSetup = setup;

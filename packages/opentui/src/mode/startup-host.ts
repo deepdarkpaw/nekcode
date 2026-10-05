@@ -19,7 +19,10 @@ export function createStartupHost(rendererHost: RendererHost): StartupHost {
 		async environment(settingsManager: SettingsManager): Promise<UiEnvironment> {
 			if (environment && environment.renderer === rendererHost.current) return environment;
 			initTheme(settingsManager.getTheme(), false);
+			rendererHost.setTuiMode(settingsManager.getTuiMode());
 			const renderer = await rendererHost.get();
+			// Regular mode: startup prompts get the whole screen; the mode sizes the footer afterwards.
+			if (renderer.screenMode === "split-footer") renderer.footerHeight = Math.max(1, renderer.terminalHeight);
 			const layer = new BoxRenderable(renderer, {
 				id: "startup-overlays",
 				position: "absolute",

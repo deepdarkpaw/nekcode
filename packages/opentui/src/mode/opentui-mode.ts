@@ -140,6 +140,7 @@ import {
 	setKeybindings,
 	Text,
 	TruncatedText,
+	type TuiMode,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { BoxRenderable, CliRenderEvents, type CliRenderer, type KeyEvent, MouseButton } from "@opentui/core";
@@ -174,6 +175,7 @@ import {
 	type ThemeApi,
 } from "./mode-context.ts";
 import { PiOverlayRegistry } from "./pi-overlays.ts";
+import { RegularScreen } from "./regular-screen.ts";
 import type { RendererHost } from "./renderer-host.ts";
 import { Shell } from "./shell.ts";
 import { TranscriptView } from "./transcript.ts";
@@ -273,6 +275,8 @@ interface ModeUi {
 	/** Pending, status, widget, editor, and footer region hosts (debug output). */
 	readonly regionHosts: readonly ComponentHostRenderable[];
 	readonly inputRouter: RawInputRouter;
+	/** Scrollback commits and footer sizing in regular mode. */
+	readonly regular: RegularScreen;
 }
 
 export class OpenTuiMode implements InteractiveModeLike, ModeContext {
@@ -287,6 +291,9 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 	private readonly themeController: InteractiveThemeController;
 	private ui: ModeUi | undefined;
 	private currentUiTheme: UiTheme;
+	private tuiMode: TuiMode;
+	/** Startup header and loaded resources are final (regular mode commits them to scrollback). */
+	private transcriptReady = false;
 
 	// pi-tui containers, mounted into the shell regions during `init()`.
 	private readonly pendingMessagesContainer = new Container();
@@ -361,6 +368,8 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		this.options = options;
 		this.rendererHost = rendererHost;
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
+		this.tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
+		rendererHost.setTuiMode(this.tuiMode);
 		setCapabilityOverrides(this.settingsManager.getTerminalCapabilityOverrides());
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
@@ -560,7 +569,29 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 			uiTheme: () => this.currentUiTheme,
 		});
 		const inputRouter = new RawInputRouter(renderer);
-		this.ui = { renderer, shell, overlays, transcript, viewport, piOverlays, editorHost, regionHosts, inputRouter };
+		const regular = new RegularScreen({
+			renderer,
+			shell,
+			transcript,
+			overlays,
+			tui: this.tui,
+			isLive: (component) => this.isLiveTranscriptComponent(component),
+		});
+		// OpenTUI registers lifecycle passes when a renderable is added; the shell root already is.
+		shell.root.onLifecyclePass = () => regular.onFrame();
+		renderer.registerLifecyclePass(shell.root);
+		this.ui = {
+			renderer,
+			shell,
+			overlays,
+			transcript,
+			viewport,
+			piOverlays,
+			editorHost,
+			regionHosts,
+			inputRouter,
+			regular,
+		};
 
 		this.tui.bind({
 			onRenderRequest: () => renderer.requestRender(),
@@ -583,7 +614,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		shell.root.onMouseDown = (event) => {
 			if (event.button === MouseButton.RIGHT) void this.handleRightClickPaste();
 		};
-		viewport.setScrollbar(this.settingsManager.getFullscreenScrollbar());
+		this.applyScreenLayout();
 		this.renderWidgets();
 
 		// Accept text while startup completes, but only enable interrupt, exit, and submission feedback.
@@ -610,6 +641,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		onThemeChange(() => this.applyThemeChange());
 		this.footerDataProvider.onBranchChange(() => this.requestRender());
 		this.updateAvailableProviderCount();
+		this.transcriptReady = true;
 		await this.runStartupFlows("ready");
 		this.requestRender();
 		void loadAllHighlightLanguages().then(() => {
@@ -652,8 +684,13 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		this.onInputCallback = undefined;
 		waiter?.("");
 		const ui = this.ui;
-		const exitLines = ui && fullscreenExitOutput === "transcript" ? ui.transcript.renderedLines() : [];
+		// Regular mode already wrote the transcript to the terminal scrollback.
+		const exitLines =
+			ui && this.tuiMode === "fullscreen" && fullscreenExitOutput === "transcript"
+				? ui.transcript.renderedLines()
+				: [];
 		if (ui) {
+			ui.regular.flush();
 			ui.renderer.keyInput.off("keypress", this.keyHandler);
 			ui.inputRouter.detach();
 			ui.viewport.dispose();
@@ -1220,7 +1257,8 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 			key.preventDefault();
 			key.stopPropagation();
 		};
-		if (ui.viewport.handleKey(key)) {
+		// Transcript scrolling and search belong to the alternate screen; regular mode uses the terminal's.
+		if (this.tuiMode === "fullscreen" && ui.viewport.handleKey(key)) {
 			consume();
 			return;
 		}
@@ -2447,14 +2485,15 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 			}
 		}
 		this.streamingComponent?.setHiddenThinkingLabel(this.hiddenThinkingLabel);
+		this.ui?.regular.replay();
 		this.requestRender();
 	}
 
 	private setTerminalProgress(active: boolean): void {
 		if (active) {
-			process.stdout.write(TERMINAL_PROGRESS_ACTIVE);
+			this.rendererHost.writeTerminal(TERMINAL_PROGRESS_ACTIVE);
 			this.progressInterval ??= setInterval(
-				() => process.stdout.write(TERMINAL_PROGRESS_ACTIVE),
+				() => this.rendererHost.writeTerminal(TERMINAL_PROGRESS_ACTIVE),
 				TERMINAL_PROGRESS_KEEPALIVE_MS,
 			);
 			return;
@@ -2462,7 +2501,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		if (!this.progressInterval) return;
 		clearInterval(this.progressInterval);
 		this.progressInterval = undefined;
-		process.stdout.write(TERMINAL_PROGRESS_CLEAR);
+		this.rendererHost.writeTerminal(TERMINAL_PROGRESS_CLEAR);
 	}
 
 	// --- ModeContext: view state -----------------------------------------------------------------
@@ -2481,6 +2520,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 				if (isExpandable(child)) child.setExpanded(expanded);
 			}
 		}
+		this.ui?.regular.replay();
 		this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
 	}
 
@@ -2499,6 +2539,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 				if (child instanceof AssistantMessageComponent) child.setHideThinkingBlock(hidden);
 			}
 		}
+		this.ui?.regular.replay();
 		this.requestRender();
 	}
 
@@ -2507,6 +2548,60 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		this.settingsManager.setHideThinkingBlock(hidden);
 		this.setHideThinkingBlock(hidden);
 		this.showStatus(`Thinking blocks: ${hidden ? "hidden" : "visible"}`);
+	}
+
+	// --- ModeContext: TUI mode -------------------------------------------------------------------
+
+	getTuiMode(): TuiMode {
+		return this.tuiMode;
+	}
+
+	/**
+	 * Switch between fullscreen and regular mode at runtime. Refused (returns false) while pi-tui
+	 * overlays are open, like the interactive mode's `switchTuiMode`.
+	 */
+	switchTuiMode(mode: TuiMode): boolean {
+		if (mode === this.tuiMode) return true;
+		if (this.ui && this.ui.piOverlays.size > 0) return false;
+		this.tuiMode = mode;
+		this.rendererHost.setTuiMode(mode);
+		this.applyScreenLayout();
+		return true;
+	}
+
+	/** Shell, scrollbar, and scrollback handling for the current TUI mode. */
+	private applyScreenLayout(): void {
+		const ui = this.ui;
+		if (!ui) return;
+		const regular = this.tuiMode === "regular";
+		ui.shell.setRegular(regular, this.currentUiTheme);
+		this.applyScrollbar();
+		if (regular) {
+			ui.regular.activate();
+		} else {
+			ui.regular.deactivate();
+			ui.viewport.scrollToBottom();
+		}
+		this.requestRender();
+	}
+
+	private applyScrollbar(): void {
+		this.ui?.viewport.setScrollbar(
+			this.tuiMode === "regular" ? "hidden" : this.settingsManager.getFullscreenScrollbar(),
+		);
+	}
+
+	/**
+	 * Transcript components that may still change. Regular mode keeps them above the editor and
+	 * commits them to scrollback once they are done.
+	 */
+	private isLiveTranscriptComponent(component: Component): boolean {
+		const ui = this.ui;
+		if (!ui) return true;
+		if (!this.transcriptReady) return true;
+		if (component === this.streamingComponent || component === this.bashComponent) return true;
+		for (const tool of this.pendingTools.values()) if (tool === component) return true;
+		return ui.transcript.isReplaceableStatus(component);
 	}
 
 	// --- ModeContext: settings and chrome --------------------------------------------------------
@@ -2524,7 +2619,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 	applySettings(): void {
 		setCapabilityOverrides(this.settingsManager.getTerminalCapabilityOverrides());
 		configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
-		this.ui?.viewport.setScrollbar(this.settingsManager.getFullscreenScrollbar());
+		this.applyScrollbar();
 		this.footer.setSession(this.session);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 		this.footerDataProvider.setCwd(this.sessionManager.getCwd());
@@ -2583,7 +2678,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		this.currentUiTheme = createUiTheme(theme);
 		this.tui.invalidate();
 		this.ui?.shell.applyTheme(this.currentUiTheme);
-		this.ui?.viewport.setScrollbar(this.settingsManager.getFullscreenScrollbar());
+		this.applyScrollbar();
 		this.updateEditorBorderColor();
 	}
 

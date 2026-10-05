@@ -63,6 +63,7 @@ export const settingsSelector = defineSelector<void, void>({
 			fullscreenCopyOnSelect: settings.getFullscreenCopyOnSelect(),
 			warnings: settings.getWarnings(),
 		};
+		let selector: SettingsSelectorComponent | undefined;
 		const callbacks: SettingsCallbacks = {
 			onAutoCompactChange: (enabled) => {
 				ctx.session.setAutoCompactionEnabled(enabled);
@@ -189,8 +190,15 @@ export const settingsSelector = defineSelector<void, void>({
 				refresh(ctx);
 			},
 			onTuiModeChange: (mode) => {
+				// Same rule as the interactive mode: switching is refused while pi-tui overlays are open.
+				if (!ctx.switchTuiMode(mode)) {
+					selector?.getSettingsList().updateValue("tui-mode", ctx.getTuiMode());
+					ctx.showStatus("Close active overlays before changing TUI mode");
+					return;
+				}
 				settings.setTuiMode(mode);
 				refresh(ctx);
+				ctx.showStatus(`TUI mode: ${mode}`);
 			},
 			onFullscreenExitOutputChange: (output) => {
 				settings.setFullscreenExitOutput(output);
@@ -211,9 +219,10 @@ export const settingsSelector = defineSelector<void, void>({
 			onCancel: () => {},
 		};
 		return openHosted<void>(ctx, (done, _tui) => {
-			const selector = new SettingsSelectorComponent(config, { ...callbacks, onCancel: () => done(undefined) });
+			const created = new SettingsSelectorComponent(config, { ...callbacks, onCancel: () => done(undefined) });
+			selector = created;
 			// Keys go to the settings list (search, navigation, Esc), as in the interactive mode.
-			return { component: selector, focus: selector.getSettingsList() };
+			return { component: created, focus: created.getSettingsList() };
 		});
 	},
 });

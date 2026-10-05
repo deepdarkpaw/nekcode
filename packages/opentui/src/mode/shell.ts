@@ -26,6 +26,7 @@ export class Shell {
 	readonly editor: BoxRenderable;
 	readonly widgetsBelow: BoxRenderable;
 	readonly footer: BoxRenderable;
+	private regular = false;
 
 	constructor(renderer: CliRenderer, theme: UiTheme) {
 		this.root = new BoxRenderable(renderer, {
@@ -87,8 +88,22 @@ export class Shell {
 		}
 	}
 
+	/** Regions below the transcript, top to bottom. */
+	chromeRegions(): BoxRenderable[] {
+		return [this.pending, this.status, this.widgetsAbove, this.editor, this.widgetsBelow, this.footer];
+	}
+
+	/**
+	 * Regular mode draws only a footer below the terminal's own scrollback, which has the terminal
+	 * background; the page shade would make the footer a box of a different color.
+	 */
+	setRegular(regular: boolean, theme: UiTheme): void {
+		this.regular = regular;
+		this.root.backgroundColor = regular ? "transparent" : theme.base;
+	}
+
 	applyTheme(theme: UiTheme): void {
-		this.root.backgroundColor = theme.base;
+		this.root.backgroundColor = this.regular ? "transparent" : theme.base;
 		this.editor.backgroundColor = theme.raised;
 		this.footer.backgroundColor = theme.panel;
 	}

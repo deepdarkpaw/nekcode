@@ -17,7 +17,7 @@ import type { ProjectTrustContext } from "@earendil-works/pi-coding-agent/core/e
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent/core/keybindings";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent/core/settings-manager";
 import type { CompactionStatusReason } from "@earendil-works/pi-coding-agent/modes/interactive/components/status-indicator";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TuiMode } from "@earendil-works/pi-tui";
 import type { Renderable } from "@opentui/core";
 import type { ComponentHostRenderable } from "../bridge/component-host.ts";
 import type { FacadeTui } from "../bridge/facade-tui.ts";
@@ -149,6 +149,12 @@ export interface ThemeApi {
 }
 
 export interface ModeContext extends UiEnvironment {
+	// --- TUI mode --------------------------------------------------------------------------------
+	/** `fullscreen` (alternate screen) or `regular` (terminal scrollback with a footer). */
+	getTuiMode(): TuiMode;
+	/** Switch the TUI mode now. Returns false (no change) while pi-tui overlays are open. */
+	switchTuiMode(mode: TuiMode): boolean;
+
 	// --- Runtime ---------------------------------------------------------------------------------
 	/** Owns the current session; use it for new/fork/switch/import. The session changes after those. */
 	readonly runtimeHost: AgentSessionRuntime;
