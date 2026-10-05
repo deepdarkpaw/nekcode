@@ -1,18 +1,19 @@
 # OpenTUI Frontend (experimental)
 
-`nek --ui opentui` starts an alternative terminal UI built on [OpenTUI](https://opentui.com) (`@opentui/core`). The built-in TUI stays the default and is unchanged.
+`nek --ui opentui` starts the interactive mode with a terminal UI built on [OpenTUI](https://opentui.com) (`@opentui/core`). The built-in TUI stays the default and is unchanged.
 
 ## How it works
 
-OpenTUI loads a native Zig core through Bun FFI and does not run on Node 22. The frontend therefore runs as its own Bun process, and the agent keeps running on Node:
+OpenTUI loads a native Zig core through Bun FFI and does not run on Node 22. The launcher therefore re-runs the CLI under Bun; the agent and the UI then share that one Bun process:
 
 ```
-nek --ui opentui            (Node: parses args, finds Bun)
-  └─ bun packages/opentui/src/main.ts        (Bun: owns the terminal)
-       └─ node … cli.ts --mode rpc …         (Node: the agent, JSONL RPC on stdio)
+nek --ui opentui                         (Node: parses args, finds Bun)
+  └─ bun packages/opentui/src/main.ts …  (Bun: the regular CLI main() with the OpenTUI interactive mode)
 ```
 
-The launcher passes the backend command to the frontend in `NEK_OPENTUI_BACKEND`: the same Node executable and `execArgv` (which carry the source resolver), the CLI path, `--mode rpc`, and every other argument you gave except `--ui`. So `nek --ui opentui --model sonnet -c` resumes the last session with that model. The protocol is the regular [RPC mode](rpc.md), including [extension UI requests](rpc-extension-ui.md).
+The Bun entry calls the same `main()` as `nek`, so argument parsing, sessions, settings, extensions, startup prompts, and print/RPC modes behave exactly as usual. Only the interactive UI differs: instead of `InteractiveMode`, `main()` builds the OpenTUI mode through `MainOptions.createInteractiveMode`. The mode uses the session, settings, keybindings, and theme objects directly (no RPC).
+
+The UI is native OpenTUI where it matters for look and input (layout, scrolling, overlays, dialogs, search, selection) and reuses the interactive mode's pi-tui components for content (messages, tool rows, the prompt editor, indicators, extension components). A bridge renders pi-tui components into OpenTUI renderables and feeds them keys through pi-tui's own input pipeline, so every component and extension behaves as in the built-in TUI.
 
 ## Requirements
 
@@ -21,64 +22,76 @@ The launcher passes the backend command to the frontend in `NEK_OPENTUI_BACKEND`
   2. `bun` on `PATH`
   3. `~/.bun/bin/bun` (`bun.exe` on Windows)
 
-  If Bun is missing, install it from https://bun.sh.
+  If Bun is missing, install it from https://bun.sh, or rerun the nek installer with `NEK_INSTALL_BUN=1`.
 - A source checkout of nek, such as the one the installer creates. The frontend lives in `packages/opentui` and is not part of the npm package.
+- A terminal with truecolor and the alternate screen. The kitty keyboard protocol is used when the terminal supports it.
 
 ## Start
 
 ```bash
 nek --ui opentui
 nek --ui opentui -c                      # continue the last session
-nek --ui opentui "explain this repo"     # send a first message
-nek --ui opentui --smoke --no-session    # non-interactive self-check, see below
+nek --ui opentui --model sonnet "explain this repo"
+bun packages/opentui/src/main.ts         # same, without the Node launcher
 ```
 
-`@file` arguments, `--mode`, and `--print` cannot be combined with `--ui opentui`.
+Every interactive option works (`-c`, `-r`, `--session`, `--model`, `@file` arguments, initial messages, `--verbose`, …). `--ui opentui` cannot be combined with `--mode` or `--print`.
 
-The theme follows `--use-theme` or the `theme` setting (built-in `dark`/`light` or a custom theme). The frontend derives three background layers from it (base, panel, raised) and uses the theme's text, muted, accent, and blue tokens.
+The theme follows `--use-theme` or the `theme` setting (built-in `dark`/`light` or a custom theme). The UI derives layered backgrounds from the theme's page background: the transcript (base), the footer (panel), the editor (raised), and dialogs and toasts (overlay, with rounded borders). Secondary text uses the theme's muted and dim colors; links and Web Search rows use the theme's link blue (`mdLink`).
 
 ## Keys
 
+All keys come from the configurable keybindings (`keybindings.json`), exactly as in the built-in TUI. `/hotkeys` lists the effective bindings. The defaults (Windows and WSL use the alternatives in parentheses):
+
 | Key | Action |
 |---|---|
-| Enter | Send. While the agent works: queue a steering message |
-| Alt+Enter | While the agent works: queue a follow-up message |
-| Shift+Enter, Ctrl+J | New line |
-| Esc | Stop the running turn; cancel a dialog |
-| Ctrl+C | Clear the input; on empty input press twice to quit |
-| Ctrl+D | Quit on empty input |
-| PgUp / PgDn, mouse wheel | Scroll the transcript |
-| Ctrl+Home / Ctrl+End | Jump to top / bottom (Home / End too while the input is empty) |
-| Ctrl+O | Expand or collapse all tool rows (click a row to toggle one) |
-| Ctrl+T | Show or hide thinking |
+| Enter | Send. While the agent works: queue a steering message. While compacting: queue for after compaction |
+| Alt+Enter (Ctrl+Q) | Queue a follow-up message (`app.message.followUp`) |
+| Shift+Enter | New line |
+| Alt+Up (Alt+Q) | Move all queued messages back into the editor (`app.message.dequeue`) |
+| Esc | Abort the running turn (queued messages return to the editor), cancel bash, leave bash mode; twice on an empty editor opens `/tree` or `/fork` (`doubleEscapeAction` setting) |
+| Ctrl+C | Clear the editor; twice to quit |
+| Ctrl+D | Quit on an empty editor |
+| Ctrl+Z | Suspend (not on Windows) |
+| Ctrl+O | Expand or collapse tool output, the startup help, and loaded resources |
+| Ctrl+T | Show or hide thinking blocks |
+| Shift+Tab | Cycle the thinking level |
+| Ctrl+P, Shift+Ctrl+P (Alt+P) | Next / previous model |
+| Ctrl+L | Model selector |
+| Ctrl+G | Edit the prompt in the external editor (`$VISUAL`/`$EDITOR` or the `externalEditor` setting) |
+| Ctrl+V (Alt+V) | Paste an image from the clipboard (falls back to text) |
+| `/`, `!`, `!!`, `@` | Commands, bash, bash without context, file paths (autocomplete) |
+| PgUp / PgDn | Scroll the transcript (`tui.altScreen.*`; half-page and line bindings are unbound by default) |
+| Home / End | Scroll to the top / to the latest message |
+| Ctrl+Up / Ctrl+Down | Jump to the previous / next prompt |
+| Ctrl+Shift+F (Ctrl+F) | Search the transcript; Enter / Shift+Enter next / previous match, Esc closes |
 
-In dialogs: ↑/↓ and Enter for select, Y/N for confirm, Enter to submit input, Ctrl+S or Alt+Enter to submit the editor. All bindings are defined in one table in `packages/opentui/src/keys.ts`.
+Every editor key of the built-in TUI works (word movement, kill ring and yank, undo, history, large-paste markers), because the prompt editor is the interactive mode's editor.
 
-The transcript follows new output while it is scrolled to the bottom. Scrolling up stops following; scrolling back to the bottom resumes it.
+Mouse: the wheel scrolls the transcript; dragging selects text and copies it when `fullscreenCopyOnSelect` is on (otherwise the copy key, `app.message.copy`, copies the selection); a right click pastes into the editor. The transcript follows new output while it is at the bottom; scrolling up stops following and shows a "Jump to latest message" button.
 
-## Features
+## Feature parity
 
-- Streaming assistant markdown, collapsible thinking, user messages, and notices (compaction, retries, extension errors).
-- Tool rows that use the same display names as the built-in TUI (`Read`, `Search`, `Bash`, `Web Search`, `server › tool`, …). Each row shows the name, the main argument, and muted metadata, followed by a short preview. Web Search is drawn in blue and lists numbered titles with their hostnames.
-- Panels above the input: todos from `todo_write`, and running subagents shown as `model · type · ↑in ↓out · elapsed` with their latest activity. Queued steering and follow-up messages are listed below the panels.
-- Footer: mode badge (PLAN/AGENT), working directory, session name, ↑↓ tokens, context usage, model, and thinking level.
-- Extension UI: select, confirm, input, and editor dialogs; notifications as toasts; `setStatus`, `setWidget` (string lines), `setTitle`, and `set_editor_text`.
-- Slash commands: extension, prompt, and skill commands go to the agent unchanged. `/new`, `/compact`, `/name`, `/thinking`, `/model <provider/model>`, `/export`, `/clone`, `/session`, `/hotkeys`, and `/quit` map to RPC commands.
+The OpenTUI mode is a port of the built-in interactive mode and aims for full feature parity. Implemented:
 
-## Not available yet
-
-`/login`, `/logout`, `/settings`, `/tree`, `/resume`, `/fork`, `/scoped-models`, `/import`, `/share`, `/copy`, `/changelog`, `/trust`, and `/reload` show a short notice; use the built-in TUI for them. Images are not displayed (user messages show an image count). The model selector, autocomplete, and custom extension components (`ctx.ui.custom()`, component widgets) are not available over RPC.
+- Transcript: user and assistant messages (markdown, code highlighting, thinking blocks and the hidden-thinking label, mermaid and extension markdown transformers), tool rows with every built-in and extension renderer and images, bash executions, compaction and branch summaries, custom messages and entries, skill invocations, retry/compaction/summarization indicators, usage and cache notices, the project-trust warning, the startup header, and the loaded-resources listing with diagnostics.
+- Editor: the full prompt editor, slash-command autocomplete with descriptions and argument completions, `@file` fuzzy completion, path completion, extension autocomplete providers, bash mode, steering/follow-up/compaction queues, the external editor, clipboard image paste.
+- Chrome: footer (all fields and extension statuses), widgets above and below the editor, extension header and footer, working indicator message/visibility/frames, plan-mode border, notifications, terminal title and progress.
+- Fullscreen: keyboard and mouse scrolling, scrollbar (`fullscreenScrollbar`), transcript search with highlighted matches, prompt jumps, selection and copy-on-select, flash toasts, suspend, `fullscreenExitOutput`.
+- Extension UI: `select`, `confirm`, `input`, `editor`, `custom` (inline and overlay, with pi-tui overlay options), `tui.showOverlay`, component widgets, `setEditorComponent`, `onTerminalInput`, themes, shortcuts, and command-context actions.
+- Slash commands, selectors, and startup prompts follow the built-in TUI (`packages/opentui/PARITY.md` tracks every item and its verification).
 
 ## Known limitations
 
-- **tmux**: tmux's `modifyOtherKeys` mode 1 breaks Ctrl+Shift combinations, and without the kitty keyboard protocol many terminals send Shift+Enter as plain Enter. Use Ctrl+J for a new line if Shift+Enter sends.
-- **IME**: OpenTUI has no native IME composition support. CJK input methods that commit text work, but the preedit text is not shown inline.
-- **Terminals**: the UI uses truecolor and the alternate screen. Terminals without truecolor show approximated colors. Status glyphs (`●`, `◐`) are East Asian "ambiguous width" characters and can misalign in terminals configured to draw them double-width.
-- Only the 80 most recent transcript blocks are mounted; older ones collapse into an "N earlier messages" line. The transcript keeps at most 1500 blocks in memory.
+- **Fullscreen only**: the OpenTUI mode always uses the alternate screen; the `tuiMode: regular` setting is ignored. With `fullscreenExitOutput: transcript` (default) the rendered transcript is printed to the normal screen on exit.
+- **Automatic light/dark themes** cannot query the terminal background through OpenTUI yet; automatic theme settings fall back to their default appearance.
+- **Terminal progress** (OSC 9;4) is written outside OpenTUI's frame output; a terminal that does not ignore unknown OSC sequences can show stray characters.
+- **Hardware cursor**: with `showHardwareCursor` the terminal cursor follows the editor cursor; IME preedit text is not shown inline (OpenTUI has no IME composition support).
+- **tmux**: without `extended-keys` (and `extended-keys-format csi-u`) modified keys such as Shift+Enter and Ctrl+Shift+F do not reach the UI.
+- **Width tables**: OpenTUI and pi-tui measure a few emoji and East Asian "ambiguous width" characters differently; such lines can be off by a cell.
+- **Suspend** (Ctrl+Z) is not supported on Windows, as in the built-in TUI.
 - OpenTUI is pre-1.0 (`@opentui/core` 0.5.14, pinned).
 
 ## Checks
 
-- `npm test -w packages/opentui`: Node tests for JSONL framing, request correlation, the state reducer, and tool-row text.
-- `bun packages/opentui/test/view.smoke.ts`: renders scripted RPC records offscreen through the real view and checks the frame.
-- `nek --ui opentui --smoke --no-session`: launcher → Bun frontend → `nek --mode rpc` handshake → first frame rendered offscreen → clean shutdown. It prints the frame and exits non-zero on failure.
+- `bun test ./test/native` in `packages/opentui` (also run by `./test.sh` when Bun is on `PATH`): drives the real mode on an offscreen renderer with the faux provider (streaming, tool rows, autocomplete, queues, scrolling, search, overlays, extension UI, history rendering) and tests the bridge, dialogs, and theme mapping.
