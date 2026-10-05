@@ -7,7 +7,10 @@ export const shareCommand: CommandDefinition = {
 	clearEditor: "after",
 	run: async (ctx) => {
 		try {
-			const url = await ctx.runExternal(() => shareSessionHeadless(ctx.session, ctx.theme.getThemeSelection()));
+			const themeSetting = ctx.theme.getThemeSelection();
+			const url = await ctx.runExternal(() =>
+				shareSessionHeadless(ctx.session, themeSetting?.includes("/") ? undefined : themeSetting),
+			);
 			ctx.showStatus(`Share URL: ${url}`);
 		} catch (error) {
 			ctx.showError(`Failed to share session: ${error instanceof Error ? error.message : String(error)}`);

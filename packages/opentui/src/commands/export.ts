@@ -13,7 +13,10 @@ export const exportCommand: CommandDefinition = {
 			if (outputPath?.endsWith(".jsonl")) {
 				ctx.showStatus(`Session exported to: ${ctx.session.exportToJsonl(outputPath)}`);
 			} else {
-				const path = await ctx.session.exportToHtml(outputPath, { themeName: ctx.theme.getThemeSelection() });
+				const themeSetting = ctx.theme.getThemeSelection();
+				const path = await ctx.session.exportToHtml(outputPath, {
+					themeName: themeSetting?.includes("/") ? undefined : themeSetting,
+				});
 				ctx.showStatus(`Session exported to: ${path}`);
 			}
 		} catch (error) {
