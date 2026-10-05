@@ -1,26 +1,21 @@
 /**
- * The transcript: a ScrollBox of blocks that follows new output.
+ * The transcript: the scrolling document (startup header, loaded resources, chat) in the shell's
+ * ScrollBox.
  *
- * Blocks are native renderables or bridged pi-tui components. Spacing between blocks is a top
- * margin, so removing a block never leaves a stray spacer. A status line (`showStatus`) replaces the
- * previous status line when nothing was appended after it, like the interactive mode.
+ * The document follows the interactive mode's `documentContainer`: a header container, a
+ * loaded-resources container, and the chat. The chat is a `ChatList` (one bridge host per block)
+ * that the mode fills with the same components, spacers, and notices as the interactive mode. The
+ * `TranscriptApi` methods used by commands append pi-tui `Text`/`Markdown` blocks, so everything in
+ * the transcript is searchable and selectable the same way.
  */
 
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent/modes/interactive/theme/theme";
-import type { Component } from "@earendil-works/pi-tui";
-import { Markdown } from "@earendil-works/pi-tui";
-import {
-	BoxRenderable,
-	type CliRenderer,
-	type Renderable,
-	type ScrollBoxRenderable,
-	TextAttributes,
-	TextRenderable,
-} from "@opentui/core";
-import { ansiLinesToStyledText } from "../bridge/ansi.ts";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent/modes/interactive/components/dynamic-border";
+import { getMarkdownTheme, theme } from "@earendil-works/pi-coding-agent/modes/interactive/theme/theme";
+import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import type { CliRenderer, Renderable, ScrollBoxRenderable } from "@opentui/core";
 import { ComponentHostRenderable } from "../bridge/component-host.ts";
 import type { FacadeTui } from "../bridge/facade-tui.ts";
-import type { UiTheme } from "../theme/ui-theme.ts";
+import { ChatList } from "./chat-list.ts";
 import type {
 	NoticeTone,
 	TranscriptApi,
@@ -35,111 +30,121 @@ export interface TranscriptViewOptions {
 	renderer: CliRenderer;
 	scrollBox: ScrollBoxRenderable;
 	tui: FacadeTui;
-	uiTheme: () => UiTheme;
-	/** Rebuild the transcript from the session (the mode owns message rendering). */
+	/** Rebuild the chat from the session (the mode owns message rendering). */
 	rebuild: () => void;
+	/** Scroll to the newest content and follow output again. */
+	scrollToBottom: () => void;
+	/** Code block indent for markdown blocks. */
+	codeBlockIndent: () => string;
 }
 
+const TONE_COLORS: Record<Exclude<NoticeTone, "text">, Parameters<typeof theme.fg>[0]> = {
+	muted: "muted",
+	dim: "dim",
+	accent: "accent",
+	success: "success",
+	warning: "warning",
+	error: "error",
+};
+
 export class TranscriptView implements TranscriptApi {
+	/** Built-in or extension header (`setHeader`). */
+	readonly headerContainer = new Container();
+	/** Loaded resources and diagnostics; not cleared with the chat. */
+	readonly resourcesContainer = new Container();
+	readonly chat: ChatList;
 	private readonly options: TranscriptViewOptions;
-	private statusBlock: TextRenderable | undefined;
+	private readonly headerHost: ComponentHostRenderable;
+	private readonly resourcesHost: ComponentHostRenderable;
+	private lastStatusSpacer: Spacer | undefined;
+	private lastStatusText: Text | undefined;
 
 	constructor(options: TranscriptViewOptions) {
 		this.options = options;
+		const host = (component: Component) =>
+			new ComponentHostRenderable(options.renderer, {
+				component,
+				tui: options.tui,
+				focusable: false,
+				syncFocus: false,
+				disposeComponent: false,
+			});
+		this.headerHost = host(this.headerContainer);
+		this.resourcesHost = host(this.resourcesContainer);
+		options.scrollBox.add(this.headerHost);
+		options.scrollBox.add(this.resourcesHost);
+		this.chat = new ChatList(options.renderer, options.scrollBox, options.tui);
 	}
 
-	get blockCount(): number {
-		return this.options.scrollBox.getChildren().length;
+	/** Every transcript host in display order (search, prompt jumps, debug output). */
+	hosts(): ComponentHostRenderable[] {
+		return [this.headerHost, this.resourcesHost, ...this.chat.hosts];
 	}
 
-	/** Blocks in order (for tests). */
-	get blocks(): Renderable[] {
-		return this.options.scrollBox.getChildren();
+	/** Rendered transcript lines (debug log, exit output). */
+	renderedLines(): string[] {
+		return this.hosts().flatMap((host) => [...host.renderedLines]);
 	}
 
 	appendBlock(block: Renderable, options?: TranscriptBlockOptions): void {
-		const scrollBox = this.options.scrollBox;
-		const isFirst = scrollBox.getChildren().length === 0;
-		block.marginTop = options?.spacing ?? (isFirst ? 0 : 1);
-		block.flexShrink = 0;
-		scrollBox.add(block);
-		this.statusBlock = undefined;
-		this.options.renderer.requestRender();
+		this.addSpacing(options);
+		this.chat.addRenderable(block);
 	}
 
 	appendComponent(component: Component, options?: TranscriptBlockOptions): ComponentHostRenderable {
-		const host = new ComponentHostRenderable(this.options.renderer, {
-			component,
-			tui: this.options.tui,
-			focusable: false,
-		});
-		this.appendBlock(host, options);
-		return host;
-	}
-
-	/** Remove a block (streaming components that end up empty). */
-	removeBlock(block: Renderable): void {
-		if (this.statusBlock === block) this.statusBlock = undefined;
-		this.options.scrollBox.remove(block);
-		block.destroyRecursively();
-		this.options.renderer.requestRender();
+		this.addSpacing(options);
+		return this.chat.addChild(component);
 	}
 
 	appendText(text: string, options?: TranscriptTextOptions): void {
-		this.appendBlock(this.createText(text, options), options);
+		this.appendComponent(new Text(this.colorize(text, options?.tone), options?.paddingX ?? 1, 0), options);
 	}
 
 	appendMarkdown(markdown: string, options?: TranscriptMarkdownOptions): void {
-		const theme = this.options.uiTheme();
-		const container = new BoxRenderable(this.options.renderer, {
-			flexDirection: "column",
-			width: "100%",
-			...(options?.bordered
-				? { border: ["top", "bottom"] as const, borderStyle: "single" as const, borderColor: theme.borderMuted }
-				: {}),
-		});
+		this.addSpacing(options);
+		if (options?.bordered) this.chat.addChild(new DynamicBorder());
 		if (options?.title) {
-			container.add(
-				new TextRenderable(this.options.renderer, {
-					content: options.title,
-					fg: theme.accent,
-					attributes: TextAttributes.BOLD,
-					paddingX: 1,
-					marginBottom: 1,
-				}),
-			);
+			this.chat.addChild(new Text(theme.bold(theme.fg("accent", options.title)), 1, 0));
+			this.chat.addChild(new Spacer(1));
 		}
-		container.add(
-			new ComponentHostRenderable(this.options.renderer, {
-				component: new Markdown(markdown.trim(), 1, 0, getMarkdownTheme()),
-				tui: this.options.tui,
-				focusable: false,
-			}),
-		);
-		this.appendBlock(container, options);
+		const markdownTheme = { ...getMarkdownTheme(), codeBlockIndent: this.options.codeBlockIndent() };
+		this.chat.addChild(new Markdown(markdown.trim(), 1, 0, markdownTheme));
+		if (options?.bordered) {
+			this.chat.addChild(new Spacer(1));
+			this.chat.addChild(new DynamicBorder());
+		}
 	}
 
-	/** Show a status line, replacing the previous one if it is still the last block. */
-	showStatus(text: string): void {
-		const status = this.statusBlock;
-		if (status && !status.isDestroyed && this.isLastBlock(status)) {
-			status.content = text;
-			this.options.renderer.requestRender();
+	/**
+	 * Dim status line. Back-to-back status lines (nothing appended in between) replace each other,
+	 * like the interactive mode.
+	 */
+	showStatus(message: string): void {
+		const children = this.chat.children;
+		const last = children[children.length - 1];
+		const secondLast = children[children.length - 2];
+		if (this.chat.last === last && last === this.lastStatusText && secondLast === this.lastStatusSpacer) {
+			this.lastStatusText.setText(theme.fg("dim", message));
+			this.options.tui.requestRender();
 			return;
 		}
-		const block = this.createText(text, { tone: "dim" });
-		this.appendBlock(block);
-		this.statusBlock = block;
+		const spacer = new Spacer(1);
+		const text = new Text(theme.fg("dim", message), 1, 0);
+		this.chat.addChild(spacer);
+		this.chat.addChild(text);
+		this.lastStatusSpacer = spacer;
+		this.lastStatusText = text;
+	}
+
+	/** Forget the status line so the next status appends (managed-tool output). */
+	resetStatusLine(): void {
+		this.lastStatusSpacer = undefined;
+		this.lastStatusText = undefined;
 	}
 
 	clear(): void {
-		const scrollBox = this.options.scrollBox;
-		for (const child of scrollBox.getChildren()) {
-			scrollBox.remove(child);
-			child.destroyRecursively();
-		}
-		this.statusBlock = undefined;
-		this.options.renderer.requestRender();
+		this.chat.clear();
+		this.resetStatusLine();
 	}
 
 	rebuildFromSession(): void {
@@ -148,27 +153,16 @@ export class TranscriptView implements TranscriptApi {
 	}
 
 	scrollToBottom(): void {
-		const scrollBox = this.options.scrollBox;
-		scrollBox.stickyScroll = true;
-		scrollBox.scrollTo(scrollBox.scrollHeight);
-		this.options.renderer.requestRender();
+		this.options.scrollToBottom();
 	}
 
-	private isLastBlock(block: Renderable): boolean {
-		const children = this.options.scrollBox.getChildren();
-		return children[children.length - 1] === block;
+	private addSpacing(options: TranscriptBlockOptions | undefined): void {
+		const spacing = options?.spacing ?? (this.chat.length === 0 ? 0 : 1);
+		if (spacing > 0) this.chat.addChild(new Spacer(spacing));
 	}
 
-	private createText(text: string, options: TranscriptTextOptions | undefined): TextRenderable {
-		const theme = this.options.uiTheme();
-		const tone: NoticeTone = options?.tone ?? "text";
-		return new TextRenderable(this.options.renderer, {
-			content: text.includes(ESC) ? ansiLinesToStyledText(text.split("\n")) : text,
-			fg: theme[tone],
-			wrapMode: "word",
-			selectable: true,
-			paddingX: options?.paddingX ?? 1,
-			width: "100%",
-		});
+	private colorize(text: string, tone: NoticeTone | undefined): string {
+		if (text.includes(ESC) || tone === undefined || tone === "text") return text;
+		return theme.fg(TONE_COLORS[tone], text);
 	}
 }

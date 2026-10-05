@@ -351,17 +351,74 @@ export function segmentToChunk(segment: AnsiSegment): TextChunk {
 	return chunk;
 }
 
+/** A cell range of one line drawn with an overriding style (search matches). */
+export interface CellHighlight {
+	/** First highlighted cell (inclusive). */
+	startCol: number;
+	/** End cell (exclusive). */
+	endCol: number;
+	fg?: RGBA;
+	bg?: RGBA;
+	/** Attributes added to the text's own attributes. */
+	attributes?: number;
+}
+
+/** Highlights per line index. */
+export type LineHighlights = ReadonlyMap<number, readonly CellHighlight[]>;
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function highlightAt(highlights: readonly CellHighlight[], col: number): CellHighlight | undefined {
+	return highlights.find((highlight) => col >= highlight.startCol && col < highlight.endCol);
+}
+
+function highlightedChunk(segment: AnsiSegment, text: string, highlight: CellHighlight | undefined): TextChunk {
+	const chunk = segmentToChunk({ text, style: segment.style });
+	if (!highlight) return chunk;
+	if (highlight.fg) chunk.fg = highlight.fg;
+	if (highlight.bg) chunk.bg = highlight.bg;
+	if (highlight.attributes) chunk.attributes = (chunk.attributes ?? TextAttributes.NONE) | highlight.attributes;
+	return chunk;
+}
+
+/** Chunks of one line with cell-range highlights applied. */
+function highlightLine(line: ParsedAnsiLine, highlights: readonly CellHighlight[]): TextChunk[] {
+	const chunks: TextChunk[] = [];
+	let col = 0;
+	for (const segment of line.segments) {
+		let text = "";
+		let current: CellHighlight | undefined;
+		for (const { segment: grapheme } of graphemes.segment(segment.text)) {
+			const highlight = highlightAt(highlights, col);
+			if (text.length > 0 && highlight !== current) {
+				chunks.push(highlightedChunk(segment, text, current));
+				text = "";
+			}
+			current = highlight;
+			text += grapheme;
+			col += visibleWidth(grapheme);
+		}
+		if (text.length > 0) chunks.push(highlightedChunk(segment, text, current));
+	}
+	return chunks;
+}
+
 /** Chunks for parsed lines, joined with newlines. */
-export function parsedLinesToChunks(lines: readonly ParsedAnsiLine[]): TextChunk[] {
+export function parsedLinesToChunks(lines: readonly ParsedAnsiLine[], highlights?: LineHighlights): TextChunk[] {
 	const chunks: TextChunk[] = [];
 	lines.forEach((line, index) => {
 		if (index > 0) chunks.push({ __isChunk: true, text: "\n" });
+		const lineHighlights = highlights?.get(index);
+		if (lineHighlights && lineHighlights.length > 0) {
+			chunks.push(...highlightLine(line, lineHighlights));
+			return;
+		}
 		for (const segment of line.segments) chunks.push(segmentToChunk(segment));
 	});
 	return chunks;
 }
 
-/** Styled text for rendered pi-tui lines. */
-export function ansiLinesToStyledText(lines: readonly string[]): StyledText {
-	return new StyledText(parsedLinesToChunks(parseAnsiLines(lines).lines));
+/** Styled text for rendered pi-tui lines, with optional cell highlights. */
+export function ansiLinesToStyledText(lines: readonly string[], highlights?: LineHighlights): StyledText {
+	return new StyledText(parsedLinesToChunks(parseAnsiLines(lines).lines, highlights));
 }

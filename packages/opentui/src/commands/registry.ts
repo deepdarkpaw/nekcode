@@ -175,6 +175,11 @@ export interface KeyActionDefinition {
 	run(ctx: ModeContext): void | Promise<void>;
 }
 
+/** All command-owned key actions (the mode registers them on the prompt editor). */
+export function builtinKeyActions(): readonly KeyActionDefinition[] {
+	return BUILTIN_KEY_ACTIONS;
+}
+
 /** The command-owned key action bound to raw input `data`, if any. */
 export function findKeyAction(
 	keybindings: Pick<KeybindingsManager, "matches">,

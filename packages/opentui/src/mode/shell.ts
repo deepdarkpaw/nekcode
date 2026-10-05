@@ -1,16 +1,15 @@
 /**
  * Screen layout of the OpenTUI mode.
  *
- * Top to bottom (the interactive mode's chat viewport order):
- *   header        startup header or extension `setHeader` component
- *   transcript    scrollable conversation (`base` shade), follows new output
- *   pending       queued steering/follow-up messages
- *   status        working/retry/compaction indicator
+ * Top to bottom (the interactive mode's fullscreen chat viewport order):
+ *   transcript    scrollable document: header, loaded resources, chat (`base` shade)
+ *   pending       queued steering/follow-up messages and deferred bash output
+ *   status        working/retry/compaction indicator (when the editor does not embed it)
  *   widgetsAbove  extension widgets above the editor
- *   editor        prompt editor slot (`raised` shade, rounded border)
+ *   editor        prompt editor slot (`raised` shade); selectors and custom components replace it
  *   widgetsBelow  extension widgets below the editor
  *   footer        session stats and extension statuses (`panel` shade)
- * The overlay layer is an absolute full-screen layer above everything (`OverlayStack`).
+ * Overlays are layers on the renderer root above the shell (`OverlayStack`).
  */
 
 import { BoxRenderable, type CliRenderer, ScrollBoxRenderable } from "@opentui/core";
@@ -18,7 +17,8 @@ import type { UiTheme } from "../theme/ui-theme.ts";
 
 export class Shell {
 	readonly root: BoxRenderable;
-	readonly header: BoxRenderable;
+	/** Positioned container of the transcript (holds the jump-to-latest indicator). */
+	readonly transcriptArea: BoxRenderable;
 	readonly transcript: ScrollBoxRenderable;
 	readonly pending: BoxRenderable;
 	readonly status: BoxRenderable;
@@ -26,8 +26,6 @@ export class Shell {
 	readonly editor: BoxRenderable;
 	readonly widgetsBelow: BoxRenderable;
 	readonly footer: BoxRenderable;
-	/** Parent of the overlay layers. */
-	readonly overlayHost: BoxRenderable;
 
 	constructor(renderer: CliRenderer, theme: UiTheme) {
 		this.root = new BoxRenderable(renderer, {
@@ -39,7 +37,13 @@ export class Shell {
 		});
 		const fixed = (id: string) =>
 			new BoxRenderable(renderer, { id, width: "100%", flexDirection: "column", flexShrink: 0 });
-		this.header = fixed("header");
+		this.transcriptArea = new BoxRenderable(renderer, {
+			id: "transcript-area",
+			width: "100%",
+			flexGrow: 1,
+			flexShrink: 1,
+			flexDirection: "column",
+		});
 		this.transcript = new ScrollBoxRenderable(renderer, {
 			id: "transcript",
 			flexGrow: 1,
@@ -51,10 +55,17 @@ export class Shell {
 			viewportCulling: true,
 			contentOptions: { flexDirection: "column" },
 		});
+		this.transcriptArea.add(this.transcript);
 		this.pending = fixed("pending");
 		this.status = fixed("status");
 		this.widgetsAbove = fixed("widgets-above");
-		this.editor = fixed("editor");
+		this.editor = new BoxRenderable(renderer, {
+			id: "editor",
+			width: "100%",
+			flexDirection: "column",
+			flexShrink: 0,
+			backgroundColor: theme.raised,
+		});
 		this.widgetsBelow = fixed("widgets-below");
 		this.footer = new BoxRenderable(renderer, {
 			id: "footer",
@@ -63,39 +74,22 @@ export class Shell {
 			flexShrink: 0,
 			backgroundColor: theme.panel,
 		});
-		this.overlayHost = new BoxRenderable(renderer, {
-			id: "overlays",
-			position: "absolute",
-			top: 0,
-			left: 0,
-			width: "100%",
-			height: "100%",
-			zIndex: 1000,
-		});
-		// The overlay host must not block clicks on the shell when empty.
-		this.overlayHost.visible = false;
 		for (const region of [
-			this.header,
-			this.transcript,
+			this.transcriptArea,
 			this.pending,
 			this.status,
 			this.widgetsAbove,
 			this.editor,
 			this.widgetsBelow,
 			this.footer,
-			this.overlayHost,
 		]) {
 			this.root.add(region);
 		}
 	}
 
-	/** Show the overlay host while overlays are open. */
-	setOverlaysVisible(visible: boolean): void {
-		this.overlayHost.visible = visible;
-	}
-
 	applyTheme(theme: UiTheme): void {
 		this.root.backgroundColor = theme.base;
+		this.editor.backgroundColor = theme.raised;
 		this.footer.backgroundColor = theme.panel;
 	}
 }

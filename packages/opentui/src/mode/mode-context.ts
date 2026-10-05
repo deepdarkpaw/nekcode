@@ -151,6 +151,8 @@ export interface ModeContext extends UiEnvironment {
 	showError(message: string): void;
 	/** Transient toast (e.g. "Copied!"). */
 	flash(message: string): void;
+	/** Text of the current mouse selection in the transcript, if any. */
+	getSelectedText(): string | undefined;
 
 	// --- Editor and dialogs ----------------------------------------------------------------------
 	readonly editor: EditorApi;

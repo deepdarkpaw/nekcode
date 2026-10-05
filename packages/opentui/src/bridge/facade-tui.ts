@@ -6,6 +6,10 @@
  * so on. This facade is a pi-tui `TuiMainScreen` on a `VirtualTerminal`: it never draws. Its render
  * requests, overlays, focus changes, and invalidation are forwarded to the OpenTUI host through
  * `FacadeTuiHooks`.
+ *
+ * Keyboard input for pi-tui components goes through `feedInput`, which runs pi-tui's own input
+ * pipeline (debug key, overlay focus repair, key-release filtering) and delivers the sequence to
+ * the focused pi-tui component, exactly as a real terminal would.
  */
 
 import {
@@ -49,10 +53,17 @@ export interface FacadeTuiOptions extends Omit<VirtualTerminalOptions, "size"> {
 	showHardwareCursor?: boolean;
 }
 
+/** What a host registers so focus requests can find the renderable that shows a component. */
+export interface FacadeHost {
+	focus(): void;
+	readonly isDestroyed: boolean;
+}
+
 export class FacadeTui extends TuiMainScreen {
 	readonly virtualTerminal: VirtualTerminal;
 	private hooks: FacadeTuiHooks = NOOP_HOOKS;
 	private readonly listeners = new Set<TuiInputListener>();
+	private readonly hosts = new Map<Component, FacadeHost>();
 	private generation = 0;
 	private invalidations = 0;
 
@@ -133,5 +144,25 @@ export class FacadeTui extends TuiMainScreen {
 
 	get inputListenerCount(): number {
 		return this.listeners.size;
+	}
+
+	/** Deliver a key or paste sequence to the focused pi-tui component (pi-tui input pipeline). */
+	feedInput(data: string): void {
+		this.virtualTerminal.feedInput(data);
+	}
+
+	/** Register the renderable that shows `component`. */
+	registerHost(component: Component, host: FacadeHost): void {
+		this.hosts.set(component, host);
+	}
+
+	unregisterHost(component: Component, host: FacadeHost): void {
+		if (this.hosts.get(component) === host) this.hosts.delete(component);
+	}
+
+	/** The renderable that shows `component` directly, if any. */
+	hostFor(component: Component): FacadeHost | undefined {
+		const host = this.hosts.get(component);
+		return host && !host.isDestroyed ? host : undefined;
 	}
 }

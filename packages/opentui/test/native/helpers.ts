@@ -18,6 +18,8 @@ import { OverlayStack } from "../../src/ui/overlay-stack.ts";
 
 // Keep user configuration (keybindings.json, settings) out of the tests.
 process.env.NEK_CODING_AGENT_DIR ??= mkdtempSync(join(tmpdir(), "nek-opentui-test-"));
+// Never download managed tools (fd, rg) during tests.
+process.env.NEK_OFFLINE ??= "1";
 
 export interface TestUi extends TestRendererSetup {
 	tui: FacadeTui;

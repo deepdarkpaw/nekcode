@@ -3,9 +3,9 @@
  *
  * The component renders ANSI lines for the host's layout width. The host parses them into styled
  * text (a selectable `TextRenderable`, so transcript selection includes bridged content), forwards
- * keys and pastes as raw sequences to `handleInput`, mirrors focus to the facade TUI (so focusable
- * components draw their cursor), and re-renders when the width changes or the facade TUI receives a
- * render request (spinners, async results).
+ * keys and pastes through the facade TUI's input pipeline to the focused pi-tui component, mirrors
+ * focus to the facade TUI (so focusable components draw their cursor), and re-renders when the
+ * width changes or the facade TUI receives a render request (spinners, async results).
  */
 
 import type { Component } from "@earendil-works/pi-tui";
@@ -18,7 +18,7 @@ import {
 	type RGBA,
 	TextRenderable,
 } from "@opentui/core";
-import { ansiLinesToStyledText, parseAnsiLines } from "./ansi.ts";
+import { ansiLinesToStyledText, type LineHighlights, parseAnsiLines } from "./ansi.ts";
 import type { FacadeTui } from "./facade-tui.ts";
 import { keyToSequence, pasteToSequence } from "./input.ts";
 
@@ -35,6 +35,14 @@ export interface ComponentHostOptions extends Omit<RenderableOptions<ComponentHo
 	focusable?: boolean;
 	/** Call the component's `dispose()` when the host is destroyed. Defaults to true. */
 	disposeComponent?: boolean;
+	/** Allow mouse text selection. Defaults to true. */
+	selectable?: boolean;
+	/**
+	 * Which pi-tui component becomes the facade's focused component when this host gains OpenTUI
+	 * focus: `true` (default) for `component`, `false` for none, or a function for region hosts
+	 * (the editor slot) whose focus target is a component inside them.
+	 */
+	syncFocus?: boolean | (() => Component | null);
 }
 
 export class ComponentHostRenderable extends Renderable {
@@ -42,17 +50,30 @@ export class ComponentHostRenderable extends Renderable {
 	private readonly tui: FacadeTui;
 	private readonly text: TextRenderable;
 	private readonly disposeComponent: boolean;
+	private readonly focusTarget: (() => Component | null) | undefined;
 	private renderedWidth = -1;
 	private renderedGeneration = -1;
 	private seenInvalidation: number;
 	private renderedKey = "";
 	private forceRender = false;
 	private lastLines: string[] = [];
+	private highlights: LineHighlights | undefined;
+	private contentVersion = 0;
 	private cursorPosition: { row: number; col: number } | undefined;
 
 	constructor(ctx: RenderContext, options: ComponentHostOptions) {
-		const { component, tui, fg, bg, width, focusable, disposeComponent, ...renderableOptions }: ComponentHostOptions =
-			options;
+		const {
+			component,
+			tui,
+			fg,
+			bg,
+			width,
+			focusable,
+			disposeComponent,
+			selectable,
+			syncFocus,
+			...renderableOptions
+		}: ComponentHostOptions = options;
 		super(ctx, {
 			flexDirection: "column",
 			flexShrink: 0,
@@ -63,22 +84,30 @@ export class ComponentHostRenderable extends Renderable {
 		this.component = component;
 		this.tui = tui;
 		this.disposeComponent = disposeComponent ?? true;
+		this.focusTarget =
+			typeof syncFocus === "function" ? syncFocus : syncFocus === false ? undefined : () => component;
 		this.seenInvalidation = tui.invalidationGeneration;
 		this._focusable = focusable ?? typeof component.handleInput === "function";
 		this.text = new TextRenderable(ctx, {
 			width: "100%",
 			wrapMode: "none",
-			selectable: true,
+			selectable: selectable ?? true,
 			...(fg === undefined ? {} : { fg }),
 			...(bg === undefined ? {} : { bg }),
 		});
 		this.add(this.text);
+		tui.registerHost(component, this);
 		this.onLifecyclePass = () => this.refresh();
 	}
 
 	/** Lines from the last component render (with escape sequences). */
 	get renderedLines(): readonly string[] {
 		return this.lastLines;
+	}
+
+	/** Increments whenever the displayed lines change. */
+	get version(): number {
+		return this.contentVersion;
 	}
 
 	/** Cursor marker position from the last render, relative to the host. */
@@ -89,6 +118,15 @@ export class ComponentHostRenderable extends Renderable {
 	/** Plain text of the hosted lines (for tests and copy). */
 	get plainText(): string {
 		return this.text.plainText;
+	}
+
+	/** Draw cell ranges with an overriding style (search matches). Pass undefined to clear. */
+	setHighlights(highlights: LineHighlights | undefined): void {
+		if (!highlights && !this.highlights) return;
+		this.highlights = highlights;
+		this.renderedKey = "";
+		this.forceRender = true;
+		this.requestRender();
 	}
 
 	/** Re-render the component now if its width or the facade render generation changed. */
@@ -104,16 +142,19 @@ export class ComponentHostRenderable extends Renderable {
 		}
 		const generation = this.tui.renderGeneration;
 		if (!this.forceRender && width === this.renderedWidth && generation === this.renderedGeneration) return;
+		const force = this.forceRender;
 		this.forceRender = false;
 		this.renderedWidth = width;
 		this.renderedGeneration = generation;
 		const lines = this.component.render(width);
+		if (!force && lines === this.lastLines) return;
 		this.lastLines = lines;
 		const key = lines.join("\n");
 		if (key === this.renderedKey) return;
 		this.renderedKey = key;
+		this.contentVersion++;
 		this.cursorPosition = parseAnsiLines(lines).cursor;
-		this.text.content = ansiLinesToStyledText(lines);
+		this.text.content = ansiLinesToStyledText(lines, this.highlights);
 	}
 
 	/** Drop cached output: the component re-renders on the next frame. */
@@ -134,32 +175,37 @@ export class ComponentHostRenderable extends Renderable {
 
 	override focus(): void {
 		super.focus();
-		if (this.focused) this.tui.syncFocus(this.component);
+		if (this.focused && this.focusTarget) this.tui.syncFocus(this.focusTarget());
 	}
 
 	override blur(): void {
 		super.blur();
-		if (this.tui.getFocusedComponent() === this.component) this.tui.syncFocus(null);
+		this.releaseFacadeFocus();
+	}
+
+	private releaseFacadeFocus(): void {
+		if (!this.focusTarget) return;
+		const focused = this.tui.getFocusedComponent();
+		if (focused !== null && focused === this.focusTarget()) this.tui.syncFocus(null);
 	}
 
 	override handleKeyPress(key: KeyEvent): boolean {
-		const handleInput = this.component.handleInput;
-		if (!handleInput) return false;
-		handleInput.call(this.component, keyToSequence(key));
-		this.tui.requestRender();
+		this.tui.feedInput(keyToSequence(key));
 		return true;
 	}
 
 	override handlePaste(event: PasteEvent): void {
-		const handleInput = this.component.handleInput;
-		if (!handleInput) return;
 		event.preventDefault();
-		handleInput.call(this.component, pasteToSequence(event));
-		this.tui.requestRender();
+		const sequence = pasteToSequence(event);
+		// Raw input listeners (extension `onTerminalInput`) see pastes too.
+		const dispatch = this.tui.dispatchInput(sequence);
+		if (dispatch.consumed) return;
+		this.tui.feedInput(dispatch.data);
 	}
 
 	protected override destroySelf(): void {
-		if (this.tui.getFocusedComponent() === this.component) this.tui.syncFocus(null);
+		this.tui.unregisterHost(this.component, this);
+		this.releaseFacadeFocus();
 		if (this.disposeComponent) {
 			const disposable = this.component as Component & { dispose?: () => void };
 			disposable.dispose?.();
