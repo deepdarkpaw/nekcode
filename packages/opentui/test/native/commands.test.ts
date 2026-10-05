@@ -283,4 +283,35 @@ describe("command-owned keys", () => {
 		f.setup.mockInput.pressEscape();
 		await waitFor(f, () => f.mode.overlays.size === 0);
 	});
+
+	test("/scoped-models saves the selection with its save key", async () => {
+		fixture = await createFixture({ height: 30 });
+		const f = fixture;
+		await command(f, "/scoped-models");
+		await waitFor(f, () => f.mode.overlays.size === 1);
+		f.setup.mockInput.pressKey("s", { ctrl: true });
+		await waitFor(f, () =>
+			f.mode.transcript.renderedLines().some((line) => line.includes("Model selection saved to settings")),
+		);
+		f.setup.mockInput.pressEscape();
+		await waitFor(f, () => f.mode.overlays.size === 0);
+	});
+
+	test("startup diagnostics show once the mode is ready", async () => {
+		fixture = await createFixture({
+			height: 30,
+			modeOptions: {
+				startupDiagnostics: [
+					{ type: "warning", message: "startup warning text" },
+					{ type: "error", message: "startup error text" },
+				],
+			},
+		});
+		const f = fixture;
+		const run = f.mode.run();
+		const text = await waitForFrame(f, (value) => value.includes("startup error text"));
+		expect(text).toContain("startup warning text");
+		f.mode.stop("resume-hint");
+		await run;
+	});
 });

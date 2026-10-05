@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent/core/agent-session-runtime";
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent/core/extensions/types";
 import { SessionManager } from "@earendil-works/pi-coding-agent/core/session-manager";
+import type { InteractiveModeOptions } from "@earendil-works/pi-coding-agent/modes/interactive/interactive-mode";
 import type { Component, TuiMode } from "@earendil-works/pi-tui";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { OpenTuiMode } from "../../src/mode/opentui-mode.ts";
@@ -40,6 +41,8 @@ export interface FixtureOptions {
 	tuiMode?: TuiMode;
 	/** Store the session in files under the fixture dir (export to HTML, import, resume). */
 	persistSession?: boolean;
+	/** Extra interactive mode options (startup diagnostics, notices). */
+	modeOptions?: InteractiveModeOptions;
 	width?: number;
 }
 
@@ -105,7 +108,11 @@ export async function createFixture(options: FixtureOptions = {}): Promise<ModeF
 			return setup.renderer;
 		},
 	});
-	const mode = new OpenTuiMode(runtime, options.tuiMode ? { tuiMode: options.tuiMode } : {}, rendererHost);
+	const mode = new OpenTuiMode(
+		runtime,
+		{ ...options.modeOptions, ...(options.tuiMode ? { tuiMode: options.tuiMode } : {}) },
+		rendererHost,
+	);
 	await mode.init();
 	if (!setup) throw new Error("renderer was not created");
 	const testSetup = setup;
