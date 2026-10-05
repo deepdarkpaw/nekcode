@@ -184,4 +184,16 @@ describe("dialogs", () => {
 		ui.keybindings.setUserBindings({ "tui.select.confirm": [] });
 		expect(keyHints(ui.keybindings, [["tui.select.confirm", "select"]])).toBe("");
 	});
+
+	test("the select dialog hint names each key once", async () => {
+		ui = await createTestUi({ width: 120 });
+		const env = ui.env;
+		const choice = showSelectDialog(env, { title: "Select provider", items });
+		const text = await settle(ui);
+		// Regression: the hint read "up up · down down · enter select".
+		expect(text).toContain("up/down navigate · enter select · escape/ctrl+c cancel");
+		expect(text).not.toContain("up up");
+		ui.mockInput.pressEscape();
+		expect(await choice).toBeUndefined();
+	});
 });

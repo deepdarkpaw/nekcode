@@ -23,14 +23,21 @@ export function keyLabel(keybindings: Pick<KeybindingsManager, "getKeys">, id: K
 	return formatKeyText(keybindings.getKeys(id).join("/"));
 }
 
-/** `"<keys> <description>"` hint parts joined with " · ", skipping unbound keys. */
+/**
+ * `"<keys> <description>"` hint parts joined with " · ", skipping unbound keys. An entry with
+ * several keybindings shares one description (`up/down navigate`).
+ */
 export function keyHints(
 	keybindings: Pick<KeybindingsManager, "getKeys">,
-	hints: ReadonlyArray<readonly [Keybinding, string]>,
+	hints: ReadonlyArray<readonly [Keybinding | readonly Keybinding[], string]>,
 ): string {
 	return hints
-		.map(([id, description]) => {
-			const label = keyLabel(keybindings, id);
+		.map(([ids, description]) => {
+			const list: readonly Keybinding[] = typeof ids === "string" ? [ids] : ids;
+			const label = list
+				.map((id) => keyLabel(keybindings, id))
+				.filter((part) => part.length > 0)
+				.join("/");
 			return label ? `${label} ${description}` : "";
 		})
 		.filter((hint) => hint.length > 0)
