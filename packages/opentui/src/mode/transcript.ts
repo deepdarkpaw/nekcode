@@ -137,6 +137,11 @@ export class TranscriptView implements TranscriptApi {
 		this.lastStatusText = text;
 	}
 
+	/** Whether `component` is the latest status line, which the next status replaces in place. */
+	isReplaceableStatus(component: Component): boolean {
+		return component === this.lastStatusText && this.chat.last === component;
+	}
+
 	/** Forget the status line so the next status appends (managed-tool output). */
 	resetStatusLine(): void {
 		this.lastStatusSpacer = undefined;

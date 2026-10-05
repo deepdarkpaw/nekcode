@@ -70,6 +70,12 @@ Every editor key of the built-in TUI works (word movement, kill ring and yank, u
 
 Mouse: the wheel scrolls the transcript; dragging selects text and copies it when `fullscreenCopyOnSelect` is on (otherwise the copy key, `app.message.copy`, copies the selection); a right click pastes into the editor. The transcript follows new output while it is at the bottom; scrolling up stops following and shows a "Jump to latest message" button.
 
+## Regular mode
+
+`tuiMode: "regular"` (settings) or `--tui-mode regular` keeps the transcript in the terminal's own scrollback, like the built-in regular TUI. OpenTUI runs in its `split-footer` screen mode: only the area from the editor down is redrawn, and transcript blocks are written above it once they stop changing. The streaming reply, running tools, a running `!` command, and the latest status line stay above the editor until they are done. Dialogs and selectors use the whole screen while they are open.
+
+Output already in the scrollback cannot be edited. When it must change (terminal width, theme, tool-output expansion, thinking visibility, a rebuilt chat, or a closed dialog), the screen and scrollback are cleared and the transcript is written again, as the built-in TUI does on a full redraw. Regular mode has no mouse tracking, transcript scrolling keys, or transcript search: the terminal scrolls and searches its own scrollback. `/settings` switches modes at runtime; the switch is refused while extension overlays are open.
+
 ## Feature parity
 
 The OpenTUI mode is a port of the built-in interactive mode and aims for full feature parity. Implemented:
@@ -83,9 +89,9 @@ The OpenTUI mode is a port of the built-in interactive mode and aims for full fe
 
 ## Known limitations
 
-- **Fullscreen only**: the OpenTUI mode always uses the alternate screen; the `tuiMode: regular` setting is ignored. With `fullscreenExitOutput: transcript` (default) the rendered transcript is printed to the normal screen on exit.
+- **Regular mode redraws**: a replay rewrites the whole transcript (see [Regular mode](#regular-mode)). A streaming reply taller than the screen shows its newest lines until it is complete. After switching from fullscreen to regular at runtime, exiting clears the visible screen: OpenTUI fixes `clearOnShutdown` when the renderer is created, and its shutdown clear in split-footer mode wipes the top of the screen. Starting in regular mode keeps the last frame.
 - **Automatic light/dark themes** cannot query the terminal background through OpenTUI yet; automatic theme settings fall back to their default appearance.
-- **Terminal progress** (OSC 9;4) is written outside OpenTUI's frame output; a terminal that does not ignore unknown OSC sequences can show stray characters.
+- **Terminal progress** (OSC 9;4) is written outside OpenTUI's frame output (and outside regular mode's stdout capture); a terminal that does not ignore unknown OSC sequences can show stray characters.
 - **Hardware cursor**: with `showHardwareCursor` the terminal cursor follows the editor cursor; IME preedit text is not shown inline (OpenTUI has no IME composition support).
 - **tmux**: without `extended-keys` (and `extended-keys-format csi-u`) modified keys such as Shift+Enter and Ctrl+Shift+F do not reach the UI.
 - **Width tables**: OpenTUI and pi-tui measure a few emoji and East Asian "ambiguous width" characters differently; such lines can be off by a cell.

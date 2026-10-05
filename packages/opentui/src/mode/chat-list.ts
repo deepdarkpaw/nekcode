@@ -22,6 +22,7 @@ export class ChatList {
 	private readonly parent: ScrollBoxRenderable;
 	private readonly tui: FacadeTui;
 	private readonly entries: ChatEntry[] = [];
+	private clears = 0;
 
 	constructor(renderer: CliRenderer, parent: ScrollBoxRenderable, tui: FacadeTui) {
 		this.renderer = renderer;
@@ -101,7 +102,13 @@ export class ChatList {
 		return entry?.renderable instanceof ComponentHostRenderable ? entry.renderable : undefined;
 	}
 
+	/** Increments on every `clear()` (the regular screen replays its scrollback after a rebuild). */
+	get clearGeneration(): number {
+		return this.clears;
+	}
+
 	clear(): void {
+		this.clears++;
 		while (this.entries.length > 0) this.removeAt(this.entries.length - 1);
 	}
 

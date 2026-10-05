@@ -13,7 +13,8 @@ import {
 } from "@earendil-works/pi-coding-agent/core/agent-session-runtime";
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent/core/extensions/types";
 import { SessionManager } from "@earendil-works/pi-coding-agent/core/session-manager";
-import type { Component } from "@earendil-works/pi-tui";
+import type { InteractiveModeOptions } from "@earendil-works/pi-coding-agent/modes/interactive/interactive-mode";
+import type { Component, TuiMode } from "@earendil-works/pi-tui";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { OpenTuiMode } from "../../src/mode/opentui-mode.ts";
 import { RendererHost } from "../../src/mode/renderer-host.ts";
@@ -34,6 +35,15 @@ export interface FixtureOptions {
 	height?: number;
 	/** Add entries to the session before the mode starts. */
 	seed?: (sessionManager: SessionManager) => void;
+	/** Extra extension setup (shortcuts, commands). */
+	extension?: (pi: ExtensionAPI) => void;
+	/** `regular` runs the mode on a split-footer renderer (scrollback commits in `setup.externalOutput`). */
+	tuiMode?: TuiMode;
+	/** Store the session in files under the fixture dir (export to HTML, import, resume). */
+	persistSession?: boolean;
+	/** Extra interactive mode options (startup diagnostics, notices). */
+	modeOptions?: InteractiveModeOptions;
+	width?: number;
 }
 
 export async function createFixture(options: FixtureOptions = {}): Promise<ModeFixture> {
@@ -61,6 +71,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<ModeF
 		pi.on("session_start", (_event, ctx) => {
 			capturedUi = ctx.ui;
 		});
+		options.extension?.(pi);
 	};
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
 		const services = await createAgentSessionServices({
@@ -76,17 +87,32 @@ export async function createFixture(options: FixtureOptions = {}): Promise<ModeF
 		const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model });
 		return { ...created, services, diagnostics: services.diagnostics };
 	};
-	const sessionManager = SessionManager.inMemory(dir);
+	const sessionManager = options.persistSession
+		? SessionManager.create(dir, join(dir, "sessions"))
+		: SessionManager.inMemory(dir);
 	options.seed?.(sessionManager);
 	const runtime = await createAgentSessionRuntime(createRuntime, { cwd: dir, agentDir: dir, sessionManager });
 	let setup: TestRendererSetup | undefined;
 	const rendererHost = new RendererHost({
 		create: async () => {
-			setup = await createTestRenderer({ width: 80, height: options.height ?? 24, exitOnCtrlC: false });
+			setup = await createTestRenderer({
+				width: options.width ?? 80,
+				height: options.height ?? 24,
+				exitOnCtrlC: false,
+				...(options.tuiMode === "regular"
+					? { screenMode: "split-footer", externalOutputMode: "capture-stdout", footerHeight: 12 }
+					: {}),
+			});
+			// Split-footer scrollback replays need a set-up terminal (the test renderer skips it).
+			if (options.tuiMode === "regular") await setup.renderer.setupTerminal();
 			return setup.renderer;
 		},
 	});
-	const mode = new OpenTuiMode(runtime, {}, rendererHost);
+	const mode = new OpenTuiMode(
+		runtime,
+		{ ...options.modeOptions, ...(options.tuiMode ? { tuiMode: options.tuiMode } : {}) },
+		rendererHost,
+	);
 	await mode.init();
 	if (!setup) throw new Error("renderer was not created");
 	const testSetup = setup;

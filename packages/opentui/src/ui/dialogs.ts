@@ -108,8 +108,7 @@ export function showSelectDialog<T>(env: UiEnvironment, options: SelectDialogOpt
 				title: titleWithCountdown(options.title, controller),
 				subtitle: options.subtitle,
 				hint: keyHints(env.keybindings, [
-					["tui.select.up", "up"],
-					["tui.select.down", "down"],
+					[["tui.select.up", "tui.select.down"], "navigate"],
 					["tui.select.confirm", "select"],
 					["tui.select.cancel", "cancel"],
 				]),

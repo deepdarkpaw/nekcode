@@ -17,7 +17,7 @@ import type { ProjectTrustContext } from "@earendil-works/pi-coding-agent/core/e
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent/core/keybindings";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent/core/settings-manager";
 import type { CompactionStatusReason } from "@earendil-works/pi-coding-agent/modes/interactive/components/status-indicator";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TuiMode } from "@earendil-works/pi-tui";
 import type { Renderable } from "@opentui/core";
 import type { ComponentHostRenderable } from "../bridge/component-host.ts";
 import type { FacadeTui } from "../bridge/facade-tui.ts";
@@ -92,11 +92,34 @@ export type StatusIndicatorSpec =
 	| { kind: "branchSummary" }
 	| { kind: "retry"; attempt: number; maxAttempts: number; delayMs: number };
 
+/**
+ * A hosted component with an explicit input target and cleanup, like the interactive mode's
+ * `showSelector` (`{ component, focus, dispose }`).
+ */
+export interface HostedComponent {
+	component: Component;
+	/** pi-tui component that receives keys (for example the settings list inside the settings selector). Default: `component`. */
+	focus?: Component;
+	/** Runs once when the overlay closes. When given, `component.dispose()` is not called automatically. */
+	dispose?: () => void;
+}
+
 /** Builds a pi-tui component for `showComponent`. Call `done` to close it with a result. */
-export type ComponentFactory<T> = (done: (result: T | undefined) => void, tui: FacadeTui) => Component;
+export type ComponentFactory<T> = (
+	done: (result: T | undefined) => void,
+	tui: FacadeTui,
+) => Component | HostedComponent;
+
+/** Whether a factory result is a `HostedComponent` rather than a bare component. */
+export function isHostedComponent(value: Component | HostedComponent): value is HostedComponent {
+	return typeof (value as Partial<Component>).render !== "function";
+}
 
 export interface ShowComponentOptions {
-	/** Wrap the component in a rounded raised panel with this title. Without it the component draws its own frame. */
+	/**
+	 * Show the component in a `DialogFrame` with this title. Without it the component sits in a
+	 * plain rounded raised panel, and its own leading/trailing `─` rule lines are hidden.
+	 */
 	title?: string;
 	layout?: OverlayLayout;
 	/** Resolve `undefined` and close when aborted. */
@@ -126,6 +149,12 @@ export interface ThemeApi {
 }
 
 export interface ModeContext extends UiEnvironment {
+	// --- TUI mode --------------------------------------------------------------------------------
+	/** `fullscreen` (alternate screen) or `regular` (terminal scrollback with a footer). */
+	getTuiMode(): TuiMode;
+	/** Switch the TUI mode now. Returns false (no change) while pi-tui overlays are open. */
+	switchTuiMode(mode: TuiMode): boolean;
+
 	// --- Runtime ---------------------------------------------------------------------------------
 	/** Owns the current session; use it for new/fork/switch/import. The session changes after those. */
 	readonly runtimeHost: AgentSessionRuntime;
