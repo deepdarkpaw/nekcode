@@ -8,6 +8,7 @@ import {
 	type FirstTimeSetupResult,
 } from "@earendil-works/pi-coding-agent/modes/interactive/components/first-time-setup";
 import { SessionSelectorComponent } from "@earendil-works/pi-coding-agent/modes/interactive/components/session-selector";
+import { setTheme } from "@earendil-works/pi-coding-agent/modes/interactive/theme/theme";
 import {
 	getChangelogPath,
 	getNewEntries,
@@ -108,7 +109,10 @@ export const createStartupUiHooks: CreateStartupUiHooks = (host) => {
 				(done) =>
 					new FirstTimeSetupComponent({
 						detectedTheme: settingsManager.getTheme() === "light" ? "light" : "dark",
-						onThemePreview: () => {},
+						onThemePreview: (themeName) => {
+							setTheme(themeName);
+							env.renderer.requestRender();
+						},
 						onSubmit: (value) => done(value),
 						onCancel: () => done(undefined),
 					}),
