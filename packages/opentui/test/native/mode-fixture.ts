@@ -38,6 +38,8 @@ export interface FixtureOptions {
 	extension?: (pi: ExtensionAPI) => void;
 	/** `regular` runs the mode on a split-footer renderer (scrollback commits in `setup.externalOutput`). */
 	tuiMode?: TuiMode;
+	/** Store the session in files under the fixture dir (export to HTML, import, resume). */
+	persistSession?: boolean;
 	width?: number;
 }
 
@@ -82,7 +84,9 @@ export async function createFixture(options: FixtureOptions = {}): Promise<ModeF
 		const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model });
 		return { ...created, services, diagnostics: services.diagnostics };
 	};
-	const sessionManager = SessionManager.inMemory(dir);
+	const sessionManager = options.persistSession
+		? SessionManager.create(dir, join(dir, "sessions"))
+		: SessionManager.inMemory(dir);
 	options.seed?.(sessionManager);
 	const runtime = await createAgentSessionRuntime(createRuntime, { cwd: dir, agentDir: dir, sessionManager });
 	let setup: TestRendererSetup | undefined;

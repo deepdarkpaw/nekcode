@@ -4,7 +4,8 @@ import type { CommandDefinition } from "./registry.ts";
 export const forkCommand: CommandDefinition = {
 	name: "fork",
 	acceptsArgs: false,
-	clearEditor: "after",
+	// Cleared before: the selected message goes into the editor of the new session.
+	clearEditor: "before",
 	run: async (ctx) => {
 		const entryId = await forkSelector.open(ctx, undefined);
 		if (!entryId) return;
