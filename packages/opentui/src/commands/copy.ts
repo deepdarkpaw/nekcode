@@ -1,15 +1,21 @@
-/**
- * `/copy`: Copy the last assistant message to the clipboard.
- *
- * Stub: replace `run` (and add `getArgumentCompletions` where the interactive mode has them).
- */
-
+import { copyToClipboard } from "@earendil-works/pi-coding-agent/utils/clipboard";
 import type { CommandDefinition } from "./registry.ts";
-import { reportNotImplemented } from "./stub.ts";
 
 export const copyCommand: CommandDefinition = {
 	name: "copy",
 	acceptsArgs: false,
 	clearEditor: "after",
-	run: (ctx) => reportNotImplemented(ctx, "copy"),
+	run: async (ctx) => {
+		const text = ctx.session.getLastAssistantText();
+		if (!text) {
+			ctx.showError("No agent messages to copy yet.");
+			return;
+		}
+		try {
+			await copyToClipboard(text);
+			ctx.flash("Copied!");
+		} catch (error) {
+			ctx.showError(error instanceof Error ? error.message : String(error));
+		}
+	},
 };

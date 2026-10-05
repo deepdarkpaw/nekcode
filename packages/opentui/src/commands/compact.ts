@@ -1,15 +1,23 @@
-/**
- * `/compact`: Compact the session context, with optional instructions.
- *
- * Stub: replace `run` (and add `getArgumentCompletions` where the interactive mode has them).
- */
-
 import type { CommandDefinition } from "./registry.ts";
-import { reportNotImplemented } from "./stub.ts";
 
 export const compactCommand: CommandDefinition = {
 	name: "compact",
 	acceptsArgs: true,
 	clearEditor: "before",
-	run: (ctx) => reportNotImplemented(ctx, "compact"),
+	run: async (ctx, invocation) => {
+		ctx.clearStatusIndicator();
+		const releaseEscape = ctx.pushEscapeHandler(() => {
+			void ctx.session.abort();
+		});
+		ctx.showStatusIndicator({ kind: "compaction", reason: "manual" });
+		try {
+			await ctx.session.compact(invocation.args);
+		} catch {
+			/* The session emits the operation error. */
+		} finally {
+			releaseEscape();
+			ctx.clearStatusIndicator("compaction");
+			await ctx.flushCompactionQueue();
+		}
+	},
 };

@@ -1,15 +1,21 @@
-/**
- * `/fork`: Fork from a previous user message (UserMessageSelectorComponent parity).
- *
- * Stub: replace `run` (and add `getArgumentCompletions` where the interactive mode has them).
- */
-
+import { forkSelector } from "../selectors/fork.ts";
 import type { CommandDefinition } from "./registry.ts";
-import { reportNotImplemented } from "./stub.ts";
 
 export const forkCommand: CommandDefinition = {
 	name: "fork",
 	acceptsArgs: false,
 	clearEditor: "after",
-	run: (ctx) => reportNotImplemented(ctx, "fork"),
+	run: async (ctx) => {
+		const entryId = await forkSelector.open(ctx, undefined);
+		if (!entryId) return;
+		try {
+			const result = await ctx.runtimeHost.fork(entryId);
+			if (!result.cancelled) {
+				ctx.editor.setText(result.selectedText ?? "");
+				ctx.showStatus("Forked to new session");
+			}
+		} catch (error) {
+			ctx.showError(error instanceof Error ? error.message : String(error));
+		}
+	},
 };

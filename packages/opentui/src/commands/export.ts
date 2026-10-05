@@ -1,15 +1,23 @@
-/**
- * `/export`: Export the session to HTML (default) or JSONL (`/export <path>`).
- *
- * Stub: replace `run` (and add `getArgumentCompletions` where the interactive mode has them).
- */
-
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { existingPathCompletion, firstPathArgument } from "./common.ts";
 import type { CommandDefinition } from "./registry.ts";
-import { reportNotImplemented } from "./stub.ts";
 
 export const exportCommand: CommandDefinition = {
 	name: "export",
 	acceptsArgs: true,
 	clearEditor: "after",
-	run: (ctx) => reportNotImplemented(ctx, "export"),
+	getArgumentCompletions: (_ctx, prefix): AutocompleteItem[] | null => existingPathCompletion(prefix),
+	run: async (ctx, invocation) => {
+		const outputPath = firstPathArgument(invocation.args);
+		try {
+			if (outputPath?.endsWith(".jsonl")) {
+				ctx.showStatus(`Session exported to: ${ctx.session.exportToJsonl(outputPath)}`);
+			} else {
+				const path = await ctx.session.exportToHtml(outputPath, { themeName: ctx.theme.getThemeSelection() });
+				ctx.showStatus(`Session exported to: ${path}`);
+			}
+		} catch (error) {
+			ctx.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+		}
+	},
 };
