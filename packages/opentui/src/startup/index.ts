@@ -188,24 +188,35 @@ export const MODE_STARTUP_FLOWS: readonly ModeStartupFlow[] = [
 				);
 		},
 	},
-	{ id: "model-auth-warning", phase: "run", run: (ctx) => ctx.maybeWarnAboutAnthropicSubscriptionAuth() },
+	{
+		id: "model-auth-warning",
+		phase: "run",
+		run: (ctx) => {
+			void ctx.maybeWarnAboutAnthropicSubscriptionAuth();
+		},
+	},
 	{
 		id: "tmux-keyboard-check",
 		phase: "run",
-		run: async (ctx) => {
-			const warning = await tmuxKeyboardWarning();
-			if (warning) ctx.showWarning(warning);
+		run: (ctx) => {
+			void tmuxKeyboardWarning().then((warning) => {
+				if (warning) ctx.showWarning(warning);
+			});
 		},
 	},
 	{
 		id: "model-catalog-refresh",
 		phase: "run",
-		run: async (ctx) => {
+		run: (ctx) => {
 			if (process.env.NEK_OFFLINE) return;
-			const result = await ctx.session.modelRuntime.refresh({ signal: AbortSignal.timeout(15_000) });
-			if (result.errors.size > 0)
-				ctx.showWarning(`Could not refresh ${[...result.errors.keys()].join(", ")}; using cached models.`);
-			ctx.refreshChrome();
+			void ctx.session.modelRuntime
+				.refresh({ signal: AbortSignal.timeout(15_000) })
+				.then((result) => {
+					if (result.errors.size > 0)
+						ctx.showWarning(`Could not refresh ${[...result.errors.keys()].join(", ")}; using cached models.`);
+					ctx.refreshChrome();
+				})
+				.catch(() => {});
 		},
 	},
 ];
