@@ -102,7 +102,7 @@ nek runs in fullscreen mode by default, and scrolls the transcript itself:
 
 When a plan is ready in Plan mode, the full plan appears in the transcript, where it scrolls like any other message. The editor area shows only the actions: implement, implement in a fresh session, keep planning, or exit Plan.
 
-**OpenTUI interface (experimental)**: `nek --ui opentui` starts a new interface built on [OpenTUI](https://opentui.com). The default interface is unchanged. It needs [Bun](https://bun.sh) 1.3 or newer; set `NEK_INSTALL_BUN=1` before running the installer to install Bun automatically. `/login`, `/settings`, the session tree, and images are not supported yet; see [OpenTUI frontend](packages/coding-agent/docs/opentui.md).
+**OpenTUI interface (experimental)**: `nek --ui opentui` starts a new interface built on [OpenTUI](https://opentui.com). The default interface is unchanged. It runs in the same Bun process as the agent and matches the default interface feature for feature: all slash commands, selectors, the session tree, `/login`, `/settings`, extension UI, plan approval, and both fullscreen and regular mode (`--tui-mode regular`). The look adds layered backgrounds, rounded dialogs, and muted secondary text. It needs [Bun](https://bun.sh) 1.3 or newer; set `NEK_INSTALL_BUN=1` before running the installer to install Bun automatically. See [OpenTUI frontend](packages/coding-agent/docs/opentui.md) for usage and known limitations, and [PARITY.md](packages/opentui/PARITY.md) for the item-by-item parity checklist.
 
 ## Search tools
 

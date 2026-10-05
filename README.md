@@ -102,7 +102,7 @@ nek 默认以全屏模式运行，对话记录由 nek 自己滚动：
 
 Plan 模式写完计划后，完整计划会出现在对话记录里，可以像普通消息一样滚动查看；输入框位置只保留"实现 / 新会话实现 / 继续规划 / 退出 Plan"几个选项。
 
-**OpenTUI 界面（实验性）**：`nek --ui opentui` 启动一个基于 [OpenTUI](https://opentui.com) 的新界面，原来的界面不受影响。它需要 [Bun](https://bun.sh) 1.3 或更高版本；运行安装脚本前设置 `NEK_INSTALL_BUN=1` 可以自动安装 Bun。目前不支持 `/login`、`/settings`、会话树和图片，详见 [OpenTUI 前端](packages/coding-agent/docs/opentui.md)。
+**OpenTUI 界面（实验性）**：`nek --ui opentui` 启动一个基于 [OpenTUI](https://opentui.com) 的新界面，原来的界面不受影响。它和 agent 运行在同一个 Bun 进程里，功能与原界面对齐：全部斜杠命令、选择器、会话树、`/login`、`/settings`、扩展界面、Plan 审批，以及全屏和 regular 两种模式（`--tui-mode regular`）。外观上使用分层背景、圆角对话框和弱化的次要文字。需要 [Bun](https://bun.sh) 1.3 或更高版本；运行安装脚本前设置 `NEK_INSTALL_BUN=1` 可以自动安装 Bun。用法和已知限制见 [OpenTUI 前端](packages/coding-agent/docs/opentui.md)，逐项对齐清单见 [PARITY.md](packages/opentui/PARITY.md)。
 
 ## 搜索工具
 
