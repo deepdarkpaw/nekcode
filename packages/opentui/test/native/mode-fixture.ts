@@ -34,6 +34,8 @@ export interface FixtureOptions {
 	height?: number;
 	/** Add entries to the session before the mode starts. */
 	seed?: (sessionManager: SessionManager) => void;
+	/** Extra extension setup (shortcuts, commands). */
+	extension?: (pi: ExtensionAPI) => void;
 }
 
 export async function createFixture(options: FixtureOptions = {}): Promise<ModeFixture> {
@@ -61,6 +63,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<ModeF
 		pi.on("session_start", (_event, ctx) => {
 			capturedUi = ctx.ui;
 		});
+		options.extension?.(pi);
 	};
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
 		const services = await createAgentSessionServices({
