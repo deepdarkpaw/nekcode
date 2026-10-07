@@ -1,0 +1,438 @@
+import type { Context } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Api, Model, Models } from "@earendil-works/pi-ai";
+import {
+	type AgentEventStream,
+	type Conversation,
+	type ConversationId,
+	createRegistry,
+	type EntryId,
+	type EntryRecord,
+	Harness,
+	InboxDoc,
+	LiveDoc,
+	MemoryStorage,
+	type Registry,
+	ROOT_CONVERSATION_ID,
+	type Storage,
+	type Submission,
+	SystemEntry,
+	type UserInput,
+	watchEvents,
+} from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { convertToLlm } from "../messages.ts";
+import type { SettingsManager } from "../settings-manager.ts";
+import { agentContext } from "./context.ts";
+import { agentMessageEntry, CompactionDetailsDoc, type CompactionRecord } from "./entries.ts";
+import { DurableEventAdapter, type DurableSessionEvent } from "./events.ts";
+import type { DurableHostHooks } from "./hooks.ts";
+import { acquireSessionLock, type SessionLock } from "./lock.ts";
+import { planSystemEntries } from "./prompt.ts";
+import {
+	createHookExtension,
+	createPendingResults,
+	createPromptExtension,
+	createToolsExtension,
+	PromptDoc,
+} from "./registry.ts";
+import { createHarnessSettings } from "./settings.ts";
+
+/** Options of {@link DurableEngine.open}. */
+export type DurableEngineOptions = {
+	/** SQLite database path; `undefined` keeps the session in memory, without a lock. */
+	readonly path: string | undefined;
+	/** Model access; a host wraps its `ModelRuntime` in `HookedModels` to run provider hooks. */
+	readonly models: Models;
+	readonly settingsManager: SettingsManager;
+	/** Tools offered to the model, in order. */
+	readonly tools: readonly AgentTool[];
+	/** Model and thinking level to configure; absent keeps the stored choice of a reopened session. */
+	readonly model?: Model<Api>;
+	readonly thinkingLevel?: ThinkingLevel;
+	/** Pi extension callbacks; they may rerun after a crash (see {@link DurableHostHooks}). */
+	readonly hooks?: DurableHostHooks;
+	/** Conversation to attach to; default the root conversation. */
+	readonly conversationId?: ConversationId;
+	/** Extension and delivery failures that do not fail an operation. Must not throw. */
+	readonly onReport?: (error: unknown) => void;
+};
+
+/** Options of {@link DurableEngine.prompt}. */
+export type DurablePromptOptions = {
+	/** Effective system prompt for this run, after `before_agent_start`. Absent keeps the stored one. */
+	readonly systemPrompt?: string;
+	/** Messages placed before the input, such as those `before_agent_start` handlers inject. */
+	readonly messages?: readonly AgentMessage[];
+	/** What to do when the conversation is busy; default `reject` (throws `ConversationBusy`). */
+	readonly whenBusy?: "steer" | "followUp" | "reject";
+};
+
+type Listener = (event: DurableSessionEvent) => void | Promise<void>;
+
+/** Lock file guarding a session database against a second process. */
+export function sessionLockPath(path: string): string {
+	return `${path}.lock`;
+}
+
+/**
+ * Pi's coding agent loop on a durable Harness. Every input, answer, tool call, queue, and compaction is committed to
+ * the session database as it happens; reopening the same path resumes whatever was in flight:
+ *
+ * - a streamed answer restarts its request (committed partials are replaced by the new attempt);
+ * - a tool call interrupted by the crash reruns when it is replay-safe, otherwise its result says it was interrupted;
+ * - queued steering and follow-up inputs stay queued, in order;
+ * - a compaction resumes from its last checkpoint.
+ *
+ * Events are pi `AgentSessionEvent`s translated from durable's committed state, so listeners only ever see
+ * committed facts.
+ */
+export class DurableEngine {
+	readonly harness: Harness;
+	readonly #registry: Registry;
+	readonly #lock: SessionLock | undefined;
+	readonly #options: DurableEngineOptions;
+	/** Shared by the wrapped tools and the hook extension; see `createPendingResults()`. */
+	readonly #pending: ReturnType<typeof createPendingResults>;
+	readonly #listeners = new Set<Listener>();
+	readonly #drainWaiters = new Set<() => void>();
+	#conversation: Conversation;
+	#stream: AgentEventStream | undefined;
+	#adapter: DurableEventAdapter | undefined;
+	#model: Model<Api> | undefined;
+	#closed = false;
+
+	private constructor(
+		harness: Harness,
+		registry: Registry,
+		lock: SessionLock | undefined,
+		conversation: Conversation,
+		options: DurableEngineOptions,
+		pending: ReturnType<typeof createPendingResults>,
+	) {
+		this.harness = harness;
+		this.#pending = pending;
+		this.#registry = registry;
+		this.#lock = lock;
+		this.#conversation = conversation;
+		this.#options = options;
+		this.#model = options.model;
+	}
+
+	/**
+	 * Open or create a session: lock, storage, Harness, conversation, event stream, then resume of whatever was in
+	 * flight. Throws `SessionLockedError` while another live process owns the database.
+	 */
+	static async open(options: DurableEngineOptions): Promise<DurableEngine> {
+		const lock = options.path === undefined ? undefined : acquireSessionLock(sessionLockPath(options.path));
+		try {
+			return await DurableEngine.#open(options, lock);
+		} catch (error) {
+			lock?.release();
+			throw error;
+		}
+	}
+
+	static async #open(options: DurableEngineOptions, lock: SessionLock | undefined): Promise<DurableEngine> {
+		const context = BACKGROUND_CONTEXT;
+		const storage: Storage =
+			options.path === undefined ? new MemoryStorage() : await openNodeSqliteStorage(options.path);
+		const registry = createRegistry();
+		const report = (error: unknown): void => options.onReport?.(error);
+		let engine: DurableEngine | undefined;
+		const currentModel = () => (engine === undefined ? options.model : engine.#model);
+		const pending = createPendingResults();
+		registry.install(createPromptExtension());
+		registry.install(
+			createHookExtension({
+				harness: () => {
+					if (engine === undefined) throw new Error("Durable engine is not open");
+					return engine.harness;
+				},
+				models: options.models,
+				hooks: options.hooks ?? {},
+				settings: () => options.settingsManager.getCompactionSettings(currentModel()),
+				retry: () => options.settingsManager.getRetrySettings(),
+				report,
+				pending,
+			}),
+		);
+		registry.install(createToolsExtension(options.tools, pending));
+		const harness = await Harness.open(
+			storage,
+			{
+				models: options.models,
+				registry,
+				settings: createHarnessSettings(options.settingsManager, currentModel),
+				onReport: report,
+			},
+			context,
+		);
+		try {
+			const id = options.conversationId ?? ROOT_CONVERSATION_ID;
+			const conversation =
+				id === ROOT_CONVERSATION_ID ? await harness.root(context) : await harness.conversation(id, context);
+			if (conversation === undefined) throw new Error(`Conversation ${id} does not exist`);
+			engine = new DurableEngine(harness, registry, lock, conversation, options, pending);
+			await engine.#configureModel(context);
+			await engine.#attach();
+			harness.resume();
+			return engine;
+		} catch (error) {
+			await harness.close(context).catch(report);
+			throw error;
+		}
+	}
+
+	get conversationId(): ConversationId {
+		return this.#conversation.id;
+	}
+
+	/** Listen to pi session events. Returns an unsubscribe function. */
+	subscribe(listener: Listener): () => void {
+		this.#listeners.add(listener);
+		return () => this.#listeners.delete(listener);
+	}
+
+	/**
+	 * Admit user input. The effective system prompt is stored first, so every request of the run, including one
+	 * prepared after a crash, renders it; injected messages are written before the input.
+	 *
+	 * The prompt, the injected messages, and the input are separate commits: a crash between them leaves the earlier
+	 * ones without the input, which the host resubmits.
+	 */
+	async prompt(content: UserInput, options: DurablePromptOptions = {}): Promise<Submission> {
+		const context = BACKGROUND_CONTEXT;
+		const systemPrompt = options.systemPrompt;
+		if (systemPrompt !== undefined) await this.#storePrompt(systemPrompt, context);
+		for (const message of options.messages ?? []) await this.appendMessage(message);
+		return this.#conversation.submit({ type: "input", content, whenBusy: options.whenBusy ?? "reject" }, context);
+	}
+
+	/** Queue input that joins the current run after its tool round; starts a run when idle. */
+	steer(content: UserInput): Promise<Submission> {
+		return this.#conversation.submit({ type: "input", content, whenBusy: "steer" }, BACKGROUND_CONTEXT);
+	}
+
+	/** Queue input that runs after the current run's last answer; starts a run when idle. */
+	followUp(content: UserInput): Promise<Submission> {
+		return this.#conversation.submit({ type: "input", content, whenBusy: "followUp" }, BACKGROUND_CONTEXT);
+	}
+
+	/** Write a pi message with a coding-agent role; placed at once when idle, else at the next boundary. */
+	async appendMessage(message: AgentMessage, options: { readonly displayOnly?: boolean } = {}): Promise<Submission> {
+		const convert = this.#options.hooks?.convertToLlm ?? convertToLlm;
+		const entry = agentMessageEntry(message, convert, options);
+		return this.#conversation.submit({ type: "write", entry }, BACKGROUND_CONTEXT);
+	}
+
+	/** Abort the run and withdraw queued inputs. */
+	async abort(): Promise<void> {
+		await this.#conversation.abort(BACKGROUND_CONTEXT);
+		await this.#drain();
+	}
+
+	/** Resolve when the conversation is idle and every event up to that point was delivered. */
+	async waitForIdle(): Promise<void> {
+		await this.#conversation.waitForIdle(BACKGROUND_CONTEXT);
+		await this.#drain();
+	}
+
+	/** Compact now; resolves when the compaction ended and its events were delivered. */
+	async compact(instructions?: string): Promise<void> {
+		const taskId = await this.#conversation.compact(instructions, BACKGROUND_CONTEXT);
+		await this.harness.waitForTask(taskId, BACKGROUND_CONTEXT);
+		await this.#drain();
+	}
+
+	/** Change the model and thinking level of the conversation. */
+	async setModel(model: Model<Api>, thinkingLevel?: ThinkingLevel): Promise<void> {
+		this.#model = model;
+		await this.#conversation.configure(
+			{
+				model: { provider: model.provider, modelId: model.id },
+				...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+			},
+			BACKGROUND_CONTEXT,
+		);
+	}
+
+	/** Change the thinking level of the conversation. */
+	async setThinkingLevel(thinkingLevel: ThinkingLevel): Promise<void> {
+		await this.#conversation.configure({ thinkingLevel }, BACKGROUND_CONTEXT);
+	}
+
+	/** Replace the offered tools; the next request offers them through a `pi.system` tool change. */
+	setTools(tools: readonly AgentTool[]): void {
+		this.#registry.install(createToolsExtension(tools, this.#pending));
+	}
+
+	/**
+	 * Fork the conversation after `at` and switch to the fork; the source conversation stays as it is. Returns the new
+	 * conversation's ID, which the host persists to reopen it.
+	 */
+	async fork(at: EntryId): Promise<ConversationId> {
+		const fork = await this.#conversation.fork(at, { ownership: { kind: "ownerless" } }, BACKGROUND_CONTEXT);
+		await this.#detach();
+		this.#conversation = fork;
+		await this.#attach();
+		return fork.id;
+	}
+
+	/** Pi's view of the current model context, compaction summaries included. */
+	async messages(): Promise<AgentMessage[]> {
+		const view = await this.#conversation.context(BACKGROUND_CONTEXT);
+		return agentContext(view, await this.#compactionRecords()).messages;
+	}
+
+	/** Every entry of the conversation's history, oldest first. */
+	async entries(): Promise<EntryRecord[]> {
+		return this.#entriesAfter(0);
+	}
+
+	/** Durable's pending queue items, oldest first. */
+	async queued(): Promise<{ steering: UserInput[]; followUp: UserInput[] }> {
+		const inbox = await this.harness.snapshot(InboxDoc, this.#conversation.id, BACKGROUND_CONTEXT);
+		const steering: UserInput[] = [];
+		const followUp: UserInput[] = [];
+		for (const item of inbox?.items ?? []) {
+			if (item.mode === "steer") steering.push(item.content as UserInput);
+			else if (item.mode === "followUp") followUp.push(item.content as UserInput);
+		}
+		return { steering, followUp };
+	}
+
+	/** Stop events, close storage, and release the lock. Unfinished work resumes at the next open. */
+	async close(): Promise<void> {
+		if (this.#closed) return;
+		this.#closed = true;
+		try {
+			await this.#detach();
+			await this.harness.close(BACKGROUND_CONTEXT);
+		} finally {
+			this.#lock?.release();
+		}
+	}
+
+	/**
+	 * Store the effective prompt and, when idle, append the `pi.system` entries the next request needs, in one commit.
+	 * When the conversation is busy or its tail moved since the view was read, generation preparation appends them.
+	 */
+	async #storePrompt(text: string, context: Context): Promise<void> {
+		const conversation = this.#conversation;
+		const [view, agent] = await Promise.all([conversation.context(context), conversation.agent(context)]);
+		const tail = view.entries[view.entries.length - 1]?.id;
+		const drafts = planSystemEntries(view, text, agent.tools, Date.now());
+		await conversation.commit(async (tx) => {
+			const doc = await tx.doc(PromptDoc, conversation.id);
+			if (doc.text !== text) doc.text = text;
+			if ((await tx.doc(LiveDoc, conversation.id)).run !== undefined) return;
+			const newest = (await tx.scanEntries({ conversationId: conversation.id }, 1)).items[0]?.id;
+			if (newest !== tail) return;
+			for (const draft of drafts) await tx.appendEntry(SystemEntry, conversation.id, draft);
+		}, context);
+	}
+
+	async #configureModel(context: Context): Promise<void> {
+		const { model, thinkingLevel } = this.#options;
+		if (model !== undefined || thinkingLevel !== undefined) {
+			await this.#conversation.configure(
+				{
+					...(model === undefined ? {} : { model: { provider: model.provider, modelId: model.id } }),
+					...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+				},
+				context,
+			);
+			return;
+		}
+		const stored = (await this.#conversation.agent(context)).model;
+		this.#model = stored === undefined ? undefined : this.#options.models.getModel(stored.provider, stored.modelId);
+	}
+
+	async #attach(): Promise<void> {
+		const conversationId = this.#conversation.id;
+		const adapter = new DurableEventAdapter({
+			emit: (event) => this.#emit(event),
+			readInbox: () => this.harness.snapshot(InboxDoc, conversationId, BACKGROUND_CONTEXT),
+			readCompactionRecords: () => this.#compactionRecords(),
+			readTaskOutcome: async (taskId) => {
+				const task = await this.harness.getTask(taskId, BACKGROUND_CONTEXT);
+				return task?.state.status === "terminal" ? task.state.outcome : undefined;
+			},
+			entriesAfter: (id) => this.#entriesAfter(id),
+			maxRetries: () => this.#options.settingsManager.getRetrySettings().maxRetries,
+			now: () => Date.now(),
+			report: (error) => this.#options.onReport?.(error),
+		});
+		const stream = await watchEvents(this.harness, conversationId, BACKGROUND_CONTEXT);
+		adapter.attach(stream.snapshot);
+		this.#adapter = adapter;
+		this.#stream = stream;
+		stream.start(async (batch) => {
+			try {
+				await adapter.handle(batch);
+			} catch (error) {
+				this.#options.onReport?.(error);
+			}
+			for (const waiter of this.#drainWaiters) waiter();
+		});
+	}
+
+	async #detach(): Promise<void> {
+		const stream = this.#stream;
+		this.#stream = undefined;
+		this.#adapter = undefined;
+		if (stream !== undefined) await stream.stop();
+		for (const waiter of this.#drainWaiters) waiter();
+	}
+
+	async #emit(event: DurableSessionEvent): Promise<void> {
+		for (const listener of this.#listeners) {
+			try {
+				await listener(event);
+			} catch (error) {
+				this.#options.onReport?.(error);
+			}
+		}
+	}
+
+	/** Wait until the adapter emitted events for the newest entry and no run is open in its events. */
+	async #drain(): Promise<void> {
+		const newest = (await this.#conversation.entries({}, 1, undefined, BACKGROUND_CONTEXT)).items[0]?.id ?? 0;
+		const done = (): boolean => {
+			const adapter = this.#adapter;
+			return adapter === undefined || (adapter.lastEntryId >= newest && !adapter.running);
+		};
+		if (done()) return;
+		await new Promise<void>((resolve) => {
+			const waiter = (): void => {
+				if (!done()) return;
+				this.#drainWaiters.delete(waiter);
+				resolve();
+			};
+			this.#drainWaiters.add(waiter);
+		});
+	}
+
+	async #compactionRecords(): Promise<readonly CompactionRecord[]> {
+		const doc = await this.harness.snapshot(CompactionDetailsDoc, this.#conversation.id, BACKGROUND_CONTEXT);
+		return doc?.records ?? [];
+	}
+
+	async #entriesAfter(id: number): Promise<EntryRecord[]> {
+		const newestFirst: EntryRecord[] = [];
+		let cursor: Parameters<Conversation["entries"]>[2];
+		do {
+			const page = await this.#conversation.entries(
+				{ minEntryId: (id + 1) as EntryId },
+				200,
+				cursor,
+				BACKGROUND_CONTEXT,
+			);
+			newestFirst.push(...page.items);
+			cursor = page.next;
+		} while (cursor !== undefined);
+		return newestFirst.reverse();
+	}
+}

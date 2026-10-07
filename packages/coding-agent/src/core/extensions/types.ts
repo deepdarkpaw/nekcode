@@ -521,6 +521,13 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 */
 	executionMode?: ToolExecutionMode;
 
+	/**
+	 * Crash recovery policy. A call interrupted by a crash reruns after reopen only when this is `"safe"`, which
+	 * requires that running the call twice with the same arguments is harmless (read-only tools). Otherwise
+	 * (default for extension and MCP tools) the call gets an "interrupted" error result and the turn continues.
+	 */
+	replay?: "safe" | "never";
+
 	/** Execute the tool. */
 	execute(
 		toolCallId: string,
