@@ -116,6 +116,8 @@ export class DurableEventAdapter {
 			batch.some((event) => event.type === "run_end") && batch.some((event) => event.type === "run_start");
 		const startsTurn = batch.some((event) => event.type === "turn_start" || event.type === "run_start");
 		const deferred: DurableMessageEnd[] = [];
+		// Durable lists submission records after `run_end`; the run's outcome depends on them.
+		for (const event of batch) if (event.type === "submission") this.#noteSubmission(event.record);
 		for (const [index, event] of batch.entries()) {
 			switch (event.type) {
 				case "snapshot":
@@ -159,9 +161,6 @@ export class DurableEventAdapter {
 					break;
 				case "inbox_update":
 					await this.#queueUpdate();
-					break;
-				case "submission":
-					this.#noteSubmission(event.record);
 					break;
 				case "auto_retry_start":
 					await this.#retryStart(event.attempt, event.at, event.errorMessage);
@@ -230,7 +229,8 @@ export class DurableEventAdapter {
 	async #endTurn(): Promise<void> {
 		if (!this.#turnActive) return;
 		this.#turnActive = false;
-		const message = this.#turnAssistant ?? failedTurnMessage();
+		// Durable writes no answer for a request aborted before its first partial; pi's turn ends with an aborted one.
+		const message = this.#turnAssistant ?? missingAnswer(this.#outcome === "aborted");
 		await this.#host.emit({ type: "turn_end", message, toolResults: this.#turnToolResults });
 		this.#turnToolResults = [];
 	}
@@ -597,8 +597,8 @@ function inputText(content: UserMessage["content"]): string {
 	return content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 }
 
-/** Stand-in answer for `turn_end` when a turn produced none (no model, a faulted generation). */
-function failedTurnMessage(): AssistantMessage {
+/** Stand-in answer for `turn_end` when a turn produced none: aborted before streaming, no model, or a fault. */
+function missingAnswer(aborted: boolean): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [],
@@ -613,8 +613,8 @@ function failedTurnMessage(): AssistantMessage {
 			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: "error",
-		errorMessage: "The turn ended without a response",
+		stopReason: aborted ? "aborted" : "error",
+		...(aborted ? {} : { errorMessage: "The turn ended without a response" }),
 		timestamp: Date.now(),
 	};
 }

@@ -4,7 +4,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { DurableEngine } from "../../src/core/durable/engine.ts";
 import type { DurableSessionEvent } from "../../src/core/durable/events.ts";
 import { createHarness } from "../suite/harness.ts";
-import { durableSetup, modelOf, openEngine, recordEvents, testTool, textOf, textResult } from "./support.ts";
+import {
+	durableSetup,
+	eventShape,
+	modelOf,
+	openEngine,
+	recordEvents,
+	testTool,
+	textOf,
+	textResult,
+} from "./support.ts";
 
 const engines: DurableEngine[] = [];
 
@@ -234,6 +243,56 @@ describe("DurableEngine", () => {
 		const result = (await engine.entries()).map(modelOf).find((message) => message?.role === "toolResult");
 		expect(seenArgs).toEqual([{ path: "b" }]);
 		expect(textOf(result)).toBe("patched raw");
+	});
+
+	it("aborts a streaming run and settles as aborted", async () => {
+		const setup = durableSetup();
+		setup.faux.setResponses([
+			(_context, options) =>
+				new Promise((_, reject) => {
+					options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+				}),
+		]);
+		const engine = await track(openEngine(setup, undefined));
+		const events = recordEvents(engine);
+		const started = new Promise<void>((resolve) => {
+			engine.subscribe((event) => {
+				if (event.type === "turn_start") resolve();
+			});
+		});
+		await engine.prompt("go");
+		await started;
+		await engine.abort();
+
+		const settled = events.find((event) => event.type === "agent_settled");
+		expect(settled?.type === "agent_settled" ? settled.outcome : undefined).toBe("aborted");
+		expect(eventShape(events).slice(-3)).toEqual(["turn_end", "agent_end", "agent_settled"]);
+		const turnEnd = events.find((event) => event.type === "turn_end");
+		expect(turnEnd?.type === "turn_end" ? turnEnd.message : undefined).toMatchObject({ stopReason: "aborted" });
+		// Durable writes no answer for a request aborted before its first committed partial.
+		expect(modelOf((await engine.entries()).at(-1)!)?.role).toBe("user");
+	});
+
+	it("forks after an entry and continues on the fork only", async () => {
+		const setup = durableSetup();
+		setup.faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two"), fauxAssistantMessage("fork")]);
+		const engine = await track(openEngine(setup, undefined));
+		await engine.prompt("first", { systemPrompt: "Test." });
+		await engine.waitForIdle();
+		const firstAnswer = (await engine.entries()).at(-1)!;
+		await engine.prompt("second");
+		await engine.waitForIdle();
+		const source = engine.conversationId;
+
+		const fork = await engine.fork(firstAnswer.id);
+		await engine.prompt("on fork");
+		await engine.waitForIdle();
+
+		expect(fork).not.toBe(source);
+		const texts = (await engine.messages()).map((message) =>
+			message.role === "system" ? "system" : textOf(message as never),
+		);
+		expect(texts).toEqual(["system", "first", "one", "on fork", "fork"]);
 	});
 
 	it("compacts with pi's summarizer and keeps pi's details", async () => {
