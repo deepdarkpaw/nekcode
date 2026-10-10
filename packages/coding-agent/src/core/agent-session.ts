@@ -1331,6 +1331,7 @@ export class AgentSession {
 		preflightResult?.("started");
 		await submission.wait(BACKGROUND_CONTEXT);
 		await engine.waitForIdle();
+		await this.sessionManager.refresh();
 		this._startCacheWarming();
 	}
 
