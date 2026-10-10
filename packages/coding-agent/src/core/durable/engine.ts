@@ -28,7 +28,7 @@ import { agentContext } from "./context.ts";
 import { agentMessageEntry, CompactionDetailsDoc, type CompactionRecord } from "./entries.ts";
 import { DurableEventAdapter, type DurableSessionEvent } from "./events.ts";
 import type { DurableHostHooks } from "./hooks.ts";
-import { acquireSessionLock, type SessionLock } from "./lock.ts";
+import { acquireSessionLock, type SessionLock, sessionLockPath } from "./lock.ts";
 import { planSystemEntries } from "./prompt.ts";
 import {
 	createHookExtension,
@@ -71,10 +71,7 @@ export type DurablePromptOptions = {
 
 type Listener = (event: DurableSessionEvent) => void | Promise<void>;
 
-/** Lock file guarding a session database against a second process. */
-export function sessionLockPath(path: string): string {
-	return `${path}.lock`;
-}
+export { sessionLockPath };
 
 /**
  * Pi's coding agent loop on a durable Harness. Every input, answer, tool call, queue, and compaction is committed to

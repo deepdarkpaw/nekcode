@@ -10,6 +10,7 @@ import {
 	type JsonObject,
 } from "@earendil-works/pi-durable";
 import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../messages.ts";
+import { type SessionEntry, sessionEntryToContextMessages } from "../session-entries.ts";
 import { toStrictJsonObject } from "./json.ts";
 
 /**
@@ -36,11 +37,27 @@ export function agentMessageEntry(
 	return { kind: NEK_MESSAGE_KIND, data, ...(model.length === 0 ? {} : { model }) };
 }
 
-/** The original pi message of a {@link NEK_MESSAGE_KIND} entry. */
+/** The pi entry a session entry stored with its durable entry (`data.entry`), if any. */
+export function storedSessionEntry(entry: EntryRecord): SessionEntry | undefined {
+	const data = entry.data;
+	if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+	const stored = data.entry;
+	if (stored === null || typeof stored !== "object" || Array.isArray(stored)) return undefined;
+	return typeof stored.type === "string" && typeof stored.id === "string"
+		? (stored as unknown as SessionEntry)
+		: undefined;
+}
+
+/**
+ * The original pi message of a {@link NEK_MESSAGE_KIND} entry: `data.message` when the engine wrote it, else the
+ * context message of the stored session entry (custom messages, branch summaries, bash executions).
+ */
 export function storedAgentMessage(entry: EntryRecord): AgentMessage | undefined {
 	if (entry.kind !== NEK_MESSAGE_KIND) return undefined;
 	const data = entry.data;
 	if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+	const sessionEntry = storedSessionEntry(entry);
+	if (sessionEntry !== undefined) return sessionEntryToContextMessages(sessionEntry)[0];
 	const message = data.message;
 	if (message === null || typeof message !== "object" || Array.isArray(message) || typeof message.role !== "string") {
 		return undefined;
@@ -84,7 +101,10 @@ export function hashSummary(summary: string): string {
 /** The summary text of a `pi.compaction` entry, without durable's wrapper. */
 export function compactionSummaryText(entry: EntryRecord): string | undefined {
 	if (!CompactionEntry.is(entry)) return undefined;
-	const message = entry.model?.[0];
+	const stored = storedSessionEntry(entry);
+	if (stored?.type === "compaction") return stored.summary;
+	// An imported compaction contributes its system message before the summary.
+	const message = entry.model?.find((each) => each.role === "user");
 	if (message?.role !== "user") return undefined;
 	const text =
 		typeof message.content === "string"
@@ -107,4 +127,16 @@ export function findCompactionRecord(
 		if (record.firstKept === entry.head && record.summaryHash === hash) return record;
 	}
 	return undefined;
+}
+
+/** Pi's `tokensBefore`, `details`, and `fromHook` of a `pi.compaction` entry: stored with it, or in the side record. */
+export function compactionDetails(
+	records: readonly CompactionRecord[],
+	entry: EntryRecord,
+): { readonly tokensBefore: number; readonly details?: unknown; readonly fromHook?: boolean } | undefined {
+	const stored = storedSessionEntry(entry);
+	if (stored?.type === "compaction") {
+		return { tokensBefore: stored.tokensBefore, details: stored.details, fromHook: stored.fromHook };
+	}
+	return findCompactionRecord(records, entry);
 }

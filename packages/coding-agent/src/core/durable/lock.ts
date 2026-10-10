@@ -130,3 +130,8 @@ function removeIfPresent(path: string): void {
 function errorCode(error: unknown): string | undefined {
 	return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
+
+/** Lock file guarding a session database against a second process. */
+export function sessionLockPath(path: string): string {
+	return `${path}.lock`;
+}

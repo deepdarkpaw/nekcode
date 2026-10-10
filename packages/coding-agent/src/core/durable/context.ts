@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { CompactionEntry, type ContextView, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
-import { type CompactionRecord, compactionSummaryText, findCompactionRecord, storedAgentMessage } from "./entries.ts";
+import { type CompactionRecord, compactionDetails, compactionSummaryText, storedAgentMessage } from "./entries.ts";
 
 /**
  * One item of the pi view of model context: the pi message an extension sees and, when it reaches the model, the
@@ -59,14 +59,24 @@ function entryItems(
 			return entry.model === undefined && isContextOnly(stored) ? [{ agent: stored, llm: undefined }] : [];
 		return [{ agent: stored, llm: contribution[0] }, ...contribution.slice(1).map((llm) => ({ agent: llm, llm }))];
 	}
-	if (CompactionEntry.is(entry) && unedited && contribution.length === 1) {
+	// A context edit replaced a custom message's content; pi keeps the custom message with the new content.
+	if (stored?.role === "custom" && contribution.length === 1 && contribution[0]!.role === "user") {
+		return [{ agent: { ...stored, content: contribution[0]!.content }, llm: contribution[0] }];
+	}
+	if (CompactionEntry.is(entry) && unedited) {
 		const summary = compactionSummaryText(entry);
-		if (summary !== undefined) {
-			const message = contribution[0]!;
-			const tokensBefore = findCompactionRecord(records, entry)?.tokensBefore ?? 0;
-			return [
-				{ agent: { role: "compactionSummary", summary, tokensBefore, timestamp: message.timestamp }, llm: message },
-			];
+		const index = contribution.findIndex((message) => message.role === "user");
+		if (summary !== undefined && index >= 0) {
+			// An imported compaction also contributes its system message, before the summary.
+			const tokensBefore = compactionDetails(records, entry)?.tokensBefore ?? 0;
+			return contribution.map((message, position) =>
+				position === index
+					? {
+							agent: { role: "compactionSummary", summary, tokensBefore, timestamp: message.timestamp },
+							llm: message,
+						}
+					: { agent: message, llm: message },
+			);
 		}
 	}
 	return contribution.map((message) => ({ agent: message, llm: message }));

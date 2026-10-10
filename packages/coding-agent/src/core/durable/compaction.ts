@@ -23,8 +23,8 @@ import { agentContext } from "./context.ts";
 import {
 	CompactionDetailsDoc,
 	type CompactionRecord,
+	compactionDetails,
 	compactionSummaryText,
-	findCompactionRecord,
 	hashSummary,
 	MAX_COMPACTION_RECORDS,
 } from "./entries.ts";
@@ -155,13 +155,14 @@ function buildPreparation(
 		: compaction.messages.map((message: Message) => message);
 	const head: EntryRecord | undefined = compaction.entries[0];
 	const previous = head !== undefined && CompactionEntry.is(head) ? head : undefined;
-	const previousRecord = previous === undefined ? undefined : findCompactionRecord(records, previous);
+	const previousRecord = previous === undefined ? undefined : compactionDetails(records, previous);
 	// Pi summarizes the conversation after the previous summary and passes that summary separately.
 	const messagesToSummarize = summarized.filter(
 		(message) => message.role !== "compactionSummary" && message.role !== "system",
 	);
 	const fileOps = createFileOps();
-	if (previousRecord !== undefined && !previousRecord.fromHook) addRecordedFiles(previousRecord, fileOps);
+	if (previousRecord !== undefined && previousRecord.fromHook !== true)
+		addRecordedFiles(previousRecord.details, fileOps);
 	for (const message of messagesToSummarize) extractFileOpsFromMessage(message, fileOps);
 	const previousSummary = previous === undefined ? undefined : compactionSummaryText(previous);
 	return {
@@ -176,10 +177,9 @@ function buildPreparation(
 	};
 }
 
-function addRecordedFiles(record: CompactionRecord, fileOps: ReturnType<typeof createFileOps>): void {
-	const details = record.details;
+function addRecordedFiles(details: unknown, fileOps: ReturnType<typeof createFileOps>): void {
 	if (details === null || typeof details !== "object" || Array.isArray(details)) return;
-	const { readFiles, modifiedFiles } = details;
+	const { readFiles, modifiedFiles } = details as { readFiles?: unknown; modifiedFiles?: unknown };
 	if (Array.isArray(readFiles)) for (const file of readFiles) if (typeof file === "string") fileOps.read.add(file);
 	if (Array.isArray(modifiedFiles)) {
 		for (const file of modifiedFiles) if (typeof file === "string") fileOps.edited.add(file);

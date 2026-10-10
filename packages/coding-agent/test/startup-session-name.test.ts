@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
 // --import takes a module specifier, not a filesystem path.
@@ -57,13 +58,11 @@ function createSessionFile(projectDir: string, sessionFile: string): void {
 	);
 }
 
+/** Session names written to the session, read from the database the JSONL file was imported into. */
 function readSessionInfoNames(sessionFile: string): string[] {
-	return readFileSync(sessionFile, "utf8")
-		.trim()
-		.split("\n")
-		.map((line) => JSON.parse(line) as { type?: string; name?: string })
-		.filter((entry) => entry.type === "session_info")
-		.map((entry) => entry.name ?? "");
+	return SessionManager.open(sessionFile)
+		.getEntries()
+		.flatMap((entry) => (entry.type === "session_info" ? [entry.name ?? ""] : []));
 }
 
 async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {

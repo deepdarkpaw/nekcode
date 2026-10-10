@@ -69,10 +69,16 @@ export interface ProviderHooks {
  * behavior as pi's agent loop.
  */
 export class HookedModels implements Models {
-	readonly #inner: Models;
-	readonly #hooks: ProviderHooks;
+	#inner: Models;
+	#hooks: ProviderHooks;
 
 	constructor(inner: Models, hooks: ProviderHooks) {
+		this.#inner = inner;
+		this.#hooks = hooks;
+	}
+
+	/** Route later calls to `inner` with `hooks`; a session store opens its Harness before the host binds models. */
+	reconfigure(inner: Models, hooks: ProviderHooks): void {
 		this.#inner = inner;
 		this.#hooks = hooks;
 	}

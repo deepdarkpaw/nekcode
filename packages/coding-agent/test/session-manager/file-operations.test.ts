@@ -368,7 +368,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("truncates and rewrites empty file with valid header", () => {
+	it("gives an empty file a session with a valid header", () => {
 		const emptyFile = join(tempDir, "empty.jsonl");
 		writeFileSync(emptyFile, "");
 
@@ -379,13 +379,11 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		expect(sm.getHeader()).toBeTruthy();
 		expect(sm.getHeader()?.type).toBe("session");
 
-		// File should now contain a valid header
-		const content = readFileSync(emptyFile, "utf-8");
-		const lines = content.trim().split("\n").filter(Boolean);
-		expect(lines.length).toBe(1);
-		const header = JSON.parse(lines[0]);
-		expect(header.type).toBe("session");
-		expect(header.id).toBe(sm.getSessionId());
+		// The session database next to it holds the header; the empty JSONL file stays as it was.
+		expect(sm.getSessionFile()).toBe(join(tempDir, "empty.sqlite"));
+		expect(readSessionFileRoles(sm.getSessionFile()!)).toEqual(["session"]);
+		expect(SessionManager.open(sm.getSessionFile()!).getSessionId()).toBe(sm.getSessionId());
+		expect(readFileSync(emptyFile, "utf-8")).toBe("");
 	});
 
 	it("throws and preserves non-empty file without valid header", () => {
@@ -417,8 +415,8 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 
 		const sm = SessionManager.open(explicitPath, tempDir);
 
-		// The session file path should be preserved
-		expect(sm.getSessionFile()).toBe(explicitPath);
+		// The session lives in the database next to the explicit JSONL path.
+		expect(sm.getSessionFile()).toBe(join(tempDir, "my-session.sqlite"));
 	});
 
 	it("subsequent loads of initialized empty file work correctly", () => {

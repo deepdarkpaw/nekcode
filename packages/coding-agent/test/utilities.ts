@@ -12,6 +12,7 @@ import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { projectSnapshot, readSessionSnapshot } from "../src/core/durable/session-snapshot.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import type {
 	Extension,
@@ -152,15 +153,11 @@ export function assistantMsg(text: string) {
 	};
 }
 
-/** Read a session JSONL file and return one label per record. */
+/** Read a session file (a durable database, in stored order) and return one label per record. */
 export function readSessionFileRoles(file: string): string[] {
-	return readFileSync(file, "utf-8")
-		.trim()
-		.split("\n")
-		.map((line) => {
-			const record = JSON.parse(line) as { message?: { role?: string }; type?: string };
-			return record.message?.role ?? record.type ?? "";
-		});
+	return projectSnapshot(readSessionSnapshot(file)).fileEntries.map((record) =>
+		record.type === "message" ? record.message.role : record.type,
+	);
 }
 
 /**
