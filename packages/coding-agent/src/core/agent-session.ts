@@ -1545,7 +1545,7 @@ export class AgentSession {
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
 		this._followUpMessages = [];
-		this.agent.clearAllQueues();
+		void this._engineOrThrow().then((engine) => engine.clearQueue());
 		this._emitQueueUpdate();
 		return { steering, followUp };
 	}

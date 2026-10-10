@@ -248,6 +248,16 @@ export class DurableEngine {
 		);
 	}
 
+	/** Withdraw queued steer/follow-up submissions without aborting the active run. */
+	async clearQueue(): Promise<void> {
+		const inspection = await this.harness.inspect(BACKGROUND_CONTEXT);
+		for (const submission of inspection.submissions) {
+			if (submission.conversationId !== this.#conversation.id || submission.status !== "queued") continue;
+			if (submission.type === "input")
+				await this.harness.abortSubmission(submission.id, BACKGROUND_CONTEXT, this.#conversation.id);
+		}
+		await this.#drain();
+	}
 	/** Abort the run and withdraw queued inputs. */
 	async abort(): Promise<void> {
 		await this.#conversation.abort(BACKGROUND_CONTEXT);
