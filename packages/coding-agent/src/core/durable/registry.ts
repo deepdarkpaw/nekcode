@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import type { AgentMessage, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
+import type { ImageContent, Message, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 import {
 	CompactionTask,
 	defineDoc,
@@ -183,6 +183,30 @@ export function createHookExtension(bridge: HookBridge): Extension {
 		name: HOOKS_EXTENSION,
 		hooks: [
 			hook(GenerationTask, {
+				// These pi extension handlers run from durable hooks and may rerun after a crash before their consuming commit.
+				afterResponse: async (message) => {
+					const result = await bridge.hooks.afterResponse?.({ message });
+					return result?.message === undefined ? undefined : { message: result.message };
+				},
+				onYield: async (message) => await bridge.hooks.onYield?.({ message }),
+				afterTools: async (assistant, results, api, context) => {
+					const conversation = await bridge.harness().conversation(api.conversationId, context);
+					if (conversation === undefined) return undefined;
+					const readEntry = async (id: typeof assistant) =>
+						(await conversation.entries({ minEntryId: id, maxEntryId: id }, 1, undefined, context)).items[0];
+					const [assistantEntry, resultEntries] = await Promise.all([
+						readEntry(assistant),
+						Promise.all(results.map((id) => readEntry(id))),
+					]);
+					const message = assistantEntry?.model?.[0];
+					if (message?.role !== "assistant") return undefined;
+					const toolResults = resultEntries.flatMap((entry): ToolResultMessage[] => {
+						const candidate = entry?.model?.[0];
+						return candidate?.role === "toolResult" ? [candidate] : [];
+					});
+					const result = await bridge.hooks.afterTools?.({ assistant, results, message, toolResults });
+					return result?.entries === undefined ? undefined : { entries: result.entries };
+				},
 				// Reruns on every request attempt, including recovery and retries, like pi's `context` per request.
 				beforeRequest: async (request, api, context) => {
 					const messages = await requestAgentMessages(bridge, request.messages, api, context);

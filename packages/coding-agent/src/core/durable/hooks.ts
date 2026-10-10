@@ -1,5 +1,6 @@
 import type { AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ImageContent, TextContent, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
+import type { EntryDraft, EntryId, UserInput } from "@earendil-works/pi-durable";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
 import type { ConvertToLlm } from "./entries.ts";
 
@@ -53,6 +54,25 @@ export type HostCompactionDecision = { readonly cancel: true } | { readonly comp
  * compaction. Handlers must tolerate that.
  */
 export interface DurableHostHooks {
+	/** Pi's `afterResponse`; a replacement is committed instead of the provider answer. */
+	afterResponse?(event: {
+		readonly message: AssistantMessage;
+	}): Promise<{ readonly message?: AssistantMessage } | undefined>;
+	/** Pi's `onYield`; entries are committed after the answer, before queued boundary inputs. */
+	onYield?(event: { readonly message: AssistantMessage; readonly entryId?: EntryId }): Promise<
+		| {
+				readonly continue?: UserInput | true;
+				readonly entries?: readonly EntryDraft[];
+		  }
+		| undefined
+	>;
+	/** Pi's `afterTools`; entries are committed after the tool results, before boundary inputs. */
+	afterTools?(event: {
+		readonly assistant: EntryId;
+		readonly results: readonly EntryId[];
+		readonly message: AssistantMessage;
+		readonly toolResults: readonly ToolResultMessage[];
+	}): Promise<{ readonly entries?: readonly EntryDraft[] } | undefined>;
 	/** `tool_call`; may mutate `event.input`. A throw blocks the call with the error text, as in pi. */
 	toolCall?(event: HostToolCall): Promise<HostToolCallDecision | undefined>;
 	/** `tool_result` plus pi's result normalization (image resizing). */
