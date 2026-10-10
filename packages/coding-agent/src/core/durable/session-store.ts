@@ -7,9 +7,12 @@ import { createModels } from "@earendil-works/pi-ai";
 import {
 	type ContextEdit,
 	type ConversationId,
+	type ConversationRecord,
+	type Cursor,
 	createRegistry,
 	type EntryDraft,
 	type EntryId,
+	type EntryRecord,
 	Harness,
 	type HarnessSettings,
 	MemoryStorage,
@@ -264,6 +267,32 @@ export class DurableSessionStore {
 		} finally {
 			this.#drain = undefined;
 		}
+	}
+
+	/** Read the complete in-memory durable tables for a synchronous SessionManager projection. */
+	async memorySnapshot(
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<{ conversations: ConversationRecord[]; entries: EntryRecord[]; nextSeq: number } | undefined> {
+		if (this.path !== undefined || this.#memory === undefined) return undefined;
+		const conversations: ConversationRecord[] = [];
+		let conversationCursor: Cursor | undefined;
+		do {
+			const page = await this.#memory.scanConversations({}, 256, conversationCursor, context);
+			conversations.push(...page.items);
+			conversationCursor = page.next;
+		} while (conversationCursor !== undefined);
+		const entries: EntryRecord[] = [];
+		for (const conversation of conversations) {
+			let entryCursor: Cursor | undefined;
+			do {
+				const page = await this.#memory.scanEntries({ conversationId: conversation.id }, 256, entryCursor, context);
+				entries.push(...page.items);
+				entryCursor = page.next;
+			} while (entryCursor !== undefined);
+		}
+		conversations.sort((left, right) => left.id - right.id);
+		entries.sort((left, right) => left.id - right.id);
+		return { conversations, entries, nextSeq: 0 };
 	}
 
 	async #open(context: Context): Promise<Harness> {

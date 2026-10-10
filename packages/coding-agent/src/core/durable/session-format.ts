@@ -223,6 +223,35 @@ function deriveEntry(record: EntryRecord, identity: DerivedIdentity): SessionEnt
 		parentId: identity.parentId,
 		timestamp: isoTimestamp(record.model, identity.fallbackTimestamp),
 	};
+	if (record.kind === "nek.custom") {
+		const data = record.data;
+		if (data === null || typeof data !== "object" || Array.isArray(data) || typeof data.customType !== "string")
+			return undefined;
+		return {
+			...base,
+			type: "custom",
+			customType: data.customType,
+			...(data.data === undefined ? {} : { data: data.data }),
+		};
+	}
+	if (record.kind === "nek.context_edit") {
+		const data = record.data;
+		if (
+			data === null ||
+			typeof data !== "object" ||
+			Array.isArray(data) ||
+			typeof data.targetId !== "string" ||
+			(data.replacement !== null &&
+				(data.replacement === undefined || typeof data.replacement !== "object" || Array.isArray(data.replacement)))
+		)
+			return undefined;
+		return {
+			...base,
+			type: "context_edit",
+			targetId: data.targetId,
+			replacement: data.replacement as ContextEditEntry["replacement"],
+		};
+	}
 	if (record.kind === NEK_MESSAGE_KIND) {
 		const data = record.data as { message?: AgentMessage } | undefined;
 		const message = data?.message;

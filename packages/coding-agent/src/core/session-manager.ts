@@ -267,6 +267,17 @@ export class SessionManager extends SessionTree {
 	}
 
 	/** Resolve once every entry appended so far is durably written; appends are synchronous unless an engine runs. */
+	/** Refresh the in-memory tree from durable storage after an engine commit. */
+	async refresh(): Promise<void> {
+		await this.flush();
+		if (!this.persist) {
+			const snapshot = await this.#memoryStore?.memorySnapshot();
+			if (snapshot !== undefined) this._loadEntries(projectSnapshot(snapshot).fileEntries);
+			return;
+		}
+		if (this.sessionFile && existsSync(this.sessionFile)) this._loadDatabase(this.sessionFile);
+	}
+
 	async flush(): Promise<void> {
 		if (!this.persist) {
 			await this.#memoryStore?.flush();
