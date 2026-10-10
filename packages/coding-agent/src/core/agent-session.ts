@@ -36,6 +36,7 @@ import type {
 	Usage,
 } from "@earendil-works/pi-ai/compat";
 import {
+	clampThinkingLevel,
 	cleanupSessionResources,
 	getSupportedThinkingLevels,
 	modelsAreEqual,
@@ -418,6 +419,10 @@ export class AgentSession {
 		});
 		if (this._initialActiveToolNames === undefined) this._restoreToolsFromTranscript();
 		this._enginePromise = this._openDurableEngine();
+		this.agent.waitForIdle = () => this.waitForIdle();
+		this.agent.abort = () => {
+			void this.abort();
+		};
 	}
 
 	private async _openDurableEngine(): Promise<DurableEngine> {
@@ -1492,10 +1497,14 @@ export class AgentSession {
 		if (!(await this._modelRuntime.checkAuth(model.provider)))
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		const previousModel = this.model;
-		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
+		const requestedThinkingLevel = this._getThinkingLevelForModelSwitch(model);
+		const thinkingLevel = getSupportedThinkingLevels(model).includes(requestedThinkingLevel)
+			? requestedThinkingLevel
+			: (clampThinkingLevel(model, requestedThinkingLevel) as ThinkingLevel);
 		await (await this._engineOrThrow()).setModel(model, thinkingLevel);
 		this.agent.state.model = model;
 		this.agent.state.thinkingLevel = thinkingLevel;
+		this.sessionManager.appendModelChange(model.provider, model.id);
 		if (options.persist) this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 		await this._emitModelSelect(model, previousModel, "set");
 	}
@@ -1614,10 +1623,24 @@ export class AgentSession {
 	 * Persists the requested level to global defaults only when options.persist is true.
 	 */
 	setThinkingLevel(level: ThinkingLevel, options: ModelMutationOptions = {}): void {
-		this.agent.state.thinkingLevel = level;
-		void this._engineOrThrow().then((engine) => engine.setThinkingLevel(level));
+		const availableLevels = this.getAvailableThinkingLevels();
+		const effectiveLevel = availableLevels.includes(level)
+			? level
+			: this.model
+				? (clampThinkingLevel(this.model, level) as ThinkingLevel)
+				: "off";
+		const previousLevel = this.agent.state.thinkingLevel;
 		if (options.persist) this.settingsManager.setDefaultThinkingLevel(level);
-		this._emit({ type: "thinking_level_changed", level });
+		if (effectiveLevel === previousLevel) return;
+		this.agent.state.thinkingLevel = effectiveLevel;
+		this.sessionManager.appendThinkingLevelChange(effectiveLevel);
+		void this._engineOrThrow().then((engine) => engine.setThinkingLevel(effectiveLevel));
+		this._emit({ type: "thinking_level_changed", level: effectiveLevel });
+		void this._extensionRunner.emit({
+			type: "thinking_level_select",
+			level: effectiveLevel,
+			previousLevel,
+		});
 	}
 
 	/**
