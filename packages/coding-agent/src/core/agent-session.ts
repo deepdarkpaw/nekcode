@@ -25,7 +25,7 @@ import type {
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
-import { contentText, getCurrentSystemMessage } from "@earendil-works/pi-ai";
+import { contentText, getCurrentSystemMessage, normalizeContext } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -215,7 +215,8 @@ export interface AgentSessionConfig {
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
 	/** Keeps the prompt cache entry of the last session request warm. */
-	cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
+	cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed"> &
+		Partial<Pick<CacheWarmer, "start">>;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
 	/** Reload activates only new entries in defaultTools when no explicit tool selection was supplied. */
@@ -375,7 +376,8 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
-	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
+	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed"> &
+		Partial<Pick<CacheWarmer, "start">>;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -527,6 +529,20 @@ export class AgentSession {
 					...this.settingsManager.getThinkingBudgets(),
 				};
 			},
+			beforeStream: (model, context, options) => {
+				if (this._cacheWarmer?.start === undefined) return;
+				const messages = this.agent.state.messages;
+				this._cacheWarmer.start({ model, context, options }, () => {
+					const currentModel = this.agent.state.model;
+					const currentMessages = this.agent.state.messages;
+					return (
+						currentModel.provider === model.provider &&
+						currentModel.id === model.id &&
+						messages.length <= currentMessages.length &&
+						messages.every((message, index) => currentMessages[index] === message)
+					);
+				});
+			},
 		});
 		const store = this.sessionManager.durableStore();
 		const engine = await DurableEngine.open({
@@ -613,7 +629,10 @@ export class AgentSession {
 
 	private async _handleDurableEvent(event: AgentSessionEvent): Promise<void> {
 		if (event.type === "agent_start") this._isAgentRunActive = true;
-		if (event.type === "agent_settled") this._isAgentRunActive = false;
+		if (event.type === "agent_settled") {
+			this._isAgentRunActive = false;
+			this._cacheWarmer?.onAgentSettled();
+		}
 		await this.sessionManager.refresh();
 		this._cachedMessages = this.sessionManager.buildSessionContext().messages;
 		this.agent.state.messages = this._cachedMessages;
@@ -1091,6 +1110,36 @@ export class AgentSession {
 		return { text, images };
 	}
 
+	private _startCacheWarming(): void {
+		const model = this.model;
+		const cacheWarmer = this._cacheWarmer;
+		if (model === undefined || cacheWarmer?.start === undefined) return;
+		const retry = this.settingsManager.getProviderRetrySettings();
+		const idleTimeout = this.settingsManager.getHttpIdleTimeoutMs();
+		const options: ModelsSimpleStreamOptions = {
+			sessionId: this.sessionId,
+			timeoutMs: retry.timeoutMs ?? (idleTimeout === 0 ? 2147483647 : idleTimeout),
+			websocketConnectTimeoutMs: this.settingsManager.getWebSocketConnectTimeoutMs(),
+			maxRetries: retry.maxRetries,
+			maxRetryDelayMs: retry.maxRetryDelayMs,
+			...this.settingsManager.getThinkingBudgets(),
+		};
+		const messages = this.agent.state.messages;
+		cacheWarmer.start(
+			{ model, context: normalizeContext({ messages: convertToLlm(this.messages) }), options },
+			() => {
+				const currentModel = this.agent.state.model;
+				const currentMessages = this.agent.state.messages;
+				return (
+					currentModel.provider === model.provider &&
+					currentModel.id === model.id &&
+					messages.length <= currentMessages.length &&
+					messages.every((message, index) => currentMessages[index] === message)
+				);
+			},
+		);
+	}
+
 	private async _normalizePromptImages(
 		images: ImageContent[] | undefined,
 	): Promise<{ images: ImageContent[]; hints: string[] }> {
@@ -1222,6 +1271,7 @@ export class AgentSession {
 		preflightResult?.("started");
 		await submission.wait(BACKGROUND_CONTEXT);
 		await engine.waitForIdle();
+		this._startCacheWarming();
 	}
 
 	private _assertQueueableInput(text: string): void {

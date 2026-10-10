@@ -323,6 +323,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			websocketConnectTimeoutMs: options.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs(),
 			maxRetries: options.maxRetries ?? providerRetrySettings.maxRetries,
 			maxRetryDelayMs: options.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+			onPayload: options.onPayload ?? transformProviderPayload,
+			onResponse: options.onResponse ?? handleProviderResponse,
+			onProviderStreamEvent: options.onProviderStreamEvent ?? handleProviderStreamEvent,
 			transformHeaders: async (requestHeaders) => {
 				const headers = mergeProviderAttributionHeaders(
 					requestModel,

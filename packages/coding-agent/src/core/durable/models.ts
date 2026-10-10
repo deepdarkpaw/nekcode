@@ -61,6 +61,8 @@ export interface ProviderHooks {
 	 * budgets and the WebSocket connect timeout. The request's own options override them.
 	 */
 	requestOptions?(model: Model<Api>): ModelsSimpleStreamOptions;
+	/** Called with the exact request options immediately before a real provider stream starts. */
+	beforeStream?(model: Model<Api>, context: Context, options: ModelsSimpleStreamOptions): void;
 }
 
 /**
@@ -126,7 +128,9 @@ export class HookedModels implements Models {
 	}
 
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
-		return this.#inner.streamSimple(model, context, this.#withHooks(model, options));
+		const requestOptions = this.#withHooks(model, options);
+		this.#hooks.beforeStream?.(model, context, requestOptions);
+		return this.#inner.streamSimple(model, context, requestOptions);
 	}
 
 	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage> {
