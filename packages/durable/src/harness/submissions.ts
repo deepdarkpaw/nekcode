@@ -11,7 +11,7 @@ import type {
 	SubmissionRecord,
 	Tx,
 } from "../types.ts";
-import { startRun } from "./generation.ts";
+import { endsInInput, startRun } from "./generation.ts";
 import { applyBoundary, InboxDoc, isStale, prepareBoundary, type QueueModes, removeInboxItem } from "./inbox.ts";
 import { LiveDoc } from "./live.ts";
 import type { SettledSubmissionRecord, Submission, SubmissionDraft, UserInput } from "./types.ts";
@@ -28,6 +28,8 @@ export class Submissions {
 	readonly #queueModes: () => QueueModes;
 	/** Enable task scheduling; submitting or waiting asks for progress. */
 	readonly #resume: () => void;
+	/** nek: reports an ignored write trigger. */
+	readonly #report: (error: unknown) => void;
 	readonly #waiters = new Waiters<SubmissionId, SettledSubmissionRecord>();
 	#closed = false;
 
@@ -37,12 +39,14 @@ export class Submissions {
 		now: () => number,
 		queueModes: () => QueueModes,
 		resume: () => void,
+		report: (error: unknown) => void = () => {},
 	) {
 		this.#session = session;
 		this.#storage = storage;
 		this.#now = now;
 		this.#queueModes = queueModes;
 		this.#resume = resume;
+		this.#report = report;
 		session.subscribeCommits((publication) => this.#observe(publication));
 		session.subscribeClose(() => {
 			this.#closed = true;
@@ -53,6 +57,10 @@ export class Submissions {
 	/** Admit a submission in one commit; see `admitSubmission()`. */
 	async submit(conversationId: ConversationId, draft: SubmissionDraft, context: Context): Promise<Submission> {
 		this.#resume();
+		if (draft.type === "write" && draft.trigger === true && !endsInInput([draft.entry])) {
+			// nek: placed as a plain write.
+			this.#report(new Error("Write trigger ignored: its entry does not end in a non-assistant message"));
+		}
 		const id = await this.#session.commitWith(
 			(tx) => admitSubmission(tx, conversationId, draft, this.#now(), this.#queueModes()),
 			context,
@@ -143,7 +151,9 @@ function isSettled(record: SubmissionRecord): record is SettledSubmissionRecord 
  * known request ID returns its existing submission without writing. A busy conversation queues it in `pi.inbox`, or
  * rejects `whenBusy: "reject"` input with `ConversationBusy`. An idle conversation with queued items queues it behind
  * them and runs a final boundary. Otherwise idle input places a user entry and starts a run, and an idle write appends
- * its entry and settles `done`, or `stale` when its head reaches before the active range.
+ * its entry and settles `done`, or `stale` when its head reaches before the active range. nek: an idle triggered write
+ * whose entry ends in a non-assistant model message also starts a run with the write as its input, in the same commit; a
+ * busy one is queued and placed as a plain write.
  */
 export async function admitSubmission(
 	tx: Tx,
@@ -187,6 +197,10 @@ export async function admitSubmission(
 		if (boundary === undefined) return id;
 		const { users } = await applyBoundary(tx, boundary, "final", now);
 		if (users.length > 0) await startRun(tx, conversationId, live, users);
+		// nek: an idle triggered write placed behind queued writes, last, starts the run itself.
+		else if (draft.type === "write" && draft.trigger === true && endsInInput([draft.entry])) {
+			if (!isStale(boundary, draft.entry)) await startRun(tx, conversationId, live, [id]);
+		}
 		return id;
 	}
 	if (draft.type === "write") {
@@ -196,7 +210,10 @@ export async function admitSubmission(
 		}
 		const entry = await tx.appendEntry(conversationId, draft.entry);
 		const write = { conversationId, ...requestId, type: "write", status: "done", entry: entry.id } as const;
-		return (await tx.createSubmission(write)).id;
+		const { id } = await tx.createSubmission(write);
+		// nek: a triggered write starts a run in its placement commit; the done write identifies the run.
+		if (draft.trigger === true && endsInInput([draft.entry])) await startRun(tx, conversationId, live, [id]);
+		return id;
 	}
 	const message = { role: "user", content: draft.content, timestamp: now } as const;
 	const entry = await tx.appendEntry(UserEntry, conversationId, { model: [message] });

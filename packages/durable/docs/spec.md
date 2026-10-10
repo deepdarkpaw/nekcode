@@ -312,6 +312,8 @@ type SubmissionDraft = {
   | {
       readonly type: "write";
       readonly entry: EntryDraft;
+      /** nek: start a run when placed idle (section 6). */
+      readonly trigger?: true;
       readonly content?: never;
       readonly whenBusy?: never;
     }
@@ -2188,6 +2190,7 @@ Admission and terminal transitions:
 |---|---|---|
 | input, idle with empty inbox | `placed`, with user entry | create run and generation |
 | write, idle with empty inbox | `done`, with entry | append entry; no run |
+| nek: triggered write, idle, entry ends in model input | `done`, with entry | append entry; create run and generation with the write as its input |
 | input or write, busy or non-empty inbox | `queued` | append inbox item |
 | boundary places user item | `placed`, with entry | add ID to current or successor run |
 | boundary places write | `done`, with entry | append entry |
@@ -2195,6 +2198,16 @@ Admission and terminal transitions:
 | run fails or its task aborts | input `unanswered`, with reason | remove `run`; inbox unchanged |
 | withdraw queued item | `unanswered`, reason `aborted` | remove inbox item |
 | stale head write | `unanswered`, reason `stale` | remove inbox item |
+
+nek: a write with `trigger: true` admitted to an idle conversation starts a run
+in its placement commit when its entry's last model message is not an assistant
+message, pi's condition for continuing a conversation. The `done` write is the
+run's only input; settling it again is a no-op, and it identifies the run in
+`run_start`/`run_end`. When the entry ends otherwise, `onReport` gets an error
+and the write is placed without a run. On an idle conversation with queued
+items, the trigger applies only when the final boundary selects no user item.
+A busy conversation queues it as a plain write: a boundary places it without
+starting anything, because the running run already continues.
 
 `requestId` deduplicates within one conversation before any write; reusing one
 for the other submission type rejects. A busy input with `whenBusy: "reject"`
@@ -2257,7 +2270,7 @@ selected steer IDs join that continuation. A terminating or handoff tool round
 input submissions settle first, unless an `onYield` continuation keeps them open
 (below); selected user IDs start one successor generation with those IDs as the
 new run's inputs. Writes never trigger generation by
-themselves. A final boundary without user triggers leaves the conversation idle,
+themselves, except an idle triggered write (nek, above). A final boundary without user triggers leaves the conversation idle,
 except for an `onYield` continuation (section 8.3), which applies only when the
 boundary selected no user item and no reset.
 
@@ -2544,15 +2557,29 @@ consuming commit may rerun them. Abort errors always propagate.
 | hook | composition | ordinary throw |
 |---|---|---|
 | `beforeRequest` | replacement chain | report, continue |
-| `afterResponse` | all observers | report, continue |
-| `onYield` | first continuation wins | report, continue |
+| `afterResponse` | message replacement chain (nek) | report, continue |
+| `onYield` | entries in order; first continuation wins and stops asking | report, continue |
 | `beforeTool` | argument replacement chain; first block wins | block tool with error text |
 | `afterTool` | result replacement chain | report, continue |
-| `afterTools` | all observers | report, continue |
+| `afterTools` | entries in order (nek) | report, continue |
 | `beforeCompact` | first decision wins | report, continue |
 
 Hooks use task memos for durable first-writer-wins decisions. There is no public
 semantic event channel; current UI status is document state.
+
+nek: hook results are committed in the commit that consumes them. `afterResponse`
+replaces the classified and committed message; a crash before that commit loses
+both, and the request is sent again, asking the hooks again. `onYield` and
+`afterTools` decisions with something in them are pinned in the generation
+task's memos `pi.hook.onYield` and `pi.hook.afterTools` before their consuming
+commit. A rerun after a crash in between applies the pinned decision without
+asking the hooks; for `onYield` that applies to the answer of the resent
+request. `onYield` entries follow the answer, and `afterTools` entries follow
+the round's results, both before the boundary's placed items, and a head entry
+among them advances the boundary's active range as a placed write does.
+`continue: true` hands the run over without a user message, only when the last
+of the entries with model messages ends in a non-assistant message; otherwise
+it is reported and the run ends.
 
 ```ts
 type HookResult<T> = T | undefined | Promise<T | undefined>;
@@ -2572,13 +2599,28 @@ interface GenerationHooks {
     api: HookApi,
     context: Context,
   ): HookResult<{ readonly messages: readonly Message[] }>;
-  /** Every terminal provider message, before classification. */
-  afterResponse(message: AssistantMessage, api: HookApi, context: Context): void | Promise<void>;
-  /** A final answer; `continue` appends a user message and continues the run. */
-  onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<{ readonly continue: UserInput }>;
+  /** Every terminal provider message, before classification; nek: `message` replaces it. */
+  afterResponse(
+    message: AssistantMessage,
+    api: HookApi,
+    context: Context,
+  ): HookResult<{ readonly message: AssistantMessage }>;
+  /** A final answer; `continue` appends a user message, or with `true` none, and continues the run. */
+  onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<YieldDecision>;
   /** After every tool of the round is terminal; `results` are the round's result entries in call order. */
-  afterTools(assistant: EntryId, results: readonly EntryId[], api: HookApi, context: Context): void | Promise<void>;
+  afterTools(
+    assistant: EntryId,
+    results: readonly EntryId[],
+    api: HookApi,
+    context: Context,
+  ): HookResult<{ readonly entries: readonly EntryDraft[] }>;
 }
+
+/** nek: `entries` follow the answer in its commit. */
+type YieldDecision = {
+  readonly continue?: UserInput | true;
+  readonly entries?: readonly EntryDraft[];
+};
 
 interface ToolHooks {
   /** Before intent; replaces the arguments or blocks the call with error text. */
@@ -3606,6 +3648,9 @@ because the terminal record keeps it; the call is read from the assistant entry.
   generation resumes only when the tool task is terminal.
 - The abort handler commits an `aborted` error result from the slot's durable
   partial output, details, and diagnostics and ends `aborted` with `{ entryId }`.
+  nek: when `execute()` returned after the abort mark, in the same process, the
+  abort handler instead settles that returned result, merged and passed through
+  `afterTool` as a completed one is, and still ends `aborted`.
 
 ### 8.5 Tool rounds
 

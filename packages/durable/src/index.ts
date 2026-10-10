@@ -95,6 +95,8 @@ export type {
 	ToolRegistration,
 	UserInput,
 	Wrap,
+	// nek: onYield's decision.
+	YieldDecision,
 } from "./harness/types.ts";
 export { UsageDoc, type UsageState } from "./harness/usage.ts";
 export type { ConversationView } from "./harness/view.ts";

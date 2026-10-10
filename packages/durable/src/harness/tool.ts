@@ -19,7 +19,14 @@ import type {
 } from "../types.ts";
 import { assignJson } from "./json.ts";
 import { clearProgress, finishSlot, LiveDoc, type ToolSlot, toolSlot } from "./live.ts";
-import { boundOutput, OutputBuffer, type OutputLimits, PROGRESS_BYTES_PER_SECOND, Progress } from "./output.ts";
+import {
+	type BoundedOutput,
+	boundOutput,
+	OutputBuffer,
+	type OutputLimits,
+	PROGRESS_BYTES_PER_SECOND,
+	Progress,
+} from "./output.ts";
 import type {
 	ToolControl,
 	ToolDiagnostic,
@@ -53,6 +60,8 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 	initial: () => ({ phase: "call" }),
 	phases: {
 		call: async (task, runtime, context) => {
+			// nek: a result kept by an earlier incarnation of this Harness's task is stale.
+			keptResults(runtime).delete(runtime.taskId);
 			const call = await readCall(runtime, task.input, context);
 			const tool = (await runtime.agent(context)).tools.find((each) => each.name === call.name);
 			if (tool === undefined) {
@@ -93,6 +102,7 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 		/** Recovery after intent: rerun only when the stored and the current policy both say `safe`. */
 		execute: async (task, runtime, context) => {
 			const { arguments: args, replay } = task.state.checkpoint;
+			keptResults(runtime).delete(runtime.taskId);
 			const call = await readCall(runtime, task.input, context);
 			const tool = (await runtime.agent(context)).tools.find((each) => each.name === call.name);
 			if (replay === "safe" && tool?.replay === "safe") {
@@ -112,6 +122,14 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 	},
 	abort: async (task, runtime, context) => {
 		const call = await readCall(runtime, task.input, context);
+		// nek: a result the tool returned after the abort mark is settled as the tool's own, through `afterTool`.
+		const kept = keptResults(runtime);
+		const returned = kept.get(runtime.taskId);
+		kept.delete(runtime.taskId);
+		if (returned !== undefined) {
+			const result = await finalResult(runtime, call, returned, context);
+			return settle(runtime, call, { status: "aborted" }, () => result, context);
+		}
 		const message = `Tool ${call.name} was aborted`;
 		await settle(runtime, call, { status: "aborted" }, (slot) => fromSlot(slot, "aborted", message), context);
 	},
@@ -268,8 +286,15 @@ async function run(
 	reported.output.end();
 	// Details still waiting for a progress commit settle with the terminal commit, the final flush.
 	const pending = await progress.stop();
+	if (runtime.signal.aborted) {
+		// nek: the tool returned after the abort mark, so this invocation can no longer commit; the abort handler settles
+		// what it returned instead of the slot's partial output.
+		keptResults(runtime).set(runtime.taskId, merge(result, reported));
+		for (const waiter of pending) waiter.reject(runtime.signal.reason);
+		throw runtime.signal.reason;
+	}
 	try {
-		const settled = await finalResult(runtime, call, result, reported, context);
+		const settled = await finalResult(runtime, call, merge(result, reported), context);
 		await settle(runtime, call, ending, () => settled, context);
 	} catch (error) {
 		for (const waiter of pending) waiter.reject(error);
@@ -339,30 +364,59 @@ function publishProgress(runtime: Runtime, reported: Reported, context: Context)
 async function finalResult(
 	runtime: Runtime,
 	call: ToolCall,
-	result: ToolExecutionResult,
-	reported: Reported,
+	merged: Merged,
 	context: Context,
 ): Promise<ToolExecutionResult> {
 	const harness: ToolDiagnostic[] = [];
-	const retained = result.content === undefined ? reported.output.snapshot() : undefined;
-	const content: Content =
-		retained === undefined ? result.content! : retained.text === "" ? [] : [{ type: "text", text: retained.text }];
-	let final: ToolExecutionResult = {
-		...result,
-		content,
-		details: result.details === undefined ? reported.details : result.details,
-		diagnostics: [...reported.diagnostics, ...(result.diagnostics ?? [])],
-	};
+	const { retained, limits } = merged;
+	const content = merged.result.content;
+	let final = merged.result;
 	await runtime.hooks.each("afterTool", async (hook) => {
 		final = (await hook(call, final, runtime, context)) ?? final;
 	});
 	// The retained output's truncation applies only while afterTool kept that content.
 	if (retained !== undefined && retained.droppedBytes > 0 && final.content === content) {
-		harness.push(truncated(retained, reported.limits.retain));
+		harness.push(truncated(retained, limits.retain));
 	}
-	const bounded = boundContent(final.content ?? [], reported.limits);
-	if (bounded.droppedBytes > 0) harness.push(truncated(bounded, reported.limits.retain));
+	const bounded = boundContent(final.content ?? [], limits);
+	if (bounded.droppedBytes > 0) harness.push(truncated(bounded, limits.retain));
 	return { ...final, content: bounded.content, diagnostics: [...(final.diagnostics ?? []), ...harness] };
+}
+
+/** The tool's result with the retained output and last details as fallbacks, and the reported diagnostics first. */
+type Merged = {
+	readonly result: ToolExecutionResult;
+	readonly retained: BoundedOutput | undefined;
+	readonly limits: OutputLimits;
+};
+
+function merge(result: ToolExecutionResult, reported: Reported): Merged {
+	const retained = result.content === undefined ? reported.output.snapshot() : undefined;
+	const content: Content =
+		retained === undefined ? result.content! : retained.text === "" ? [] : [{ type: "text", text: retained.text }];
+	const merged: ToolExecutionResult = {
+		...result,
+		content,
+		details: result.details === undefined ? reported.details : result.details,
+		diagnostics: [...reported.diagnostics, ...(result.diagnostics ?? [])],
+	};
+	return { result: merged, retained, limits: reported.limits };
+}
+
+/**
+ * nek: results tools returned after their task's abort mark, by task, for the abort handler that follows in this
+ * process. Keyed by the Harness's models object, so each Harness has its own. A crash loses them; the abort handler then
+ * reports the slot's partial output.
+ */
+const abortedResults = new WeakMap<object, Map<TaskId, Merged>>();
+
+function keptResults(runtime: Runtime): Map<TaskId, Merged> {
+	let kept = abortedResults.get(runtime.models);
+	if (kept === undefined) {
+		kept = new Map();
+		abortedResults.set(runtime.models, kept);
+	}
+	return kept;
 }
 
 /**

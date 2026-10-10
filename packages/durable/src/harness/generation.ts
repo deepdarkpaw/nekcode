@@ -17,6 +17,7 @@ import type { ExecutionEnv } from "../env/index.ts";
 import { defineTask } from "../tasks.ts";
 import type {
 	ConversationId,
+	EntryDraft,
 	EntryId,
 	NextTaskState,
 	SubmissionId,
@@ -27,7 +28,7 @@ import type {
 } from "../types.ts";
 import { addTools } from "./agent.ts";
 import { createCompaction, estimateContext, selectCut } from "./compaction.ts";
-import { applyBoundary, prepareBoundary } from "./inbox.ts";
+import { applyBoundary, type Boundary, prepareBoundary } from "./inbox.ts";
 import { assignJson } from "./json.ts";
 import { endRun, LiveDoc, type LiveState, type ToolSlot } from "./live.ts";
 import { planSystemEntries, renderSections, replaySections } from "./prompt.ts";
@@ -43,6 +44,7 @@ import type {
 	PromptInput,
 	ToolControl,
 	UserInput,
+	YieldDecision,
 } from "./types.ts";
 import { recordUsage } from "./usage.ts";
 
@@ -419,9 +421,10 @@ async function streamResponse(
 async function classify(
 	runtime: Runtime,
 	request: Request,
-	message: AssistantMessage,
+	response: AssistantMessage,
 	context: Context,
 ): Promise<void> {
+	let message = response;
 	// An abort mark or close: the abort invocation or the reopened run handles the committed state.
 	runtime.signal.throwIfAborted();
 	const conversationId = runtime.conversationId;
@@ -447,7 +450,11 @@ async function classify(
 		}, context);
 		return;
 	}
-	await runtime.hooks.each("afterResponse", (hook) => hook(message, runtime, context));
+	// nek: a replacement is classified and committed instead; a crash before that commit loses both, and the request
+	// is sent again.
+	await runtime.hooks.each("afterResponse", async (hook) => {
+		message = (await hook(message, runtime, context))?.message ?? message;
+	});
 	const calls = message.content.filter((content): content is ToolCall => content.type === "toolCall");
 	if (message.stopReason === "toolUse" && calls.length > 0) {
 		return startToolRound(runtime, request, message, calls, context);
@@ -508,14 +515,35 @@ async function classify(
 /**
  * A final answer; the final boundary places queued items (spec §6). The first `onYield` continuation appends a user
  * message and hands the run to a successor generation, but only when the boundary selected no user item and no reset.
- * Otherwise the run's inputs settle `done`, and selected user items start the next run.
+ * Otherwise the run's inputs settle `done`, and selected user items start the next run. nek: the hooks' entries follow
+ * the answer in the same commit, before the boundary's items; `continue: true` hands over without a user message.
  */
 async function answer(runtime: Runtime, message: AssistantMessage, context: Context): Promise<void> {
-	let continuation: UserInput | undefined;
-	await runtime.hooks.each("onYield", async (hook) => {
-		if (continuation !== undefined) return;
-		continuation = (await hook(message, runtime, context))?.continue;
-	});
+	// nek: hooks asked so far add their entries until the first continuation, which ends the asking.
+	const decision = await pinnedDecision(
+		runtime,
+		"onYield",
+		async (): Promise<YieldDecision | undefined> => {
+			let continuation: UserInput | true | undefined;
+			const entries: EntryDraft[] = [];
+			await runtime.hooks.each("onYield", async (hook) => {
+				if (continuation !== undefined) return;
+				const result = await hook(message, runtime, context);
+				continuation = result?.continue;
+				entries.push(...(result?.entries ?? []));
+			});
+			if (continuation === undefined && entries.length === 0) return undefined;
+			return { ...(continuation === undefined ? {} : { continue: continuation }), entries };
+		},
+		context,
+	);
+	const continuation = decision?.continue;
+	const hookEntries = decision?.entries ?? [];
+	// nek: `continue: true` needs the hook entries to end in model input, as pi's continue does.
+	const continues = continuation === true ? endsInInput(hookEntries) : continuation !== undefined;
+	if (continuation === true && !continues) {
+		runtime.report(new Error("onYield continue: true ignored: its entries do not end in a non-assistant message"));
+	}
 	const conversationId = runtime.conversationId;
 	await runtime.commit(async (tx): Promise<Next> => {
 		// Queue modes are read on the Session line, when the boundary is decided.
@@ -523,10 +551,13 @@ async function answer(runtime: Runtime, message: AssistantMessage, context: Cont
 		const live = await tx.doc(LiveDoc, conversationId);
 		const entry = await appendAssistant(tx, conversationId, message);
 		const result: Next = { status: "terminal", outcome: { status: "completed", result: { entryId: entry.id } } };
+		await appendHookEntries(tx, boundary, hookEntries);
 		const { users, reset } = await applyBoundary(tx, boundary, "final", runtime.now());
-		if (continuation !== undefined && users.length === 0 && !reset) {
-			const user = { role: "user", content: continuation, timestamp: runtime.now() } as const;
-			await tx.appendEntry(UserEntry, conversationId, { model: [user] });
+		if (continuation !== undefined && continues && users.length === 0 && !reset) {
+			if (continuation !== true) {
+				const user = { role: "user", content: continuation, timestamp: runtime.now() } as const;
+				await tx.appendEntry(UserEntry, conversationId, { model: [user] });
+			}
 			handOver(live, runtime.taskId, await createGeneration(tx, conversationId));
 			delete live.generation;
 			return result;
@@ -608,7 +639,18 @@ async function finishToolRound(
 	});
 	const slots = (await runtime.snapshot(LiveDoc, conversationId, context))?.tools ?? [];
 	const results = slots.flatMap((slot) => (slot.entry === undefined ? [] : [slot.entry]));
-	await runtime.hooks.each("afterTools", (hook) => hook(assistant, results, runtime, context));
+	const decided = await pinnedDecision(
+		runtime,
+		"afterTools",
+		async (): Promise<{ readonly entries: readonly EntryDraft[] } | undefined> => {
+			const entries: EntryDraft[] = [];
+			await runtime.hooks.each("afterTools", async (hook) => {
+				entries.push(...((await hook(assistant, results, runtime, context))?.entries ?? []));
+			});
+			return entries.length === 0 ? undefined : { entries };
+		},
+		context,
+	);
 	// Every call of the round, including those answered without a task, must ask to terminate.
 	const terminate =
 		slots.length > 0 &&
@@ -621,6 +663,7 @@ async function finishToolRound(
 		if (added.length > 0) await addTools(tx, conversationId, added);
 		const live = await tx.doc(LiveDoc, conversationId);
 		const now = runtime.now();
+		await appendHookEntries(tx, boundary, decided?.entries ?? []);
 		if (terminate || handoff !== undefined) {
 			if (handoff !== undefined) {
 				const message = { role: "user", content: handoff, timestamp: now } as const;
@@ -677,4 +720,38 @@ function createGeneration(tx: Tx, conversationId: ConversationId): Promise<TaskI
 /** Hand run control from `from` to `to`; the run's inputs move with it. */
 export function handOver(live: Draft<LiveState>, from: TaskId, to: TaskId): void {
 	if (live.run?.taskId === from) live.run.taskId = to;
+}
+
+/**
+ * nek: ask hooks for a decision once per task. A decision is pinned in a task memo before the commit that consumes it,
+ * so a rerun after a crash in between applies the same decision without asking again. No decision pins nothing, so the
+ * hooks are asked again.
+ */
+async function pinnedDecision<T extends object>(
+	runtime: Runtime,
+	hook: "onYield" | "afterTools",
+	ask: () => Promise<T | undefined>,
+	context: Context,
+): Promise<T | undefined> {
+	const name = `pi.hook.${hook}`;
+	const pinned = await runtime.memo<JsonValue>(name, context);
+	if (pinned !== undefined) return pinned as unknown as T;
+	const decision = await ask();
+	if (decision === undefined) return undefined;
+	const candidate = copyJson(decision as unknown as JsonValue, { omitUndefinedProperties: true });
+	return (await runtime.memo(name, candidate, context)) as unknown as T;
+}
+
+/** nek: append hook entries, advancing the boundary's active range for head writes as a placed write does. */
+async function appendHookEntries(tx: Tx, boundary: Boundary, entries: readonly EntryDraft[]): Promise<void> {
+	for (const draft of entries) {
+		const entry = await tx.appendEntry(boundary.conversationId, draft);
+		if (draft.head !== undefined) boundary.head = draft.head === "self" ? entry.id : draft.head;
+	}
+}
+
+/** nek: whether the last of `entries` with model messages ends in a non-assistant message, pi's condition to continue. */
+export function endsInInput(entries: readonly EntryDraft[]): boolean {
+	const last = entries.findLast((entry) => (entry.model?.length ?? 0) > 0)?.model?.at(-1);
+	return last !== undefined && last.role !== "assistant";
 }

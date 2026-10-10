@@ -197,7 +197,8 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 			},
 			context: withoutAbortSignal(context),
 		});
-		this.#submissions = new Submissions(this, storage, now, settings, () => this.#tasks.resume());
+		// nek: `#report` reports ignored write triggers.
+		this.#submissions = new Submissions(this, storage, now, settings, () => this.#tasks.resume(), this.#report);
 		this.#taskGraph = new TaskGraphView(this, storage);
 		this.#host = {
 			harness: this,

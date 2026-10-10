@@ -64,6 +64,12 @@ export type SubmissionDraft = {
 	| {
 			readonly type: "write";
 			readonly entry: EntryDraft;
+			/**
+			 * nek: on an idle conversation, start a run in the placement commit when the entry's last model message is not
+			 * an assistant message; otherwise the trigger is reported and ignored. A busy conversation queues it as a plain
+			 * write.
+			 */
+			readonly trigger?: true;
 			readonly content?: never;
 			readonly whenBusy?: never;
 	  }
@@ -611,6 +617,16 @@ export interface HookApi extends DocumentReader {
 
 export type HookResult<T> = T | undefined | Promise<T | undefined>;
 
+/**
+ * nek: what `onYield` decides. `entries` are appended after the answer in its commit. `continue` continues the run: a
+ * user input appends a user message, and `true` continues from the appended entries alone, only when the last of them
+ * with model messages ends in a non-assistant message.
+ */
+export type YieldDecision = {
+	readonly continue?: UserInput | true;
+	readonly entries?: readonly EntryDraft[];
+};
+
 /** Hooks of the built-in generation task. */
 export interface GenerationHooks {
 	/** Before every request attempt, including recovery; the result is used for that request only. */
@@ -619,12 +635,27 @@ export interface GenerationHooks {
 		api: HookApi,
 		context: Context,
 	): HookResult<{ readonly messages: readonly Message[] }>;
-	/** Every terminal provider message, before classification. */
-	afterResponse(message: AssistantMessage, api: HookApi, context: Context): void | Promise<void>;
-	/** A final answer; the first `continue` appends a user message and continues the run. */
-	onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<{ readonly continue: UserInput }>;
-	/** After every tool of the round is terminal; `results` are the round's result entries in call order. */
-	afterTools(assistant: EntryId, results: readonly EntryId[], api: HookApi, context: Context): void | Promise<void>;
+	/**
+	 * Every terminal provider message, before classification. nek: a returned `message` replaces it for classification
+	 * and its entry; later hooks see the replacement.
+	 */
+	afterResponse(
+		message: AssistantMessage,
+		api: HookApi,
+		context: Context,
+	): HookResult<{ readonly message: AssistantMessage }>;
+	/** A final answer; the first `continue` continues the run. nek: every hook's `entries` are appended, in hook order. */
+	onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<YieldDecision>;
+	/**
+	 * After every tool of the round is terminal; `results` are the round's result entries in call order. nek: every
+	 * hook's `entries` are appended after the results, in hook order, in the round's closing commit.
+	 */
+	afterTools(
+		assistant: EntryId,
+		results: readonly EntryId[],
+		api: HookApi,
+		context: Context,
+	): HookResult<{ readonly entries: readonly EntryDraft[] }>;
 }
 
 /** Hooks of the built-in tool task. */
