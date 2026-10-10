@@ -425,7 +425,10 @@ export class DurableEventAdapter {
 		const message = event.entry?.model?.[0];
 		const result: AgentToolResult<unknown> =
 			message?.role === "toolResult"
-				? { content: message.content as (TextContent | ImageContent)[], details: message.details }
+				? {
+						content: message.content as (TextContent | ImageContent)[],
+						details: unwrapInterruptedDetails(message.details),
+					}
 				: { content: [], details: {} };
 		const isError = message?.role === "toolResult" ? message.isError : true;
 		await this.#host.emit({
@@ -595,6 +598,13 @@ function appendAtPath(call: ToolCall, path: readonly (string | number)[], delta:
 function inputText(content: UserMessage["content"]): string {
 	if (typeof content === "string") return content;
 	return content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+}
+
+/** Crash recovery wraps an interrupted unsafe tool's pi details in `{ partial }`; render the pi shape itself. */
+function unwrapInterruptedDetails(details: unknown): unknown {
+	if (details === null || typeof details !== "object" || Array.isArray(details)) return details;
+	const partial = (details as { partial?: unknown }).partial;
+	return partial === undefined ? details : partial;
 }
 
 /** Stand-in answer for `turn_end` when a turn produced none: aborted before streaming, no model, or a fault. */

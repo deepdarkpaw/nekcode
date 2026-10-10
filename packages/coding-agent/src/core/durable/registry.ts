@@ -133,7 +133,6 @@ export function toDurableTool(tool: AgentTool, pending: PendingResults): ToolReg
 			try {
 				result = await tool.execute(api.callId, args, signal, (partial) => publishPartial(api, partial, context));
 			} catch (error) {
-				if (signal?.aborted) throw error;
 				return errorResult(error instanceof Error ? error.message : String(error));
 			}
 			if (result.structuredContent !== undefined) {

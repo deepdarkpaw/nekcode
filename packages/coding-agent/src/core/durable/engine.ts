@@ -37,12 +37,15 @@ import {
 	createToolsExtension,
 	PromptDoc,
 } from "./registry.ts";
+import type { DurableSessionStore } from "./session-store.ts";
 import { createHarnessSettings } from "./settings.ts";
 
 /** Options of {@link DurableEngine.open}. */
 export type DurableEngineOptions = {
 	/** SQLite database path; `undefined` keeps the session in memory, without a lock. */
 	readonly path: string | undefined;
+	/** Phase 2 store to pin instead of independently opening `path`, when supplied by AgentSession. */
+	readonly store?: DurableSessionStore;
 	/** Model access; a host wraps its `ModelRuntime` in `HookedModels` to run provider hooks. */
 	readonly models: Models;
 	readonly settingsManager: SettingsManager;
@@ -89,6 +92,7 @@ export class DurableEngine {
 	readonly harness: Harness;
 	readonly #registry: Registry;
 	readonly #lock: SessionLock | undefined;
+	readonly #store: DurableSessionStore | undefined;
 	readonly #options: DurableEngineOptions;
 	/** Shared by the wrapped tools and the hook extension; see `createPendingResults()`. */
 	readonly #pending: ReturnType<typeof createPendingResults>;
@@ -107,6 +111,7 @@ export class DurableEngine {
 		conversation: Conversation,
 		options: DurableEngineOptions,
 		pending: ReturnType<typeof createPendingResults>,
+		store: DurableSessionStore | undefined,
 	) {
 		this.harness = harness;
 		this.#pending = pending;
@@ -114,6 +119,7 @@ export class DurableEngine {
 		this.#lock = lock;
 		this.#conversation = conversation;
 		this.#options = options;
+		this.#store = store;
 		this.#model = options.model;
 	}
 
@@ -122,7 +128,13 @@ export class DurableEngine {
 	 * flight. Throws `SessionLockedError` while another live process owns the database.
 	 */
 	static async open(options: DurableEngineOptions): Promise<DurableEngine> {
-		const lock = options.path === undefined ? undefined : acquireSessionLock(sessionLockPath(options.path));
+		if (options.store !== undefined && options.store.path !== options.path) {
+			throw new Error("Durable engine path must match its session store");
+		}
+		const lock =
+			options.store !== undefined || options.path === undefined
+				? undefined
+				: acquireSessionLock(sessionLockPath(options.path));
 		try {
 			return await DurableEngine.#open(options, lock);
 		} catch (error) {
@@ -133,12 +145,12 @@ export class DurableEngine {
 
 	static async #open(options: DurableEngineOptions, lock: SessionLock | undefined): Promise<DurableEngine> {
 		const context = BACKGROUND_CONTEXT;
-		const storage: Storage =
-			options.path === undefined ? new MemoryStorage() : await openNodeSqliteStorage(options.path);
-		const registry = createRegistry();
+		const store = options.store;
+		const registry = store?.host.registry ?? createRegistry();
 		const report = (error: unknown): void => options.onReport?.(error);
 		let engine: DurableEngine | undefined;
 		const currentModel = () => (engine === undefined ? options.model : engine.#model);
+		const settings = createHarnessSettings(options.settingsManager, currentModel);
 		const pending = createPendingResults();
 		registry.install(createPromptExtension());
 		registry.install(
@@ -156,28 +168,34 @@ export class DurableEngine {
 			}),
 		);
 		registry.install(createToolsExtension(options.tools, pending));
-		const harness = await Harness.open(
-			storage,
-			{
-				models: options.models,
-				registry,
-				settings: createHarnessSettings(options.settingsManager, currentModel),
-				onReport: report,
-			},
-			context,
-		);
+		let harness: Harness;
+		if (store !== undefined) {
+			store.host.models.reconfigure(options.models, {});
+			store.host.settings = settings;
+			store.host.report = report;
+			harness = await store.pin(context);
+		} else {
+			const storage: Storage =
+				options.path === undefined ? new MemoryStorage() : await openNodeSqliteStorage(options.path);
+			harness = await Harness.open(
+				storage,
+				{ models: options.models, registry, settings, onReport: report },
+				context,
+			);
+		}
 		try {
 			const id = options.conversationId ?? ROOT_CONVERSATION_ID;
 			const conversation =
 				id === ROOT_CONVERSATION_ID ? await harness.root(context) : await harness.conversation(id, context);
 			if (conversation === undefined) throw new Error(`Conversation ${id} does not exist`);
-			engine = new DurableEngine(harness, registry, lock, conversation, options, pending);
+			engine = new DurableEngine(harness, registry, lock, conversation, options, pending, store);
 			await engine.#configureModel(context);
 			await engine.#attach();
 			harness.resume();
 			return engine;
 		} catch (error) {
-			await harness.close(context).catch(report);
+			if (store === undefined) await harness.close(context).catch(report);
+			else await store.unpin().catch(report);
 			throw error;
 		}
 	}
@@ -218,10 +236,16 @@ export class DurableEngine {
 	}
 
 	/** Write a pi message with a coding-agent role; placed at once when idle, else at the next boundary. */
-	async appendMessage(message: AgentMessage, options: { readonly displayOnly?: boolean } = {}): Promise<Submission> {
+	async appendMessage(
+		message: AgentMessage,
+		options: { readonly displayOnly?: boolean; readonly trigger?: true } = {},
+	): Promise<Submission> {
 		const convert = this.#options.hooks?.convertToLlm ?? convertToLlm;
 		const entry = agentMessageEntry(message, convert, options);
-		return this.#conversation.submit({ type: "write", entry }, BACKGROUND_CONTEXT);
+		return this.#conversation.submit(
+			{ type: "write", entry, ...(options.trigger === true ? { trigger: true } : {}) },
+			BACKGROUND_CONTEXT,
+		);
 	}
 
 	/** Abort the run and withdraw queued inputs. */
@@ -306,9 +330,10 @@ export class DurableEngine {
 		this.#closed = true;
 		try {
 			await this.#detach();
-			await this.harness.close(BACKGROUND_CONTEXT);
+			if (this.#store === undefined) await this.harness.close(BACKGROUND_CONTEXT);
 		} finally {
-			this.#lock?.release();
+			if (this.#store !== undefined) await this.#store.unpin();
+			else this.#lock?.release();
 		}
 	}
 
