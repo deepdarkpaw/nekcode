@@ -101,7 +101,7 @@ import {
 	type BranchSummaryEntry,
 	getLatestCompactionEntry,
 	type SessionEntry,
-	type SessionManager,
+	SessionManager,
 } from "./session-manager.ts";
 import type { CacheWarmingMode, SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
@@ -451,6 +451,7 @@ export class AgentSession {
 				return replacement === undefined ? undefined : { message: replacement as AssistantMessage };
 			},
 			onYield: async ({ message }) => {
+				// Durable invokes onYield before the answer commit, so no pi entry ID exists yet.
 				const boundary = await this._extensionRunner.emitBoundary(
 					{
 						type: "turn_end",
@@ -472,15 +473,15 @@ export class AgentSession {
 					entries: this._durableBoundaryEntries([...boundary.entries, ...settled.entries]),
 				};
 			},
-			afterTools: async ({ message, toolResults }) => {
+			afterTools: async ({ assistant, results, message, toolResults }) => {
 				const boundary = await this._extensionRunner.emitBoundary(
 					{
 						type: "turn_end",
 						turnIndex: this._turnIndex,
 						message,
 						toolResults: [...toolResults],
-						messageEntryId: "",
-						toolResultEntryIds: [],
+						messageEntryId: String(assistant),
+						toolResultEntryIds: results.map(String),
 						outcome: "completed",
 					},
 					() => this._boundaryContext(),
@@ -568,13 +569,68 @@ export class AgentSession {
 		return this._engine ?? (await this._enginePromise);
 	}
 
+	private _applyBoundaryDrafts(manager: SessionManager, drafts: readonly SessionBoundaryDraft[]): void {
+		for (const draft of drafts) {
+			switch (draft.type) {
+				case "custom":
+					manager.appendCustomEntry(draft.customType, draft.data);
+					break;
+				case "custom_message":
+					manager.appendCustomMessageEntry(draft.customType, draft.content, draft.display, draft.details);
+					break;
+				case "context_edit":
+					manager.appendContextEdit(draft.targetId, draft.replacement);
+					break;
+				case "compaction": {
+					const projection = manager.buildSessionProjection();
+					const tokensBefore = estimateProjectedContextTokens(projection, manager.getBranch()).tokens;
+					manager.appendCompaction(
+						draft.summary,
+						draft.firstKeptEntryId,
+						tokensBefore,
+						draft.details,
+						true,
+						draft.usage,
+					);
+					break;
+				}
+			}
+		}
+	}
+
 	private _boundaryContext(entries: SessionBoundaryDraft[] = []): BoundaryContextPreview {
+		const header = this.sessionManager.getHeader();
+		if (header === undefined || header === null) {
+			const contextMessages = this.messages;
+			const llmMessages = convertToLlm(contextMessages);
+			return {
+				contextEntries: [],
+				contextMessages,
+				llmMessages,
+				pendingMessages: [],
+				canContinue: llmMessages.at(-1)?.role !== "assistant",
+			};
+		}
+		const preview = SessionManager.inMemory(this._cwd, undefined, [header, ...this.sessionManager.getBranch()]);
+		this._applyBoundaryDrafts(preview, entries);
+		const projection = preview.buildSessionProjection();
+		const contextMessages = projection.messages;
+		const llmMessages = convertToLlm(contextMessages);
+		const pendingMessages: AgentMessage[] = [
+			...this._pendingNextTurnMessages,
+			...this._steeringMessages.map((text) => ({ role: "user" as const, content: text, timestamp: Date.now() })),
+			...this._followUpMessages.map((text) => ({ role: "user" as const, content: text, timestamp: Date.now() })),
+		];
+		const finalRole = llmMessages.at(-1)?.role;
+		const hasNonSystemContext = llmMessages.some((message) => message.role !== "system");
 		return {
-			contextEntries: [],
-			contextMessages: this.messages,
-			llmMessages: convertToLlm(this.messages),
-			pendingMessages: [],
-			canContinue: entries.length > 0 || this.pendingMessageCount > 0,
+			contextEntries: projection.entries,
+			contextMessages,
+			llmMessages,
+			pendingMessages,
+			canContinue:
+				(hasNonSystemContext && finalRole !== "assistant") ||
+				pendingMessages.some((message) => message.role !== "system"),
 		};
 	}
 
@@ -632,6 +688,10 @@ export class AgentSession {
 		if (event.type === "agent_settled") {
 			this._isAgentRunActive = false;
 			this._cacheWarmer?.onAgentSettled();
+		}
+		if (event.type === "queue_update") {
+			this._steeringMessages = [...event.steering];
+			this._followUpMessages = [...event.followUp];
 		}
 		await this.sessionManager.refresh();
 		this._cachedMessages = this.sessionManager.buildSessionContext().messages;
