@@ -349,6 +349,7 @@ export class AgentSession {
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
 	private _pendingBashMessages: BashExecutionMessage[] = [];
+	private _recordedBashMessages: BashExecutionMessage[] = [];
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -421,6 +422,7 @@ export class AgentSession {
 		});
 		if (this._initialActiveToolNames === undefined) this._restoreToolsFromTranscript();
 		this._enginePromise = this._openDurableEngine();
+		void this._enginePromise.catch(() => {});
 		this.agent.waitForIdle = () => this.waitForIdle();
 		this.agent.abort = () => {
 			void this.abort();
@@ -687,6 +689,7 @@ export class AgentSession {
 		if (event.type === "agent_start") this._isAgentRunActive = true;
 		if (event.type === "agent_settled") {
 			this._isAgentRunActive = false;
+			this._flushPendingBashMessages();
 			this._cacheWarmer?.onAgentSettled();
 		}
 		if (event.type === "queue_update") {
@@ -694,8 +697,7 @@ export class AgentSession {
 			this._followUpMessages = [...event.followUp];
 		}
 		await this.sessionManager.refresh();
-		this._cachedMessages = this.sessionManager.buildSessionContext().messages;
-		this.agent.state.messages = this._cachedMessages;
+		this._refreshFinalizedContext();
 		for (const entry of this.sessionManager.getEntries()) {
 			if (this._knownSessionEntryIds.has(entry.id)) continue;
 			this._knownSessionEntryIds.add(entry.id);
@@ -840,7 +842,17 @@ export class AgentSession {
 
 	private _refreshFinalizedContext(): void {
 		const projection = this.sessionManager.buildSessionProjection();
-		this.agent.state.messages = projection.messages;
+		this._cachedMessages = projection.messages;
+		const projectedBash = new Set(
+			projection.messages
+				.filter((message): message is BashExecutionMessage => message.role === "bashExecution")
+				.map((message) => `${message.timestamp}:${message.command}`),
+		);
+		const missingBash = this._recordedBashMessages.filter(
+			(message) => !projectedBash.has(`${message.timestamp}:${message.command}`),
+		);
+		this._cachedMessages = [...this._cachedMessages, ...missingBash];
+		this.agent.state.messages = this._cachedMessages;
 	}
 
 	/** Emit an event to all listeners */
@@ -2409,10 +2421,13 @@ export class AgentSession {
 		}
 	}
 
-	/**
-	 * Record a bash execution result in session history.
-	 * Used by executeBash and by extensions that handle bash execution themselves.
-	 */
+	private _flushPendingBashMessages(): void {
+		if (this._pendingBashMessages.length === 0) return;
+		for (const message of this._pendingBashMessages) this.sessionManager.appendMessage(message);
+		this._pendingBashMessages = [];
+		this._refreshFinalizedContext();
+	}
+
 	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean }): void {
 		const bashMessage: BashExecutionMessage = {
 			role: "bashExecution",
@@ -2425,6 +2440,7 @@ export class AgentSession {
 			timestamp: Date.now(),
 			excludeFromContext: options?.excludeFromContext,
 		};
+		this._recordedBashMessages.push(bashMessage);
 
 		// If agent is streaming, defer adding to avoid breaking tool_use/tool_result ordering
 		if (this.isStreaming) {
