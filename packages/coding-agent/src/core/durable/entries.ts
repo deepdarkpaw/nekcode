@@ -94,6 +94,20 @@ export const CompactionDetailsDoc = defineDoc<{ records: CompactionRecord[] }>({
 	initial: () => ({ records: [] }),
 });
 
+/**
+ * Whether a run the host started has not finished settling (`agent_before_settle`, then `agent_settled` or a
+ * continuation). Set when the host starts a run and cleared in the commit that writes the settlement's entries, so a
+ * session reopened after a crash during settlement settles that run again.
+ */
+export const SettlementDoc = defineDoc<{ pending: boolean }>({
+	kind: "nek.settlement",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	initial: () => ({ pending: false }),
+});
+
 export function hashSummary(summary: string): string {
 	return createHash("sha256").update(summary).digest("hex").slice(0, 32);
 }

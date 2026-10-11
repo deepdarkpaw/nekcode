@@ -7,6 +7,7 @@ import {
 	type Conversation,
 	type ConversationId,
 	createRegistry,
+	type EntryDraft,
 	type EntryId,
 	type EntryRecord,
 	Harness,
@@ -25,7 +26,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { convertToLlm } from "../messages.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import { agentContext } from "./context.ts";
-import { agentMessageEntry, CompactionDetailsDoc, type CompactionRecord } from "./entries.ts";
+import { agentMessageEntry, CompactionDetailsDoc, type CompactionRecord, SettlementDoc } from "./entries.ts";
 import { DurableEventAdapter, type DurableSessionEvent } from "./events.ts";
 import type { DurableHostHooks } from "./hooks.ts";
 import { acquireSessionLock, type SessionLock, sessionLockPath } from "./lock.ts";
@@ -66,7 +67,7 @@ export type DurableEngineOptions = {
 export type DurablePromptOptions = {
 	/** Effective system prompt for this run, after `before_agent_start`. Absent keeps the stored one. */
 	readonly systemPrompt?: string;
-	/** Messages placed before the input, such as those `before_agent_start` handlers inject. */
+	/** Messages placed right after the input in its placement commit, as pi places `before_agent_start` messages. */
 	readonly messages?: readonly AgentMessage[];
 	/** What to do when the conversation is busy; default `reject` (throws `ConversationBusy`). */
 	readonly whenBusy?: "steer" | "followUp" | "reject";
@@ -212,17 +213,21 @@ export class DurableEngine {
 
 	/**
 	 * Admit user input. The effective system prompt is stored first, so every request of the run, including one
-	 * prepared after a crash, renders it; injected messages are written before the input.
+	 * prepared after a crash, renders it; injected messages are placed right after the input, in its placement commit.
 	 *
-	 * The prompt, the injected messages, and the input are separate commits: a crash between them leaves the earlier
-	 * ones without the input, which the host resubmits.
+	 * Storing the prompt and admitting the input are two commits: a crash between them leaves the stored prompt without
+	 * the input, which the host resubmits.
 	 */
 	async prompt(content: UserInput, options: DurablePromptOptions = {}): Promise<Submission> {
 		const context = BACKGROUND_CONTEXT;
 		const systemPrompt = options.systemPrompt;
 		if (systemPrompt !== undefined) await this.#storePrompt(systemPrompt, context);
-		for (const message of options.messages ?? []) await this.appendMessage(message);
-		return this.#conversation.submit({ type: "input", content, whenBusy: options.whenBusy ?? "reject" }, context);
+		const convert = this.#options.hooks?.convertToLlm ?? convertToLlm;
+		const after = (options.messages ?? []).map((message) => agentMessageEntry(message, convert));
+		return this.#conversation.submit(
+			{ type: "input", content, whenBusy: options.whenBusy ?? "reject", ...(after.length > 0 ? { after } : {}) },
+			context,
+		);
 	}
 
 	/** Queue input that joins the current run after its tool round; starts a run when idle. */
@@ -235,17 +240,68 @@ export class DurableEngine {
 		return this.#conversation.submit({ type: "input", content, whenBusy: "followUp" }, BACKGROUND_CONTEXT);
 	}
 
-	/** Write a pi message with a coding-agent role; placed at once when idle, else at the next boundary. */
+	/**
+	 * Write a pi message with a coding-agent role; placed at once when idle, else at the next boundary. A triggered
+	 * write starts a run when idle; while busy, `deliverAs` delivers it like steering or follow-up input, continuing the
+	 * run, as pi delivers a custom message sent with `triggerTurn` during a run.
+	 */
 	async appendMessage(
 		message: AgentMessage,
-		options: { readonly displayOnly?: boolean; readonly trigger?: true } = {},
+		options: {
+			readonly displayOnly?: boolean;
+			readonly trigger?: true;
+			readonly deliverAs?: "steer" | "followUp";
+		} = {},
 	): Promise<Submission> {
 		const convert = this.#options.hooks?.convertToLlm ?? convertToLlm;
 		const entry = agentMessageEntry(message, convert, options);
+		const trigger =
+			options.trigger === true
+				? { trigger: true as const, ...(options.deliverAs === undefined ? {} : { deliverAs: options.deliverAs }) }
+				: {};
+		return this.#conversation.submit({ type: "write", entry, ...trigger }, BACKGROUND_CONTEXT);
+	}
+
+	/** Mark that a run the host starts must settle; see `SettlementDoc`. */
+	async markSettlementPending(): Promise<void> {
+		const conversationId = this.#conversation.id;
+		await this.#conversation.commit(async (tx) => {
+			const doc = await tx.doc(SettlementDoc, conversationId);
+			if (!doc.pending) doc.pending = true;
+		}, BACKGROUND_CONTEXT);
+	}
+
+	/** Whether a host run is still settling, and whether the conversation is idle; read after a reopen. */
+	async settlementState(): Promise<{ pending: boolean; idle: boolean }> {
+		const conversationId = this.#conversation.id;
+		const [doc, live] = await Promise.all([
+			this.harness.snapshot(SettlementDoc, conversationId, BACKGROUND_CONTEXT),
+			this.harness.snapshot(LiveDoc, conversationId, BACKGROUND_CONTEXT),
+		]);
+		return { pending: doc?.pending === true, idle: live?.run === undefined };
+	}
+
+	/** Append a settlement's entries and clear the pending mark in one commit. */
+	async finishSettlement(entries: readonly EntryDraft[]): Promise<void> {
+		const conversationId = this.#conversation.id;
+		await this.#conversation.commit(async (tx) => {
+			for (const entry of entries) await tx.appendEntry(conversationId, entry);
+			const doc = await tx.doc(SettlementDoc, conversationId);
+			if (doc.pending) doc.pending = false;
+		}, BACKGROUND_CONTEXT);
+	}
+
+	/** Write a prepared entry; a triggered write starts a run when idle (see `appendMessage`). */
+	writeEntry(entry: EntryDraft, options: { readonly trigger?: true } = {}): Promise<Submission> {
 		return this.#conversation.submit(
 			{ type: "write", entry, ...(options.trigger === true ? { trigger: true } : {}) },
 			BACKGROUND_CONTEXT,
 		);
+	}
+
+	/** Resolve once listeners received the events of every committed entry and no run is open. */
+	delivered(): Promise<void> {
+		return this.#drain();
 	}
 
 	/** Withdraw queued steer/follow-up submissions without aborting the active run. */

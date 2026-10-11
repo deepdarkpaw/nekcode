@@ -13,7 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
@@ -43,11 +43,11 @@ import {
 	type RetryCallbacks,
 	resetApiProviders,
 } from "@earendil-works/pi-ai/compat";
-import { CompactionEntry, type EntryDraft, type EntryId } from "@earendil-works/pi-durable";
+import { CompactionEntry, type EntryDraft, type EntryId, type Submission } from "@earendil-works/pi-durable";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
-import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
+import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import { generateBugReportSummary } from "./bug-report.ts";
 import type { CacheWarmer, CacheWarmingStatus } from "./cache-warmer.ts";
@@ -320,14 +320,47 @@ export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settingsManager: SettingsManager;
-	/** Durable engine is opened asynchronously because construction remains API-compatible and synchronous. */
-	private readonly _enginePromise: Promise<DurableEngine>;
+	/**
+	 * Durable engine, opened asynchronously because construction remains API-compatible and synchronous. A stored
+	 * session opens it at construction so interrupted work resumes; a new session opens it on first use, so a session
+	 * nobody wrote to leaves no file behind (as the JSONL format did).
+	 */
+	private _enginePromise?: Promise<DurableEngine>;
 	private _engine?: DurableEngine;
+	/** Deliveries started by void extension APIs (`pi.sendMessage`, `pi.sendUserMessage`) that idle waits must await. */
+	private readonly _pendingDeliveries = new Set<Promise<unknown>>();
+	/** Admission of those deliveries (written, or submitted); extension binding awaits these, not whole runs. */
+	private readonly _pendingAdmissions = new Set<Promise<unknown>>();
+	private _disposed = false;
+	private _disposePromise?: Promise<void>;
 	private _cachedMessages: AgentMessage[];
 	private readonly _knownSessionEntryIds = new Set<string>();
 	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
+	/** Set by `abort()` during a run; the run then settles `aborted` and later submissions wait for that settlement. */
+	private _agentRunAbortRequested = false;
+	private _isEmittingAgentSettled = false;
+	/** Submissions made while a run was being cancelled or settled; started in order after `agent_settled`. */
+	private readonly _deferredSettledActions: Array<{ action: () => Promise<void>; messageRole: "user" | "custom" }> =
+		[];
+	private _deferredDrain?: Promise<void>;
+	/**
+	 * The durable run ended and its settlement (`agent_before_settle`, then `agent_settled` or a continuation) is
+	 * pending. Like pi's loop between `agent_end` and settlement, messages sent meanwhile are held, not placed.
+	 */
+	private _runEnded = false;
+	/** Custom messages sent without a turn trigger while the run was settling; written at settlement. */
+	private _pendingCustomMessages: CustomMessage[] = [];
+	/** User inputs queued while the run was settling; they join a continuation, else wait for the next prompt. */
+	private _heldInputs: Array<{ behavior: "steer" | "followUp"; content: (TextContent | ImageContent)[] }> = [];
+	/** Resolved when the active run settled. */
+	private _settledWaiters: Array<() => void> = [];
+	/**
+	 * From the durable run's end until `agent_settled` was emitted and the submissions it deferred ran. `isIdle` is
+	 * already true while settled handlers run, as in pi; callers waiting for the run wait for this too.
+	 */
+	private _settling = false;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
@@ -425,8 +458,8 @@ export class AgentSession {
 			includeAllExtensionTools: true,
 		});
 		if (this._initialActiveToolNames === undefined) this._restoreToolsFromTranscript();
-		this._enginePromise = this._openDurableEngine();
-		void this._enginePromise.catch(() => {});
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (sessionFile === undefined || existsSync(sessionFile)) void this._engineOrThrow().catch(() => {});
 		this.agent.waitForIdle = () => this.waitForIdle();
 		this.agent.abort = () => {
 			void this.abort();
@@ -475,7 +508,9 @@ export class AgentSession {
 				return replacement === undefined ? undefined : { message: replacement as AssistantMessage };
 			},
 			onYield: async ({ message }) => {
-				// Durable invokes onYield before the answer commit, so no pi entry ID exists yet.
+				// Durable invokes onYield before the answer commit, so no pi entry ID exists yet. The handlers may rerun
+				// after a crash before that commit; their pinned result applies once. agent_before_settle runs after
+				// agent_end, at settlement (see _settleRun).
 				const boundary = await this._extensionRunner.emitBoundary(
 					{
 						type: "turn_end",
@@ -486,15 +521,11 @@ export class AgentSession {
 						toolResultEntryIds: [],
 						outcome: "completed",
 					},
-					() => this._boundaryContext(),
-				);
-				const settled = await this._extensionRunner.emitBoundary(
-					{ type: "agent_before_settle", outcome: "completed" },
-					() => this._boundaryContext(boundary.entries),
+					(entries) => this._boundaryContext(entries),
 				);
 				return {
-					...(settled.continue || boundary.continue ? { continue: true } : {}),
-					entries: this._durableBoundaryEntries([...boundary.entries, ...settled.entries]),
+					...(boundary.continue ? { continue: true } : {}),
+					entries: this._durableBoundaryEntries(boundary.entries),
 				};
 			},
 			afterTools: async ({ assistant, results, message, toolResults }) => {
@@ -508,7 +539,7 @@ export class AgentSession {
 						toolResultEntryIds: results.map(String),
 						outcome: "completed",
 					},
-					() => this._boundaryContext(),
+					(entries) => this._boundaryContext(entries),
 				);
 				return { entries: this._durableBoundaryEntries(boundary.entries) };
 			},
@@ -588,11 +619,97 @@ export class AgentSession {
 		});
 		this._engine = engine;
 		engine.subscribe((event) => this._handleDurableEvent(event));
+		await this._resumeSettlement(engine);
 		return engine;
 	}
 
-	private async _engineOrThrow(): Promise<DurableEngine> {
-		return this._engine ?? (await this._enginePromise);
+	/**
+	 * A reopened session whose last run ended but did not finish settling (a crash during `agent_before_settle`)
+	 * settles it now; a run still in flight settles when it ends.
+	 */
+	private async _resumeSettlement(engine: DurableEngine): Promise<void> {
+		const state = await engine.settlementState();
+		if (!state.pending || !state.idle) return;
+		this._isAgentRunActive = true;
+		this._runEnded = true;
+		this._settling = true;
+		void this._settleRun("completed").catch((error: unknown) => this._reportSettlementError(error));
+	}
+
+	private _engineOrThrow(): Promise<DurableEngine> {
+		if (this._engine !== undefined) return Promise.resolve(this._engine);
+		if (this._disposed) return Promise.reject(new Error("AgentSession is disposed"));
+		this._enginePromise ??= this._openDurableEngine();
+		return this._enginePromise;
+	}
+
+	/**
+	 * Track a delivery started by a void extension API. `admission` settles once the delivery was written or submitted;
+	 * idle waits await the whole delivery, extension binding only its admission.
+	 */
+	private _trackDelivery(delivery: Promise<unknown>, event: string, admission?: Promise<unknown>): void {
+		const runner = this._extensionRunner;
+		const tracked = delivery.catch((error: unknown) => {
+			runner.emitError({
+				extensionPath: "<runtime>",
+				event,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		const admitted = admission === undefined ? tracked : Promise.race([admission, tracked]);
+		this._pendingDeliveries.add(tracked);
+		this._pendingAdmissions.add(admitted);
+		void tracked.finally(() => this._pendingDeliveries.delete(tracked));
+		void admitted.finally(() => this._pendingAdmissions.delete(admitted));
+	}
+
+	/** Wait for every tracked delivery, including deliveries started while waiting. */
+	private async _settleDeliveries(): Promise<void> {
+		while (this._pendingDeliveries.size > 0) await Promise.all([...this._pendingDeliveries]);
+	}
+
+	/** Wait until every tracked delivery was written or submitted. */
+	private async _settleAdmissions(): Promise<void> {
+		while (this._pendingAdmissions.size > 0) await Promise.all([...this._pendingAdmissions]);
+	}
+
+	/**
+	 * Defer a submission made while the run is being cancelled or while `agent_settled` is being emitted; it starts after
+	 * the settlement, in submission order. Awaiting the settlement here would deadlock a submission made by an awaited
+	 * event handler.
+	 */
+	private _deferUntilAgentSettled(action: () => Promise<void>, messageRole: "user" | "custom"): boolean {
+		if (!this._isEmittingAgentSettled && !(this._isAgentRunActive && this._agentRunAbortRequested)) return false;
+		this._deferredSettledActions.push({ action, messageRole });
+		return true;
+	}
+
+	/**
+	 * Start the deferred submissions, outside the durable event delivery that announced the settlement. Returns the drain
+	 * this call started, or `undefined` when there was nothing to start or a drain was already running.
+	 */
+	private _drainDeferredSettledActions(): Promise<void> | undefined {
+		if (this._deferredDrain !== undefined || this._deferredSettledActions.length === 0) return undefined;
+		this._deferredDrain = (async () => {
+			await Promise.resolve();
+			while (this._deferredSettledActions.length > 0) {
+				const deferred = this._deferredSettledActions.shift()!;
+				try {
+					await deferred.action();
+				} catch (error) {
+					// Already accepted submissions cannot reject the interrupted run's prompt.
+					this._extensionRunner.emitError({
+						extensionPath: "<runtime>",
+						event: deferred.messageRole === "user" ? "send_user_message" : "send_message",
+						error: error instanceof Error ? error.message : String(error),
+						stack: error instanceof Error ? error.stack : undefined,
+					});
+				}
+			}
+		})().finally(() => {
+			this._deferredDrain = undefined;
+		});
+		return this._deferredDrain;
 	}
 
 	private _applyBoundaryDrafts(manager: SessionManager, drafts: readonly SessionBoundaryDraft[]): void {
@@ -624,39 +741,45 @@ export class AgentSession {
 		}
 	}
 
-	private _boundaryContext(entries: SessionBoundaryDraft[] = []): BoundaryContextPreview {
+	private _boundaryContext(
+		entries: SessionBoundaryDraft[] = [],
+		boundary: "turn_end" | "agent_before_settle" = "turn_end",
+	): BoundaryContextPreview {
+		const queuedCustom = this.agent.peekQueuedMessages();
+		// During a run, queued user input waits in durable's inbox; while settling it is held here.
+		const queuedInputs: AgentMessage[] =
+			boundary === "turn_end"
+				? [...this._steeringMessages, ...this._followUpMessages].map((text) => ({
+						role: "user",
+						content: text,
+						timestamp: Date.now(),
+					}))
+				: this._heldInputs.map((input) => ({ role: "user", content: input.content, timestamp: Date.now() }));
+		const pendingMessages: AgentMessage[] = [...queuedInputs, ...queuedCustom, ...this._pendingCustomMessages];
+		const hasQueued = queuedInputs.length > 0 || queuedCustom.length > 0;
 		const header = this.sessionManager.getHeader();
-		if (header === undefined || header === null) {
-			const contextMessages = this.messages;
-			const llmMessages = convertToLlm(contextMessages);
-			return {
-				contextEntries: [],
-				contextMessages,
-				llmMessages,
-				pendingMessages: [],
-				canContinue: llmMessages.at(-1)?.role !== "assistant",
-			};
+		let contextEntries: BoundaryContextPreview["contextEntries"] = [];
+		let contextMessages: AgentMessage[] = this.messages;
+		if (header !== undefined && header !== null) {
+			const preview = SessionManager.inMemory(this._cwd, undefined, [header, ...this.sessionManager.getBranch()]);
+			this._applyBoundaryDrafts(preview, entries);
+			const projection = preview.buildSessionProjection();
+			contextEntries = projection.entries;
+			contextMessages = projection.messages;
 		}
-		const preview = SessionManager.inMemory(this._cwd, undefined, [header, ...this.sessionManager.getBranch()]);
-		this._applyBoundaryDrafts(preview, entries);
-		const projection = preview.buildSessionProjection();
-		const contextMessages = projection.messages;
 		const llmMessages = convertToLlm(contextMessages);
-		const pendingMessages: AgentMessage[] = [
-			...this._pendingNextTurnMessages,
-			...this._steeringMessages.map((text) => ({ role: "user" as const, content: text, timestamp: Date.now() })),
-			...this._followUpMessages.map((text) => ({ role: "user" as const, content: text, timestamp: Date.now() })),
-		];
 		const finalRole = llmMessages.at(-1)?.role;
 		const hasNonSystemContext = llmMessages.some((message) => message.role !== "system");
+		const contextCanContinue = hasNonSystemContext && finalRole !== "assistant";
 		return {
-			contextEntries: projection.entries,
+			contextEntries,
 			contextMessages,
 			llmMessages,
 			pendingMessages,
 			canContinue:
-				(hasNonSystemContext && finalRole !== "assistant") ||
-				pendingMessages.some((message) => message.role !== "system"),
+				contextCanContinue ||
+				this._pendingCustomMessages.length > 0 ||
+				(boundary === "turn_end" ? hasQueued : finalRole === "assistant" && hasQueued),
 		};
 	}
 
@@ -710,17 +833,25 @@ export class AgentSession {
 	}
 
 	private async _handleDurableEvent(event: AgentSessionEvent): Promise<void> {
-		if (event.type === "agent_start") this._isAgentRunActive = true;
+		if (event.type === "agent_start") {
+			this._isAgentRunActive = true;
+			this._runEnded = false;
+		}
+		// From the durable run's end until settlement, messages sent by agent_end handlers are held (see _runEnded).
+		if (event.type === "agent_end") {
+			this._runEnded = true;
+			this._settling = true;
+		}
 		if (event.type === "agent_settled") {
-			this._isAgentRunActive = false;
-			this._durableSignal = undefined;
-			this._flushPendingBashMessages();
-			this._cacheWarmer?.onAgentSettled();
+			await this._settleRun(event.outcome);
+			return;
 		}
 		if (event.type === "queue_update") {
 			this._steeringMessages = [...event.steering];
 			this._followUpMessages = [...event.followUp];
 		}
+		// Remove a placed input from the visible queue before its message_start, so listeners see the updated queue.
+		if (event.type === "message_start" && event.message.role === "user") this._dequeuePlacedInput(event.message);
 		await this.sessionManager.refresh();
 		this._refreshFinalizedContext();
 		for (const entry of this.sessionManager.getEntries()) {
@@ -739,8 +870,6 @@ export class AgentSession {
 		if (event.type === "agent_start") await this._extensionRunner.emit({ type: "agent_start" });
 		else if (event.type === "agent_end")
 			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
-		else if (event.type === "agent_settled")
-			await this._extensionRunner.emit({ type: "agent_settled", outcome: event.outcome });
 		else if (event.type === "compaction_end") {
 			const entry = getLatestCompactionEntry(this.sessionManager.getBranch());
 			if (event.result !== undefined && entry !== null) {
@@ -797,6 +926,183 @@ export class AgentSession {
 				isError: event.isError,
 			});
 		this._emit(event);
+	}
+
+	/**
+	 * The durable run ended. As pi's loop does after `agent_end`: work queued by `agent_end` handlers first gets a fresh
+	 * run; otherwise `agent_before_settle` decides, its entries and the custom messages held since the run ended are
+	 * written, and a valid continuation (or queued work) starts a new run. Only then does the run settle.
+	 *
+	 * Unlike `turn_end` (a durable hook), this decision is not durable: a crash after the run ended and before the
+	 * continuation was submitted settles the run without it.
+	 */
+	private async _settleRun(durableOutcome: AgentActivityOutcome): Promise<void> {
+		const engine = this._engine;
+		if (engine !== undefined && !this._agentRunAbortRequested && this._hasHeldWork()) {
+			try {
+				await this._writeEntries(engine, this._takePendingCustomDrafts(), -1);
+				if (await this._startHeldWork(engine)) return;
+			} catch (error) {
+				this._reportSettlementError(error);
+			}
+		}
+		let result: { entries: SessionBoundaryDraft[]; continue: boolean; valid: boolean } = {
+			entries: [],
+			continue: false,
+			valid: true,
+		};
+		if (this._extensionRunner.hasHandlers("agent_before_settle")) {
+			result = await this._extensionRunner.emitBoundary(
+				{ type: "agent_before_settle", outcome: this._agentRunAbortRequested ? "aborted" : durableOutcome },
+				(entries) => this._boundaryContext(entries, "agent_before_settle"),
+			);
+		}
+		// The hook's entries are committed first, then the custom messages held meanwhile.
+		const drafts = [...(result.valid ? result.entries : []), ...this._takePendingCustomDrafts()];
+		const shouldContinue = result.continue || this._hasHeldWork();
+		const continuing =
+			!this._agentRunAbortRequested &&
+			shouldContinue &&
+			this._boundaryContext(drafts, "agent_before_settle").canContinue;
+		if (result.continue && !continuing && !this._agentRunAbortRequested) {
+			this._extensionRunner.emitError({
+				extensionPath: "<runtime>",
+				event: "agent_before_settle",
+				error: "Ignored continue: the context cannot continue.",
+			});
+		}
+		if (engine !== undefined) {
+			try {
+				const entries = this._durableBoundaryEntries(drafts);
+				const trigger = continuing ? entries.findLastIndex((entry) => (entry.model?.length ?? 0) > 0) : -1;
+				if (continuing && (trigger !== -1 || this._hasHeldWork())) {
+					// The settlement stays pending through the continuation run, which settles it.
+					await this._writeEntries(engine, drafts, trigger);
+					this._runEnded = false;
+					await this._startHeldWork(engine);
+					return;
+				}
+				// The entries and the end of the settlement commit together, so a crash cannot repeat or lose them.
+				await engine.finishSettlement(entries);
+			} catch (error) {
+				this._reportSettlementError(error);
+			}
+		}
+		// An abort requested during the hook makes the run settle aborted.
+		await this._handleAgentSettled(this._agentRunAbortRequested ? "aborted" : durableOutcome);
+	}
+
+	/** Whether user input or custom work was queued for after the run. */
+	private _hasHeldWork(): boolean {
+		return this._heldInputs.length > 0 || this.agent.hasQueuedMessages();
+	}
+
+	/** The custom messages held since the run ended, as boundary drafts, removed from the held list. */
+	private _takePendingCustomDrafts(): SessionBoundaryDraft[] {
+		return this._pendingCustomMessages.splice(0).map(
+			(message): SessionBoundaryDraft => ({
+				type: "custom_message",
+				customType: message.customType,
+				content: message.content,
+				display: message.display,
+				details: message.details,
+			}),
+		);
+	}
+
+	/** Write boundary drafts in order; the entry at `trigger` is a triggered write that starts a run when idle. */
+	private async _writeEntries(
+		engine: DurableEngine,
+		drafts: readonly SessionBoundaryDraft[],
+		trigger: number,
+	): Promise<void> {
+		for (const [index, entry] of this._durableBoundaryEntries(drafts).entries()) {
+			await engine.writeEntry(entry, index === trigger ? { trigger: true } : {});
+		}
+	}
+
+	/**
+	 * Submit held user input and custom work. On an idle conversation the first one starts a run; the rest queue behind
+	 * it. Returns whether anything was submitted.
+	 */
+	private async _startHeldWork(engine: DurableEngine): Promise<boolean> {
+		const inputs = this._heldInputs.splice(0);
+		const custom = this.agent.peekQueuedMessages();
+		this.agent.clearAllQueues();
+		if (inputs.length === 0 && custom.length === 0) return false;
+		this._runEnded = false;
+		for (const input of inputs) {
+			if (input.behavior === "steer") await engine.steer(input.content);
+			else await engine.followUp(input.content);
+		}
+		for (const message of custom) await engine.appendMessage(message, { trigger: true, deliverAs: "steer" });
+		return true;
+	}
+
+	private _reportSettlementError(error: unknown): void {
+		this._extensionRunner.emitError({
+			extensionPath: "<runtime>",
+			event: "agent_before_settle",
+			error: error instanceof Error ? error.message : String(error),
+			stack: error instanceof Error ? error.stack : undefined,
+		});
+	}
+
+	/**
+	 * A run settled: emit to extensions and then listeners, and start the submissions deferred meanwhile.
+	 */
+	private async _handleAgentSettled(outcome: AgentActivityOutcome): Promise<void> {
+		const event = { type: "agent_settled", outcome } satisfies Extract<AgentSessionEvent, { type: "agent_settled" }>;
+		this._isAgentRunActive = false;
+		this._runEnded = false;
+		this._agentRunAbortRequested = false;
+		this._durableSignal = undefined;
+		await this.sessionManager.refresh();
+		this._refreshFinalizedContext();
+		this._flushPendingBashMessages();
+		this._cacheWarmer?.onAgentSettled();
+		this._isEmittingAgentSettled = true;
+		try {
+			await this._extensionRunner.emit(event);
+			this._emit(event);
+		} finally {
+			this._isEmittingAgentSettled = false;
+		}
+		// As pi's prompt did, callers waiting for this run resume after the submissions it deferred ran.
+		const waiters = this._settledWaiters.splice(0);
+		const drain = this._drainDeferredSettledActions();
+		const resolve = (): void => {
+			this._settling = false;
+			for (const waiter of waiters) waiter();
+		};
+		if (drain === undefined) resolve();
+		else void drain.finally(resolve);
+	}
+
+	/** Resolve once no run is active; a run that is settling resolves after its `agent_settled` emission. */
+	private _whenRunSettled(): Promise<void> {
+		if (!this._isAgentRunActive && !this._settling) return Promise.resolve();
+		return new Promise((resolve) => this._settledWaiters.push(resolve));
+	}
+
+	/** Remove the queued text a placed user input came from, steering first. */
+	private _dequeuePlacedInput(message: AgentMessage): void {
+		if (message.role !== "user") return;
+		const text =
+			typeof message.content === "string"
+				? message.content
+				: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+		if (text.length === 0) return;
+		const steering = this._steeringMessages.indexOf(text);
+		if (steering !== -1) {
+			this._steeringMessages.splice(steering, 1);
+			this._emitQueueUpdate();
+			return;
+		}
+		const followUp = this._followUpMessages.indexOf(text);
+		if (followUp === -1) return;
+		this._followUpMessages.splice(followUp, 1);
+		this._emitQueueUpdate();
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -911,12 +1217,37 @@ export class AgentSession {
 	 * Remove all listeners and disconnect from agent.
 	 * Call this when completely done with the session.
 	 */
-	async dispose(): Promise<void> {
+	dispose(): Promise<void> {
+		if (this._disposePromise !== undefined) return this._disposePromise;
+		this._disposed = true;
+		// Everything up to closing the engine is synchronous, as before the durable engine: a caller that does not await
+		// sees a stale extension context and no listeners immediately.
+		try {
+			this.abortRetry();
+			this.abortCompaction();
+			this.abortBranchSummary();
+			this.abortBash();
+		} catch {
+			// Dispose must succeed even if an abort hook throws.
+		}
+		const runner = this._extensionRunner;
+		runner.invalidate(
+			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+		);
+		this._eventListeners = [];
+		if (this._cacheWarmer) {
+			this._cacheWarmer.onWarmed = undefined;
+			this._cacheWarmer.cancel();
+		}
+		cleanupSessionResources(this.sessionId);
+		this._disposePromise = this._closeDurable(runner);
+		return this._disposePromise;
+	}
+
+	/** Abort the run, close the engine (releasing the database and its lock), and flush the session. */
+	private async _closeDurable(runner: ExtensionRunner): Promise<void> {
 		const errors: unknown[] = [];
-		const engine = await this._enginePromise.catch((error: unknown) => {
-			errors.push(error);
-			return undefined;
-		});
+		const engine = this._enginePromise === undefined ? undefined : await this._enginePromise.catch(() => undefined);
 		if (engine !== undefined) {
 			try {
 				await engine.abort();
@@ -935,22 +1266,12 @@ export class AgentSession {
 			errors.push(error);
 		}
 		for (const error of errors) {
-			this._extensionRunner.emitError({
+			runner.emitError({
 				extensionPath: "<durable>",
 				event: "dispose",
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
-
-		this._extensionRunner.invalidate(
-			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
-		);
-		this._eventListeners = [];
-		if (this._cacheWarmer) {
-			this._cacheWarmer.onWarmed = undefined;
-			this._cacheWarmer.cancel();
-		}
-		cleanupSessionResources(this.sessionId);
 	}
 
 	// =========================================================================
@@ -1284,14 +1605,25 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		if (this._isEmittingAgentSettled) {
+			this._deferUntilAgentSettled(() => this.prompt(text, options), "user");
+			return;
+		}
 		const preflightResult = options?.preflightResult;
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		// Extension commands execute immediately, even during streaming; they manage their own LLM interaction.
 		if (expandPromptTemplates && text.startsWith("/")) {
 			const handled = await this._tryExecuteExtensionCommand(text);
 			if (handled) {
 				preflightResult?.("handled");
 				return;
 			}
+		}
+		if (this._deferUntilAgentSettled(() => this.prompt(text, options), "user")) return;
+		if (this._compactionAbortController !== undefined) {
+			throw new Error(
+				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
+			);
 		}
 		const processed = await this._runInputHandlers(
 			text,
@@ -1303,8 +1635,20 @@ export class AgentSession {
 			preflightResult?.("handled");
 			return;
 		}
-		let expanded = processed.text;
-		if (expandPromptTemplates) {
+		await this._promptWithInput(processed.text, processed.images, options);
+	}
+
+	private async _promptWithInput(
+		currentText: string,
+		currentImages: ImageContent[] | undefined,
+		options?: PromptOptions,
+	): Promise<void> {
+		if (this._deferUntilAgentSettled(() => this._promptWithInput(currentText, currentImages, options), "user")) {
+			return;
+		}
+		const preflightResult = options?.preflightResult;
+		let expanded = currentText;
+		if (options?.expandPromptTemplates ?? true) {
 			expanded = this._expandSkillCommand(expanded);
 			expanded = expandPromptTemplate(expanded, [...this.promptTemplates]);
 		}
@@ -1314,40 +1658,21 @@ export class AgentSession {
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
-			const queuedContent: (TextContent | ImageContent)[] = [
-				{ type: "text", text: expanded },
-				...(processed.images ?? []),
-			];
-			const engine = await this._engineOrThrow();
-			if (options.streamingBehavior === "steer") {
-				await engine.steer(queuedContent);
-				this._steeringMessages.push(expanded);
-			} else {
-				await engine.followUp(queuedContent);
-				this._followUpMessages.push(expanded);
-			}
-			this._emitQueueUpdate();
-			await this._extensionRunner.emit({
-				type: "input_queued",
-				behavior: options.streamingBehavior,
-				source: options.source ?? "interactive",
-			});
+			const source = options.source ?? "interactive";
+			if (options.streamingBehavior === "followUp") await this._queueFollowUp(expanded, currentImages, source);
+			else await this._queueSteer(expanded, currentImages, source);
 			preflightResult?.("queued");
 			return;
 		}
-		if (this.isCompacting) {
-			throw new Error(
-				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
-			);
-		}
-		if (!this.model) throw new Error("No model selected.");
+		this._flushPendingBashMessages();
+		if (!this.model) throw new Error(formatNoModelSelectedMessage());
+		await this._getRequiredRequestAuth(this.model);
 		const before = await this._extensionRunner.emitBeforeAgentStart(
 			expanded,
-			processed.images,
+			currentImages,
 			this._baseSystemPromptOptions,
 		);
-		await this._getRequiredRequestAuth(this.model);
-		const normalized = await this._normalizePromptImages(processed.images);
+		const normalized = await this._normalizePromptImages(currentImages);
 		const content: (TextContent | ImageContent)[] = [
 			{
 				type: "text",
@@ -1355,36 +1680,78 @@ export class AgentSession {
 			},
 			...normalized.images,
 		];
-		const messages: AgentMessage[] = before.messages.map((message) => ({
-			role: "custom",
-			customType: message.customType,
-			content: message.content ?? [],
-			display: message.display,
-			details: message.details,
-			timestamp: Date.now(),
-		}));
-		for (const message of this._pendingNextTurnMessages) messages.push(message);
+		// Pi's order after the user message: "nextTurn" messages, then before_agent_start messages, then custom work a
+		// cancelled run left queued.
+		const messages: AgentMessage[] = [...this._pendingNextTurnMessages];
 		this._pendingNextTurnMessages = [];
-		const engine = await this._engineOrThrow();
-		const submission = await engine
-			.prompt(content, {
+		for (const message of before.messages) {
+			messages.push({
+				role: "custom",
+				customType: message.customType,
+				// Untyped extensions can pass null/missing content; normalize at ingestion.
+				content: message.content ?? [],
+				display: message.display,
+				details: message.details,
+				timestamp: Date.now(),
+			});
+		}
+		messages.push(...this.agent.peekQueuedMessages());
+		this.agent.clearAllQueues();
+		this._runSystemPromptOptions = before.systemPromptOptions;
+		preflightResult?.("started");
+		this._isAgentRunActive = true;
+		this._agentRunAbortRequested = false;
+		// Wait for this run's settlement, registered before submitting so it includes the submissions it defers.
+		const settled = this._whenRunSettled();
+		let submission: Submission;
+		try {
+			const engine = await this._engineOrThrow();
+			await engine.markSettlementPending();
+			submission = await engine.prompt(content, {
 				systemPrompt: buildSystemPrompt(before.systemPromptOptions),
 				messages,
 				whenBusy: "reject",
-			})
-			.catch((error: unknown) => {
-				if (error instanceof Error && error.message.includes("is busy")) {
-					throw new Error(
-						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
-					);
-				}
-				throw error;
 			});
-		preflightResult?.("started");
+		} catch (error) {
+			this._isAgentRunActive = false;
+			for (const resolve of this._settledWaiters.splice(0)) resolve();
+			if (error instanceof Error && error.message.includes("is busy")) {
+				throw new Error(
+					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+				);
+			}
+			throw error;
+		}
+		const engine = await this._engineOrThrow();
+		// Inputs held while an earlier run settled without continuing join this run.
+		for (const input of this._heldInputs.splice(0)) {
+			if (input.behavior === "steer") await engine.steer(input.content);
+			else await engine.followUp(input.content);
+		}
 		await submission.wait(BACKGROUND_CONTEXT);
-		await engine.waitForIdle();
+		await settled;
 		await this.sessionManager.refresh();
 		this._startCacheWarming();
+	}
+
+	/** Queue already processed steering input; it joins the run after its current tool round. */
+	private async _queueSteer(text: string, images: ImageContent[] | undefined, source: InputSource): Promise<void> {
+		this._steeringMessages.push(text);
+		this._emitQueueUpdate();
+		await this._extensionRunner.emit({ type: "input_queued", behavior: "steer", source });
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...(images ?? [])];
+		if (this._runEnded) this._heldInputs.push({ behavior: "steer", content });
+		else await (await this._engineOrThrow()).steer(content);
+	}
+
+	/** Queue already processed follow-up input; it runs after the current run's last answer. */
+	private async _queueFollowUp(text: string, images: ImageContent[] | undefined, source: InputSource): Promise<void> {
+		this._followUpMessages.push(text);
+		this._emitQueueUpdate();
+		await this._extensionRunner.emit({ type: "input_queued", behavior: "followUp", source });
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...(images ?? [])];
+		if (this._runEnded) this._heldInputs.push({ behavior: "followUp", content });
+		else await (await this._engineOrThrow()).followUp(content);
 	}
 
 	private _assertQueueableInput(text: string): void {
@@ -1471,40 +1838,41 @@ export class AgentSession {
 		images?: ImageContent[],
 		options?: { source?: InputSource },
 	): Promise<QueuedInputDisposition> {
-		this._assertQueueableInput(text);
-		const processed = await this._runInputHandlers(text, images, options?.source ?? "interactive", "steer");
-		if (processed === undefined) return "handled";
-		const expanded = expandPromptTemplate(this._expandSkillCommand(processed.text), [...this.promptTemplates]);
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expanded }, ...(processed.images ?? [])];
-		await (await this._engineOrThrow()).steer(content);
-		this._steeringMessages.push(expanded);
-		this._emitQueueUpdate();
-		await this._extensionRunner.emit({
-			type: "input_queued",
-			behavior: "steer",
-			source: options?.source ?? "interactive",
-		});
-		return "queued";
+		return this._queueUserInput(text, images, "steer", options?.source ?? "interactive");
 	}
 
+	/**
+	 * Queue a follow-up message to be processed after the agent finishes.
+	 * Delivered only when agent has no more tool calls or steering messages.
+	 * Expands skill commands and prompt templates. Errors on extension commands.
+	 */
 	async followUp(
 		text: string,
 		images?: ImageContent[],
 		options?: { source?: InputSource },
 	): Promise<QueuedInputDisposition> {
+		return this._queueUserInput(text, images, "followUp", options?.source ?? "interactive");
+	}
+
+	private async _queueUserInput(
+		text: string,
+		images: ImageContent[] | undefined,
+		behavior: "steer" | "followUp",
+		source: InputSource,
+	): Promise<QueuedInputDisposition> {
 		this._assertQueueableInput(text);
-		const processed = await this._runInputHandlers(text, images, options?.source ?? "interactive", "followUp");
+		const options: PromptOptions = { images, streamingBehavior: behavior, source };
+		if (this._deferUntilAgentSettled(() => this.prompt(text, options), "user")) return "queued";
+		const processed = await this._runInputHandlers(text, images, source, this.isStreaming ? behavior : undefined);
 		if (processed === undefined) return "handled";
+		if (
+			this._deferUntilAgentSettled(() => this._promptWithInput(processed.text, processed.images, options), "user")
+		) {
+			return "queued";
+		}
 		const expanded = expandPromptTemplate(this._expandSkillCommand(processed.text), [...this.promptTemplates]);
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expanded }, ...(processed.images ?? [])];
-		await (await this._engineOrThrow()).followUp(content);
-		this._followUpMessages.push(expanded);
-		this._emitQueueUpdate();
-		await this._extensionRunner.emit({
-			type: "input_queued",
-			behavior: "followUp",
-			source: options?.source ?? "interactive",
-		});
+		if (behavior === "steer") await this._queueSteer(expanded, processed.images, source);
+		else await this._queueFollowUp(expanded, processed.images, source);
 		return "queued";
 	}
 
@@ -1541,10 +1909,51 @@ export class AgentSession {
 			this._pendingNextTurnMessages.push(appMessage);
 			return;
 		}
-		const submission = await (await this._engineOrThrow()).appendMessage(appMessage, {
-			trigger: options?.triggerTurn === true ? true : undefined,
-		});
-		if (options?.triggerTurn === true) await submission.wait(BACKGROUND_CONTEXT);
+		if (this.isStreaming && options?.triggerTurn !== false) {
+			if (this._agentRunAbortRequested || this._runEnded) {
+				// The run is being cancelled or settling: keep the work queued for a continuation or the next run.
+				if (options?.deliverAs === "followUp") this.agent.followUp(appMessage);
+				else this.agent.steer(appMessage);
+				return;
+			}
+			// Delivered like steering (after the current tool round) or follow-up input (after the last answer).
+			await (await this._engineOrThrow()).appendMessage(appMessage, {
+				trigger: true,
+				deliverAs: options?.deliverAs === "followUp" ? "followUp" : "steer",
+			});
+			return;
+		}
+		if (options?.triggerTurn) {
+			if (this._deferUntilAgentSettled(() => this.sendCustomMessage(message, options), "custom")) return;
+			const engine = await this._engineOrThrow();
+			this._isAgentRunActive = true;
+			this._agentRunAbortRequested = false;
+			const settled = this._whenRunSettled();
+			try {
+				await engine.markSettlementPending();
+				const submission = await engine.appendMessage(appMessage, { trigger: true });
+				await submission.wait(BACKGROUND_CONTEXT);
+			} catch (error) {
+				this._isAgentRunActive = false;
+				for (const resolve of this._settledWaiters.splice(0)) resolve();
+				throw error;
+			}
+			await settled;
+			return;
+		}
+		if (this._runEnded && this.isStreaming) {
+			// The run is settling: written at settlement, before any continuation.
+			this._pendingCustomMessages.push(appMessage);
+			return;
+		}
+		// Not triggering: while streaming, placed at the run's next boundary, never between a tool call and its result;
+		// when idle, placed at once and returned after its message events were emitted.
+		const streaming = this.isStreaming;
+		const engine = await this._engineOrThrow();
+		const submission = await engine.appendMessage(appMessage);
+		if (streaming) return;
+		await submission.wait(BACKGROUND_CONTEXT);
+		await engine.delivered();
 	}
 
 	/**
@@ -1558,6 +1967,15 @@ export class AgentSession {
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
 		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+	): Promise<void> {
+		await this._sendUserMessage(content, options);
+	}
+
+	/** `sendUserMessage` with a callback once the input was handled, queued, or started. */
+	private async _sendUserMessage(
+		content: string | (TextContent | ImageContent)[],
+		options: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean } | undefined,
+		admitted?: () => void,
 	): Promise<void> {
 		// Normalize content to text string + optional images
 		let text: string;
@@ -1579,12 +1997,17 @@ export class AgentSession {
 			if (images.length === 0) images = undefined;
 		}
 
-		await this.prompt(text, {
-			expandPromptTemplates: options?.expandPromptTemplates ?? false,
-			streamingBehavior: options?.deliverAs,
-			images,
-			source: "extension",
-		});
+		try {
+			await this.prompt(text, {
+				expandPromptTemplates: options?.expandPromptTemplates ?? false,
+				streamingBehavior: options?.deliverAs,
+				images,
+				source: "extension",
+				...(admitted === undefined ? {} : { preflightResult: () => admitted() }),
+			});
+		} finally {
+			admitted?.();
+		}
 	}
 
 	/**
@@ -1597,14 +2020,19 @@ export class AgentSession {
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
 		this._followUpMessages = [];
-		void this._engineOrThrow().then((engine) => engine.clearQueue());
+		this._heldInputs = [];
+		if (this._engineOpened()) void this._engineOrThrow().then((engine) => engine.clearQueue());
 		this._emitQueueUpdate();
 		return { steering, followUp };
 	}
 
 	/** Number of pending user messages, including submissions deferred until settlement. */
 	get pendingMessageCount(): number {
-		return this._steeringMessages.length + this._followUpMessages.length;
+		return (
+			this._steeringMessages.length +
+			this._followUpMessages.length +
+			this._deferredSettledActions.filter((deferred) => deferred.messageRole === "user").length
+		);
 	}
 
 	/** Get pending steering messages (read-only) */
@@ -1625,11 +2053,36 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
-		await (await this._engineOrThrow()).abort();
+		if (this._isAgentRunActive) this._agentRunAbortRequested = true;
+		this.abortRetry();
+		this.abortCompaction();
+		this.abortBranchSummary();
+		if (this._engineOpened()) await (await this._engineOrThrow()).abort();
+		await this.waitForIdle();
 	}
 
+	/** Resolve when no run, tracked delivery, or deferred submission remains, with all events delivered. */
 	async waitForIdle(): Promise<void> {
-		await (await this._engineOrThrow()).waitForIdle();
+		for (;;) {
+			await this._settleDeliveries();
+			if (this._deferredDrain !== undefined) await this._deferredDrain;
+			if (this._engineOpened()) await (await this._engineOrThrow()).waitForIdle();
+			await this._whenRunSettled();
+			if (
+				!this._isAgentRunActive &&
+				!this._settling &&
+				this._pendingDeliveries.size === 0 &&
+				this._deferredDrain === undefined &&
+				this._deferredSettledActions.length === 0
+			) {
+				return;
+			}
+		}
+	}
+
+	/** Whether the durable engine was opened or is opening; a new session opens it on first use. */
+	private _engineOpened(): boolean {
+		return this._engine !== undefined || this._enginePromise !== undefined;
 	}
 
 	// =========================================================================
@@ -1964,6 +2417,8 @@ export class AgentSession {
 
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
+		// session_start handlers may send messages through void APIs; they are written before binding completes.
+		await this._settleAdmissions();
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
 	}
 
@@ -2072,22 +2527,18 @@ export class AgentSession {
 		runner.bindCore(
 			{
 				sendMessage: (message, options) => {
-					this.sendCustomMessage(message, options).catch((err) => {
-						runner.emitError({
-							extensionPath: "<runtime>",
-							event: "send_message",
-							error: err instanceof Error ? err.message : String(err),
-						});
-					});
+					this._trackDelivery(this.sendCustomMessage(message, options), "send_message");
 				},
 				sendUserMessage: (content, options) => {
-					this.sendUserMessage(content, options).catch((err) => {
-						runner.emitError({
-							extensionPath: "<runtime>",
-							event: "send_user_message",
-							error: err instanceof Error ? err.message : String(err),
-						});
+					let admit = (): void => {};
+					const admission = new Promise<void>((resolve) => {
+						admit = resolve;
 					});
+					this._trackDelivery(
+						this._sendUserMessage(content, options, () => admit()),
+						"send_user_message",
+						admission,
+					);
 				},
 				appendEntry: (customType, data) => {
 					const entryId = this.sessionManager.appendCustomEntry(customType, data);
