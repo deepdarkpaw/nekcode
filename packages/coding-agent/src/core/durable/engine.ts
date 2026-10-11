@@ -264,10 +264,14 @@ export class DurableEngine {
 		await this.#drain();
 	}
 
-	/** Resolve when the conversation is idle and every event up to that point was delivered. */
+	/** Resolve when the conversation and every resumed background task are idle, with all events delivered. */
 	async waitForIdle(): Promise<void> {
-		await this.#conversation.waitForIdle(BACKGROUND_CONTEXT);
-		await this.#drain();
+		for (;;) {
+			await this.#conversation.waitForIdle(BACKGROUND_CONTEXT);
+			await this.#drain();
+			if ((await this.harness.inspect(BACKGROUND_CONTEXT)).tasks.length === 0) return;
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
 	}
 
 	/** Compact now; resolves when the compaction ended and its events were delivered. */

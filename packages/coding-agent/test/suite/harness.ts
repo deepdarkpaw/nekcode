@@ -110,6 +110,9 @@ export function createTestUiContext(overrides: Partial<ExtensionUIContext> = {})
 
 export interface HarnessOptions {
 	models?: FauxModelDefinition[];
+	responses?: FauxResponseStep[];
+	tokensPerSecond?: number;
+	tokenSize?: { min?: number; max?: number };
 	settings?: Partial<Settings>;
 	tools?: AgentTool[];
 	initialActiveToolNames?: string[];
@@ -150,8 +153,10 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const tempDir = createTempDir();
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
 		models: options.models,
+		tokensPerSecond: options.tokensPerSecond,
+		tokenSize: options.tokenSize,
 	});
-	fauxProvider.setResponses([]);
+	fauxProvider.setResponses(options.responses ?? []);
 	const model = fauxProvider.getModel();
 	const toolMap = options.tools ? Object.fromEntries(options.tools.map((tool) => [tool.name, tool])) : undefined;
 	const withConfiguredAuth = options.withConfiguredAuth ?? true;
