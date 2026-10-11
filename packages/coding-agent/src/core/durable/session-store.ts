@@ -256,6 +256,7 @@ export class DurableSessionStore {
 				const batch = this.#queue.splice(0);
 				try {
 					const harness = await this.#open(BACKGROUND_CONTEXT);
+					await this.#reloadPlacement(BACKGROUND_CONTEXT);
 					await commitPlans(harness, this.#placement!, batch, BACKGROUND_CONTEXT);
 					for (const plan of batch) this.#summary?.add(plan.source);
 					this.#writeSidecar();
@@ -293,6 +294,19 @@ export class DurableSessionStore {
 		conversations.sort((left, right) => left.id - right.id);
 		entries.sort((left, right) => left.id - right.id);
 		return { conversations, entries, nextSeq: 0 };
+	}
+
+	async #reloadPlacement(context: Context): Promise<void> {
+		if (this.path !== undefined) {
+			this.#reload(this.path);
+			return;
+		}
+		const snapshot = await this.memorySnapshot(context);
+		if (snapshot === undefined) return;
+		const projected = projectSnapshot(snapshot);
+		this.#placement = projected.placement;
+		this.#summary = new SessionInfoBuilder();
+		for (const entry of projected.fileEntries) this.#summary.add(entry);
 	}
 
 	async #open(context: Context): Promise<Harness> {

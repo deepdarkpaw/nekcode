@@ -73,10 +73,16 @@ export interface ProviderHooks {
 export class HookedModels implements Models {
 	#inner: Models;
 	#hooks: ProviderHooks;
+	#fallbackModel?: Model<Api>;
 
 	constructor(inner: Models, hooks: ProviderHooks) {
 		this.#inner = inner;
 		this.#hooks = hooks;
+	}
+
+	/** Use the explicitly selected model when a provider exposes a request handler without a catalog entry. */
+	setFallbackModel(model: Model<Api> | undefined): void {
+		this.#fallbackModel = model;
 	}
 
 	/** Route later calls to `inner` with `hooks`; a session store opens its Harness before the host binds models. */
@@ -202,7 +208,10 @@ export class HookedModels implements Models {
 	}
 
 	getModel(provider: string, id: string): Model<Api> | undefined {
-		return this.#inner.getModel(provider, id);
+		const model = this.#inner.getModel(provider, id);
+		if (model !== undefined) return model;
+		const fallback = this.#fallbackModel;
+		return fallback?.provider === provider && fallback.id === id ? fallback : undefined;
 	}
 
 	getModelsOfType<TType extends ModelType>(type: TType, provider?: string): readonly ModelTypeMap[TType][] {

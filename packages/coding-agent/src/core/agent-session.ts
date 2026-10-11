@@ -42,7 +42,6 @@ import {
 	modelsAreEqual,
 	type RetryCallbacks,
 	resetApiProviders,
-	streamSimple,
 } from "@earendil-works/pi-ai/compat";
 import { CompactionEntry, type EntryDraft, type EntryId } from "@earendil-works/pi-durable";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
@@ -62,7 +61,7 @@ import {
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { DurableEngine } from "./durable/engine.ts";
-import { agentMessageEntry } from "./durable/entries.ts";
+import { agentMessageEntry, type ConvertToLlm } from "./durable/entries.ts";
 import type { DurableHostHooks } from "./durable/hooks.ts";
 import { toStrictJson } from "./durable/json.ts";
 import { HookedModels } from "./durable/models.ts";
@@ -214,6 +213,8 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
+	/** Synchronous pi-to-model conversion used by durable message entries. */
+	convertToLlm?: ConvertToLlm;
 	/** Keeps the prompt cache entry of the last session request warm. */
 	cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed"> &
 		Partial<Pick<CacheWarmer, "start">>;
@@ -349,7 +350,6 @@ export class AgentSession {
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
 	private _pendingBashMessages: BashExecutionMessage[] = [];
-	private _recordedBashMessages: BashExecutionMessage[] = [];
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -377,6 +377,9 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
+	private _convertToLlm?: ConvertToLlm;
+	private _durableModels?: HookedModels;
+	private _durableSignal?: AbortSignal;
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed"> &
 		Partial<Pick<CacheWarmer, "start">>;
 
@@ -402,6 +405,7 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		this._convertToLlm = config.convertToLlm;
 		this._cacheWarmer = config.cacheWarmer;
 		if (this._cacheWarmer) {
 			this._cacheWarmer.onWarmed = (entry) => this._emit({ type: "entry_appended", entry });
@@ -430,14 +434,32 @@ export class AgentSession {
 	}
 
 	private async _openDurableEngine(): Promise<DurableEngine> {
-		const report = (error: unknown): void =>
+		const report = (error: unknown): void => {
 			this._extensionRunner.emitError({
 				extensionPath: "<durable>",
 				event: "durable",
 				error: error instanceof Error ? error.message : String(error),
 			});
+		};
 		const hooks: DurableHostHooks = {
-			context: async (messages) => await this._extensionRunner.emitContext(messages),
+			convertToLlm: this._convertToLlm,
+			beforeCompact: async (request) => {
+				const result = await this._extensionRunner.emit({
+					type: "session_before_compact",
+					preparation: request.preparation,
+					branchEntries: this.sessionManager.getBranch(),
+					...(request.customInstructions === undefined ? {} : { customInstructions: request.customInstructions }),
+					reason: request.reason,
+					willRetry: request.reason === "overflow",
+					signal: request.signal,
+				});
+				if (result?.cancel === true) return { cancel: true };
+				return result?.compaction === undefined ? undefined : { compaction: result.compaction };
+			},
+			context: async (messages, signal) => {
+				this._durableSignal = signal;
+				return await this._extensionRunner.emitContext(messages);
+			},
 			toolCall: async (event) => {
 				if (!this._extensionRunner.hasHandlers("tool_call")) return undefined;
 				return await this._extensionRunner.emitToolCall({ type: "tool_call", ...event });
@@ -547,6 +569,8 @@ export class AgentSession {
 				});
 			},
 		});
+		models.setFallbackModel(this.model);
+		this._durableModels = models;
 		const store = this.sessionManager.durableStore();
 		const engine = await DurableEngine.open({
 			path: this.sessionManager.getSessionFile(),
@@ -689,6 +713,7 @@ export class AgentSession {
 		if (event.type === "agent_start") this._isAgentRunActive = true;
 		if (event.type === "agent_settled") {
 			this._isAgentRunActive = false;
+			this._durableSignal = undefined;
 			this._flushPendingBashMessages();
 			this._cacheWarmer?.onAgentSettled();
 		}
@@ -716,7 +741,27 @@ export class AgentSession {
 			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
 		else if (event.type === "agent_settled")
 			await this._extensionRunner.emit({ type: "agent_settled", outcome: event.outcome });
-		else if (event.type === "turn_start")
+		else if (event.type === "compaction_end") {
+			const entry = getLatestCompactionEntry(this.sessionManager.getBranch());
+			if (event.result !== undefined && entry !== null) {
+				await this._extensionRunner.emit({
+					type: "session_compact",
+					compactionEntry: entry,
+					fromExtension: entry.fromHook ?? false,
+					reason: event.reason,
+					willRetry: event.willRetry,
+				});
+			} else {
+				await this._extensionRunner.emit({
+					type: "session_compact_failed",
+					reason: event.reason,
+					aborted: event.aborted,
+					willRetry: event.willRetry,
+					...(event.errorMessage === undefined ? {} : { errorMessage: event.errorMessage }),
+					fromExtension: false,
+				});
+			}
+		} else if (event.type === "turn_start")
 			await this._extensionRunner.emit({ type: "turn_start", turnIndex: this._turnIndex++, timestamp: Date.now() });
 		else if (event.type === "message_start")
 			await this._extensionRunner.emit({ type: "message_start", message: event.message });
@@ -807,24 +852,7 @@ export class AgentSession {
 		headers?: Record<string, string>;
 		env?: Record<string, string>;
 	}> {
-		if (this.agent.streamFunction === streamSimple) {
-			return this._getRequiredRequestAuth(model, signal);
-		}
-
-		try {
-			const result = await this._modelRuntime.getAuth(model, { signal });
-			if (!result) return { model };
-			const requestModel = result.auth.baseUrl ? { ...model, baseUrl: result.auth.baseUrl } : model;
-			return {
-				model: requestModel,
-				apiKey: result.auth.apiKey,
-				headers: withoutDeletedHeaders(result.auth.headers),
-				env: result.env,
-			};
-		} catch (error) {
-			if (signal?.aborted) throw error;
-			return { model };
-		}
+		return this._getRequiredRequestAuth(model, signal);
 	}
 
 	/**
@@ -841,17 +869,7 @@ export class AgentSession {
 	// =========================================================================
 
 	private _refreshFinalizedContext(): void {
-		const projection = this.sessionManager.buildSessionProjection();
-		this._cachedMessages = projection.messages;
-		const projectedBash = new Set(
-			projection.messages
-				.filter((message): message is BashExecutionMessage => message.role === "bashExecution")
-				.map((message) => `${message.timestamp}:${message.command}`),
-		);
-		const missingBash = this._recordedBashMessages.filter(
-			(message) => !projectedBash.has(`${message.timestamp}:${message.command}`),
-		);
-		this._cachedMessages = [...this._cachedMessages, ...missingBash];
+		this._cachedMessages = this.sessionManager.buildSessionProjection().messages;
 		this.agent.state.messages = this._cachedMessages;
 	}
 
@@ -894,12 +912,34 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	async dispose(): Promise<void> {
+		const errors: unknown[] = [];
+		const engine = await this._enginePromise.catch((error: unknown) => {
+			errors.push(error);
+			return undefined;
+		});
+		if (engine !== undefined) {
+			try {
+				await engine.abort();
+			} catch (error) {
+				errors.push(error);
+			}
+			try {
+				await engine.close();
+			} catch (error) {
+				errors.push(error);
+			}
+		}
 		try {
-			await (await this._engineOrThrow()).abort();
-			await (await this._engineOrThrow()).close();
 			await this.sessionManager.flush();
-		} catch {
-			// Dispose must release host resources even when an abort is already terminal.
+		} catch (error) {
+			errors.push(error);
+		}
+		for (const error of errors) {
+			this._extensionRunner.emitError({
+				extensionPath: "<durable>",
+				event: "dispose",
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 
 		this._extensionRunner.invalidate(
@@ -1042,12 +1082,12 @@ export class AgentSession {
 
 	/** Current steering mode */
 	get steeringMode(): "all" | "one-at-a-time" {
-		return this.agent.steeringMode;
+		return this.settingsManager.getSteeringMode();
 	}
 
 	/** Current follow-up mode */
 	get followUpMode(): "all" | "one-at-a-time" {
-		return this.agent.followUpMode;
+		return this.settingsManager.getFollowUpMode();
 	}
 
 	/** Current session file path, or undefined if sessions are disabled */
@@ -1300,7 +1340,7 @@ export class AgentSession {
 				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
 			);
 		}
-		if (!this.model) throw new Error("No model selected");
+		if (!this.model) throw new Error("No model selected.");
 		const before = await this._extensionRunner.emitBeforeAgentStart(
 			expanded,
 			processed.images,
@@ -1625,6 +1665,7 @@ export class AgentSession {
 			? requestedThinkingLevel
 			: (clampThinkingLevel(model, requestedThinkingLevel) as ThinkingLevel);
 		await (await this._engineOrThrow()).setModel(model, thinkingLevel);
+		this._durableModels?.setFallbackModel(model);
 		this.agent.state.model = model;
 		this.agent.state.thinkingLevel = thinkingLevel;
 		this.sessionManager.appendModelChange(model.provider, model.id);
@@ -1684,6 +1725,7 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
 
 		// Apply model
+		this._durableModels?.setFallbackModel(next.model);
 		this.agent.state.model = next.model;
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
 		if (options.persist) {
@@ -1719,6 +1761,7 @@ export class AgentSession {
 		const nextModel = availableModels[nextIndex];
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
+		this._durableModels?.setFallbackModel(nextModel);
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		if (options.persist) {
@@ -1826,7 +1869,6 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setSteeringMode(mode: "all" | "one-at-a-time"): void {
-		this.agent.steeringMode = mode;
 		this.settingsManager.setSteeringMode(mode);
 	}
 
@@ -1835,7 +1877,6 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
-		this.agent.followUpMode = mode;
 		this.settingsManager.setFollowUpMode(mode);
 	}
 
@@ -1855,18 +1896,23 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		await (await this._engineOrThrow()).compact(customInstructions);
-		await this.sessionManager.refresh();
-		const entry = getLatestCompactionEntry(this.sessionManager.getBranch());
-		if (entry === null) throw new Error("Compaction completed without a session entry");
-		return {
-			summary: entry.summary,
-			firstKeptEntryId: entry.firstKeptEntryId,
-			tokensBefore: entry.tokensBefore,
-			estimatedTokensAfter: _estimateMessagesTokens(this.messages),
-			details: entry.details,
-			usage: entry.usage,
-		};
+		this._compactionAbortController = new AbortController();
+		try {
+			await (await this._engineOrThrow()).compact(customInstructions);
+			await this.sessionManager.refresh();
+			const entry = getLatestCompactionEntry(this.sessionManager.getBranch());
+			if (entry === null) throw new Error("Compaction completed without a session entry");
+			return {
+				summary: entry.summary,
+				firstKeptEntryId: entry.firstKeptEntryId,
+				tokensBefore: entry.tokensBefore,
+				estimatedTokensAfter: _estimateMessagesTokens(this.messages),
+				details: entry.details,
+				usage: entry.usage,
+			};
+		} finally {
+			this._compactionAbortController = undefined;
+		}
 	}
 
 	/**
@@ -2077,7 +2123,7 @@ export class AgentSession {
 				getScopedModels: () => this._scopedModels,
 				isIdle: () => this.isIdle,
 				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
-				getSignal: () => this.agent.signal,
+				getSignal: () => this._durableSignal,
 				abort: () => {
 					if (this._extensionAbortHandler) {
 						this._extensionAbortHandler();
@@ -2440,7 +2486,6 @@ export class AgentSession {
 			timestamp: Date.now(),
 			excludeFromContext: options?.excludeFromContext,
 		};
-		this._recordedBashMessages.push(bashMessage);
 
 		// If agent is streaming, defer adding to avoid breaking tool_use/tool_result ordering
 		if (this.isStreaming) {
@@ -2606,7 +2651,7 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this.agent.streamFunction,
+					streamFn: this._modelRuntime.streamSimple.bind(this._modelRuntime),
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
 				});
@@ -2875,7 +2920,7 @@ export class AgentSession {
 			env,
 			signal: options.signal,
 			thinkingLevel: this.thinkingLevel,
-			streamFn: this.agent.streamFunction,
+			streamFn: this._modelRuntime.streamSimple.bind(this._modelRuntime),
 			retry: this.settingsManager.getRetrySettings(),
 			sessionId: this.sessionId,
 		});

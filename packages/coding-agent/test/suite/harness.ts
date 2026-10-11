@@ -6,7 +6,7 @@ import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } fro
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type {
 	FauxModelDefinition,
@@ -15,7 +15,7 @@ import type {
 	Model,
 	ToolResultMessage,
 } from "@earendil-works/pi-ai/compat";
-import { registerFauxProvider, streamSimple } from "@earendil-works/pi-ai/compat";
+import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type { ExtensionRunner, ExtensionUIContext } from "../../src/core/extensions/index.ts";
@@ -189,38 +189,16 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		});
 	}
 
+	const modelRuntime = getModelRuntime(modelRegistry);
 	const agent = new Agent({
-		getApiKey: () => (withConfiguredAuth ? "faux-key" : undefined),
-		streamFn: streamSimple,
 		initialState: {
 			model,
 			systemPrompt: "",
 			tools: [],
 		},
 		convertToLlm,
-		onPayload: async (payload) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				return payload;
-			}
-			return runner.emitBeforeProviderRequest(payload);
-		},
-		onResponse: async (response) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("after_provider_response")) {
-				return;
-			}
-			await runner.emit({
-				type: "after_provider_response",
-				status: response.status,
-				headers: response.headers,
-			});
-		},
-		transformContext: async (messages: AgentMessage[]) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner) return messages;
-			return runner.emitContext(messages);
-		},
+		// Agent is retained as the public state holder; DurableEngine owns execution.
+		streamFn: modelRuntime.streamSimple.bind(modelRuntime),
 	});
 	const extensionsResult = options.extensionFactories
 		? await createTestExtensionsResult(options.extensionFactories, tempDir)
@@ -233,7 +211,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		sessionManager,
 		settingsManager,
 		cwd: tempDir,
-		modelRuntime: getModelRuntime(modelRegistry),
+		modelRuntime,
+		convertToLlm,
 		resourceLoader,
 		baseToolsOverride: toolMap,
 		initialActiveToolNames: options.initialActiveToolNames,
