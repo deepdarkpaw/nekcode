@@ -189,10 +189,18 @@ export async function admitSubmission(
 			omitUndefinedProperties: true,
 		});
 		const items = (boundary?.inbox ?? (await tx.doc(InboxDoc, conversationId))).items;
-		if (draft.type === "write") items.push({ id, mode: "write", entry: value as JsonObject });
-		else {
+		if (draft.type === "write") {
+			// nek: a triggered write keeps its delivery mode.
+			const deliverAs =
+				draft.trigger === true && draft.deliverAs !== undefined ? { deliverAs: draft.deliverAs } : {};
+			items.push({ id, mode: "write", entry: value as JsonObject, ...deliverAs });
+		} else {
 			const mode = draft.whenBusy === "steer" ? "steer" : "followUp";
-			items.push({ id, mode, content: value as JsonRepresentation<UserInput> });
+			const after =
+				draft.after === undefined || draft.after.length === 0
+					? {}
+					: { after: copyJson(draft.after, { omitUndefinedProperties: true }) as unknown as JsonObject[] };
+			items.push({ id, mode, content: value as JsonRepresentation<UserInput>, ...after });
 		}
 		if (boundary === undefined) return id;
 		const { users } = await applyBoundary(tx, boundary, "final", now);
@@ -217,6 +225,8 @@ export async function admitSubmission(
 	}
 	const message = { role: "user", content: draft.content, timestamp: now } as const;
 	const entry = await tx.appendEntry(UserEntry, conversationId, { model: [message] });
+	// nek: entries that follow the input, before the run's first request.
+	for (const after of draft.after ?? []) await tx.appendEntry(conversationId, after);
 	const input = { conversationId, ...requestId, type: "input", status: "placed", entry: entry.id } as const;
 	const { id } = await tx.createSubmission(input);
 	await startRun(tx, conversationId, live, [id]);

@@ -59,6 +59,11 @@ export type SubmissionDraft = {
 			readonly type: "input";
 			readonly content: UserInput;
 			readonly whenBusy?: "steer" | "followUp" | "reject";
+			/**
+			 * nek: entries placed right after the user entry, in its placement commit, before the run's first request;
+			 * pi places context injected with a prompt (`before_agent_start` messages) after the user message.
+			 */
+			readonly after?: readonly EntryDraft[];
 			readonly entry?: never;
 	  }
 	| {
@@ -70,8 +75,14 @@ export type SubmissionDraft = {
 			 * write.
 			 */
 			readonly trigger?: true;
+			/**
+			 * nek: how a busy conversation delivers a triggered write: like steering input (`steer`, from the next boundary) or
+			 * follow-up input (`followUp`, at the final boundary), continuing the run. Absent: placed as a plain write.
+			 */
+			readonly deliverAs?: "steer" | "followUp";
 			readonly content?: never;
 			readonly whenBusy?: never;
+			readonly after?: never;
 	  }
 );
 

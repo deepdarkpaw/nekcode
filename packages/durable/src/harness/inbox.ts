@@ -6,9 +6,18 @@ import type { QueueMode, Settings, UserInput } from "./types.ts";
 
 /** A queued submission: user input for a run, or a passive entry write. */
 export type InboxItem =
-	| { id: SubmissionId; mode: "steer" | "followUp"; content: JsonRepresentation<UserInput> }
-	/** `entry` is an `EntryDraft`, stored as plain JSON. */
-	| { id: SubmissionId; mode: "write"; entry: JsonObject };
+	| {
+			id: SubmissionId;
+			mode: "steer" | "followUp";
+			content: JsonRepresentation<UserInput>;
+			/** nek: `EntryDraft`s placed right after the user entry, stored as plain JSON. */
+			after?: JsonObject[];
+	  }
+	/**
+	 * `entry` is an `EntryDraft`, stored as plain JSON. nek: a triggered write with `deliverAs` is selected like user
+	 * input of that mode and continues the run.
+	 */
+	| { id: SubmissionId; mode: "write"; entry: JsonObject; deliverAs?: "steer" | "followUp" };
 
 /** Built-in queue of one conversation's submissions waiting for a boundary, in ID order. */
 export type InboxState = { items: InboxItem[] };
@@ -72,11 +81,13 @@ export async function applyBoundary(
 	const items = inbox.items;
 	const reset = items.some((item) => item.mode === "write" && item.entry.head === "self");
 	const final = at === "final" || reset;
+	const deliveredAs = (item: Draft<InboxItem>): "steer" | "followUp" | "write" =>
+		item.mode === "write" ? (item.deliverAs ?? "write") : item.mode;
 	const pick = (mode: "steer" | "followUp", queueMode: QueueMode): number[] => {
-		const indexes = items.flatMap((item, index) => (item.mode === mode ? [index] : []));
+		const indexes = items.flatMap((item, index) => (deliveredAs(item) === mode ? [index] : []));
 		return queueMode === "all" ? indexes : indexes.slice(0, 1);
 	};
-	const writes = items.flatMap((item, index) => (item.mode === "write" ? [index] : []));
+	const writes = items.flatMap((item, index) => (deliveredAs(item) === "write" ? [index] : []));
 	const users = [...pick("steer", boundary.steeringMode), ...(final ? pick("followUp", boundary.followUpMode) : [])];
 	users.sort((a, b) => a - b);
 
@@ -94,9 +105,24 @@ export async function applyBoundary(
 	}
 	const placed: SubmissionId[] = [];
 	for (const index of users) {
-		const item = items[index] as Draft<Extract<InboxItem, { mode: "steer" | "followUp" }>>;
+		const queued = items[index] as Draft<InboxItem>;
+		if (queued.mode === "write") {
+			// nek: a triggered write delivered as input; a stale one settles and does not continue the run.
+			const draft = queued.entry as unknown as EntryDraft;
+			if (isStale(boundary, draft)) {
+				tx.settleSubmission(queued.id, { status: "unanswered", reason: "stale" });
+				continue;
+			}
+			const entry = await tx.appendEntry(conversationId, draft);
+			tx.placeSubmission(queued.id, entry.id);
+			placed.push(queued.id);
+			continue;
+		}
+		const item = queued as Draft<Extract<InboxItem, { mode: "steer" | "followUp" }>>;
 		const message = { role: "user", content: item.content as UserInput, timestamp: now } as const;
 		const entry = await tx.appendEntry(UserEntry, conversationId, { model: [message] });
+		// nek: entries that follow the input.
+		for (const after of item.after ?? []) await tx.appendEntry(conversationId, after as unknown as EntryDraft);
 		tx.placeSubmission(item.id, entry.id);
 		placed.push(item.id);
 	}
