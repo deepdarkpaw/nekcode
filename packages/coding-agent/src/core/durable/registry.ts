@@ -106,6 +106,8 @@ export type PendingResults = {
 	 * event takes them; durable's result entry has no place for them.
 	 */
 	readonly extras: Map<string, ResultExtras>;
+	/** Calls whose final result asked to end the run, until the round's `afterTools` takes them. */
+	readonly terminated: Set<string>;
 };
 
 /** The parts of a pi tool result that only events carry. */
@@ -121,10 +123,12 @@ export type HookBridge = CompactionBridge & {
 };
 
 export function createPendingResults(): PendingResults {
-	return { byTask: new Map(), extras: new Map() };
+	return { byTask: new Map(), extras: new Map(), terminated: new Set() };
 }
 
 function setExtras(pending: PendingResults, callId: string, extras: ResultExtras): void {
+	if (extras.terminate === true) pending.terminated.add(callId);
+	else pending.terminated.delete(callId);
 	if (extras.structuredContent === undefined && extras.terminate !== true) pending.extras.delete(callId);
 	else pending.extras.set(callId, extras);
 }

@@ -162,7 +162,8 @@ describe("AgentSession crash recovery through SessionManager reopen", { timeout:
 		await killChild(await startChild(path, "compact", "summarizing"));
 		const harness = await reopen(path, {
 			settings: { compaction: { enabled: false, keepRecentTokens: 1, reserveTokens: 1000 } },
-			responses: [fauxAssistantMessage("recovered summary")],
+			// Pi's compaction cuts inside the last turn here, so it summarizes the history and the turn prefix.
+			responses: [fauxAssistantMessage("recovered summary"), fauxAssistantMessage("recovered prefix")],
 		});
 		await withTimeout(harness.session.waitForIdle(), 30_000, "compaction reopen");
 		expect(harness.session.messages.some((message) => message.role === "compactionSummary")).toBe(true);

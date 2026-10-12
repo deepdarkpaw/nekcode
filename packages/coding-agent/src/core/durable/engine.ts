@@ -371,9 +371,9 @@ export class DurableEngine {
 		);
 	}
 
-	/** Whether a finished call's result asked to end the run (`terminate`), before its event takes the value. */
-	peekResultTerminate(toolCallId: string): boolean {
-		return this.#pending.extras.get(toolCallId)?.terminate === true;
+	/** Whether a finished call's result asked to end the run (`terminate`); taken once, by the round's `afterTools`. */
+	takeResultTerminate(toolCallId: string): boolean {
+		return this.#pending.terminated.delete(toolCallId);
 	}
 
 	/** Resolve once listeners received the events of every committed entry and no run is open. */

@@ -23,7 +23,13 @@ export function planSystemEntries(
 ): SystemDraft[] {
 	const desired = new Map<string, string>(prompt.map((part) => [part.key, part.value]));
 	const head = view.head;
-	if (head !== undefined && !view.entries.some((entry) => SystemEntry.is(entry) && entry.id > head.id)) {
+	// A head marker that carries a system message (a session compaction) is itself the baseline.
+	const headIsBaseline = head?.model?.some((message) => message.role === "system") === true;
+	if (
+		head !== undefined &&
+		!headIsBaseline &&
+		!view.entries.some((entry) => SystemEntry.is(entry) && entry.id > head.id)
+	) {
 		const edits: ContextEdit[] = view.entries
 			.filter((entry) => SystemEntry.is(entry))
 			.map((entry) => ({ target: entry.id, action: "omit" }));

@@ -598,7 +598,10 @@ export class AgentSession {
 				// The run continues with another request unless every call asked to terminate. Pi compacts before that
 				// request when the context passed the threshold, and its turn_start handlers run now, before durable
 				// prepares it.
-				if (!toolResults.every((result) => this._engine?.peekResultTerminate(result.toolCallId) === true)) {
+				const terminated = toolResults.map(
+					(result) => this._engine?.takeResultTerminate(result.toolCallId) === true,
+				);
+				if (!terminated.every(Boolean)) {
 					await this._compactBeforeNextRequest();
 					this._earlyTurnStarts++;
 					await this._emitExtensionTurnStart();
@@ -2278,26 +2281,35 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		await this._abort(true);
+	}
+
+	/** `abort()`; a manual compaction aborting the run first does not wait for itself when it was resumed. */
+	private async _abort(waitForResumedCompaction: boolean): Promise<void> {
 		if (this._isAgentRunActive) this._agentRunAbortRequested = true;
 		this.abortRetry();
 		this.abortCompaction();
 		this.abortBranchSummary();
 		if (this._engineOpened()) await (await this._engineOrThrow()).abort();
-		await this.waitForIdle();
+		await this._waitForIdle(waitForResumedCompaction);
 	}
 
 	/** Resolve when no run, tracked delivery, or deferred submission remains, with all events delivered. */
 	async waitForIdle(): Promise<void> {
+		await this._waitForIdle(true);
+	}
+
+	private async _waitForIdle(waitForResumedCompaction: boolean): Promise<void> {
 		for (;;) {
 			await this._settleDeliveries();
 			if (this._deferredDrain !== undefined) await this._deferredDrain;
 			if (this._engineOpened()) await (await this._engineOrThrow()).waitForIdle();
-			if (this._resumedCompaction !== undefined) await this._resumedCompaction;
+			if (waitForResumedCompaction && this._resumedCompaction !== undefined) await this._resumedCompaction;
 			await this._whenRunSettled();
 			if (
 				!this._isAgentRunActive &&
 				!this._settling &&
-				this._resumedCompaction === undefined &&
+				(!waitForResumedCompaction || this._resumedCompaction === undefined) &&
 				this._pendingDeliveries.size === 0 &&
 				this._deferredDrain === undefined &&
 				this._deferredSettledActions.length === 0
@@ -2877,7 +2889,7 @@ export class AgentSession {
 	 * again (see `_resumeManualCompaction`).
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		await this.abort();
+		await this._abort(false);
 		this._compactionAbortController = new AbortController();
 		const signal = this._compactionAbortController.signal;
 		this._emit({ type: "compaction_start", reason: "manual" });
@@ -3763,7 +3775,7 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this._modelRuntime.streamSimple.bind(this._modelRuntime),
+					streamFn: this.agent.streamFunction,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
 				});
@@ -4032,7 +4044,7 @@ export class AgentSession {
 			env,
 			signal: options.signal,
 			thinkingLevel: this.thinkingLevel,
-			streamFn: this._modelRuntime.streamSimple.bind(this._modelRuntime),
+			streamFn: this.agent.streamFunction,
 			retry: this.settingsManager.getRetrySettings(),
 			sessionId: this.sessionId,
 		});
