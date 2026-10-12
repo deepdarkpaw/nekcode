@@ -2605,7 +2605,8 @@ limit (`length`) with tool calls starts a tool round in which every call fails
 without running (nek, `truncated`), as pi does, so the run continues and the
 model can reissue them. `HarnessSettings.toolErrorText(code, toolName)` (nek)
 words the Harness's own tool errors (`tool_unavailable`, `aborted`,
-`truncated`) instead of the `<harness>` diagnostic.
+`truncated`, and `interrupted` after an unsafe call's partial output) instead
+of the `<harness>` diagnostic.
 
 ```ts
 type HookResult<T> = T | undefined | Promise<T | undefined>;

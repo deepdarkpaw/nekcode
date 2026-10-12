@@ -124,7 +124,18 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 			const message = `Tool ${call.name} was interrupted and may have partially run`;
 			// `failed` records cancellation intent, so the call's owned conversations, left unsupervised, are aborted.
 			const ending = { status: "failed", message } as const;
-			await settle(runtime, call, ending, (slot) => fromSlot(slot, "interrupted", message), context);
+			// nek: the host may word the interruption; the partial output stays first.
+			const hostText = runtime.settings.toolErrorText?.("interrupted", call.name);
+			const interrupted = (slot: Readonly<ToolSlot> | undefined): ToolExecutionResult => {
+				const result = fromSlot(slot, "interrupted", message);
+				if (hostText === undefined) return result;
+				return {
+					...result,
+					content: [...(result.content ?? []), { type: "text", text: hostText }],
+					diagnostics: (result.diagnostics ?? []).filter((diagnostic) => diagnostic.code !== "interrupted"),
+				};
+			};
+			await settle(runtime, call, ending, interrupted, context);
 		},
 	},
 	abort: async (task, runtime, context) => {
