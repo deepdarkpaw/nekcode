@@ -80,6 +80,11 @@ export type SubmissionDraft = {
 			 * follow-up input (`followUp`, at the final boundary), continuing the run. Absent: placed as a plain write.
 			 */
 			readonly deliverAs?: "steer" | "followUp";
+			/**
+			 * nek: with `trigger`, start the run even though the entry carries no model input: the host checked that the
+			 * conversation's context ends in a non-assistant message (pi's `continue()`).
+			 */
+			readonly continueContext?: true;
 			readonly content?: never;
 			readonly whenBusy?: never;
 			readonly after?: never;

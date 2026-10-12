@@ -57,7 +57,12 @@ export class Submissions {
 	/** Admit a submission in one commit; see `admitSubmission()`. */
 	async submit(conversationId: ConversationId, draft: SubmissionDraft, context: Context): Promise<Submission> {
 		this.#resume();
-		if (draft.type === "write" && draft.trigger === true && !endsInInput([draft.entry])) {
+		if (
+			draft.type === "write" &&
+			draft.trigger === true &&
+			draft.continueContext !== true &&
+			!endsInInput([draft.entry])
+		) {
 			// nek: placed as a plain write.
 			this.#report(new Error("Write trigger ignored: its entry does not end in a non-assistant message"));
 		}
@@ -142,6 +147,11 @@ class SubmissionHandle implements Submission {
 	}
 }
 
+/** nek: whether an idle triggered write starts a run: its entry ends in input, or the host vouched for the context. */
+function startsRun(draft: Extract<SubmissionDraft, { type: "write" }>): boolean {
+	return draft.continueContext === true || endsInInput([draft.entry]);
+}
+
 function isSettled(record: SubmissionRecord): record is SettledSubmissionRecord {
 	return record.status === "done" || record.status === "unanswered";
 }
@@ -206,7 +216,7 @@ export async function admitSubmission(
 		const { users } = await applyBoundary(tx, boundary, "final", now);
 		if (users.length > 0) await startRun(tx, conversationId, live, users);
 		// nek: an idle triggered write placed behind queued writes, last, starts the run itself.
-		else if (draft.type === "write" && draft.trigger === true && endsInInput([draft.entry])) {
+		else if (draft.type === "write" && draft.trigger === true && startsRun(draft)) {
 			if (!isStale(boundary, draft.entry)) await startRun(tx, conversationId, live, [id]);
 		}
 		return id;
@@ -220,7 +230,7 @@ export async function admitSubmission(
 		const write = { conversationId, ...requestId, type: "write", status: "done", entry: entry.id } as const;
 		const { id } = await tx.createSubmission(write);
 		// nek: a triggered write starts a run in its placement commit; the done write identifies the run.
-		if (draft.trigger === true && endsInInput([draft.entry])) await startRun(tx, conversationId, live, [id]);
+		if (draft.trigger === true && startsRun(draft)) await startRun(tx, conversationId, live, [id]);
 		return id;
 	}
 	const message = { role: "user", content: draft.content, timestamp: now } as const;
