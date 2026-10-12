@@ -56,6 +56,7 @@ import {
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
+import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import { generateBugReportSummary } from "./bug-report.ts";
@@ -548,10 +549,18 @@ export class AgentSession {
 				return await this._extensionRunner.emitToolCall({ type: "tool_call", ...event });
 			},
 			toolResult: async (event) => {
-				if (!this._extensionRunner.hasHandlers("tool_result")) return undefined;
-				const patch = await this._extensionRunner.emitToolResult({ type: "tool_result", ...event });
-				if (patch === undefined) return undefined;
-				return patch;
+				const hookResult = this._extensionRunner.hasHandlers("tool_result")
+					? await this._extensionRunner.emitToolResult({ type: "tool_result", ...event })
+					: undefined;
+				const content = hookResult?.content ?? event.content;
+				// Runs after the extension hook so images injected or replaced by extensions are normalized too.
+				const resizeOptions = this.model?.inputLimits?.images?.resize;
+				const normalizedContent = await normalizeToolResultImages(content, {
+					autoResizeImages: this.settingsManager.getImageAutoResize(),
+					...(resizeOptions ? { resizeOptions } : {}),
+				});
+				if (hookResult === undefined && normalizedContent === content) return undefined;
+				return { ...hookResult, content: normalizedContent };
 			},
 			afterResponse: async ({ message }) => {
 				// May rerun after a crash before the answer commit (the request is resent).

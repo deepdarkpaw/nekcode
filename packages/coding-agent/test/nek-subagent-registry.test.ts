@@ -268,6 +268,9 @@ describe("SubagentRegistry", () => {
 		const harness = await child([gatedReply(gate, "first"), fauxAssistantMessage("second answer")]);
 		const registry = new SubagentRegistry(config({}), () => {});
 		const record = await registry.start(startInput(harness, "job", false));
+		// (a) The durable engine sends no request for a run aborted while preparing it, so the gated reply would be left
+		// for the replacement run; replace the run once its request is out, as the old loop's immediate request was.
+		await vi.waitFor(() => expect(harness.faux.state.callCount).toBe(1));
 
 		await expect(
 			registry.resume({ id: record.id, prompt: "again", interrupt: false, background: false }),
