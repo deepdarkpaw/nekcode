@@ -1,6 +1,8 @@
 # Session File Format
 
-Sessions are stored as JSONL (JSON Lines) files. Each line is a JSON object with a `type` field. Session entries form a tree structure via `id`/`parentId` fields, enabling in-place branching without creating new files.
+A session is a tree of entries. Each entry is a JSON object with a `type` field, and entries form the tree through `id`/`parentId` fields, enabling in-place branching without creating new files.
+
+Sessions are stored in SQLite databases by the durable engine, which also records each step of a running turn so it can continue after a crash ([Durable Sessions](durable-sessions.md)). `SessionManager` reads them back as the entries described below. Older sessions are JSONL (JSON Lines) files, one entry per line; nekcode imports them when they are opened, and `/export` writes the same JSONL format.
 
 For programmatic creation, persistence, and tree navigation, see the [`SessionManager` API](sdk.md#sessionmanager-api).
 
@@ -8,14 +10,19 @@ For programmatic creation, persistence, and tree navigation, see the [`SessionMa
 ## File Location
 
 ```
-~/.nek/agent/sessions/--<path>--/<timestamp>_<session-id>.jsonl
+~/.nek/agent/sessions/--<path>--/<timestamp>_<session-id>.sqlite
+~/.nek/agent/sessions/--<path>--/<timestamp>_<session-id>.meta.json
 ```
 
 By default, `<session-id>` is a UUID. Callers can supply a custom ID through the SDK or `--session-id`. For `<path>`, nekcode removes the leading path separator and replaces `/`, `\\`, and `:` with `-`.
 
+The `.meta.json` file caches the `/resume` listing and is rebuilt from the database when missing or stale. While a process has the session open, a `.lock` file marks it.
+
+Opening a `<name>.jsonl` session imports it into `<name>.sqlite`; the JSONL file is not changed. Subagent sessions are stored below the parent's directory in `subagents/`.
+
 ## Deleting Sessions
 
-Sessions can be removed by deleting their `.jsonl` files under `~/.nek/agent/sessions/`.
+Sessions can be removed by deleting their `.sqlite` and `.meta.json` files (and an older `.jsonl` file, if present) under `~/.nek/agent/sessions/`.
 
 nekcode also supports deleting sessions interactively from `/resume` (select a session and press `Ctrl+D`, then confirm). When available, nekcode uses the `trash` CLI to avoid permanent deletion.
 
@@ -245,18 +252,17 @@ The compaction summary replaces entries before `firstKeptEntryId`. Pre-compactio
 
 ## Parsing Example
 
+Read a session with `SessionManager`, which works for both `.sqlite` and `.jsonl` files:
+
 ```typescript
-import { readFileSync } from "fs";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
-const lines = readFileSync("session.jsonl", "utf8").trim().split("\n");
+const session = SessionManager.open("session.sqlite");
+const header = session.getHeader();
+if (header) console.log(`Session v${header.version ?? 1}: ${header.id}`);
 
-for (const line of lines) {
-  const entry = JSON.parse(line);
-
+for (const entry of session.getEntries()) {
   switch (entry.type) {
-    case "session":
-      console.log(`Session v${entry.version ?? 1}: ${entry.id}`);
-      break;
     case "message":
       console.log(`[${entry.id}] ${entry.message.role}: ${JSON.stringify(entry.message.content)}`);
       break;

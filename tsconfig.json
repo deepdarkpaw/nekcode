@@ -48,7 +48,20 @@
 			"@earendil-works/pi-durable/testing": [
 				"./packages/durable/src/testing/index.ts"
 			],
+			"@earendil-works/pi-durable/env": [
+				"./packages/durable/src/env/index.ts"
+			],
+			"@earendil-works/pi-durable/tools": [
+				"./packages/durable/src/tools/index.ts"
+			],
+			"@earendil-works/pi-durable/storage/jsonl": [
+				"./packages/durable/src/storage/jsonl/index.ts"
+			],
+			"@earendil-works/pi-durable/storage/sqlite": [
+				"./packages/durable/src/storage/sqlite/index.ts"
+			],
 			"@earendil-works/pi-durable/*": [
+				"./packages/durable/src/*.ts",
 				"./packages/durable/src/*"
 			],
 			"@earendil-works/pi-agent-core": [

@@ -46,6 +46,8 @@ export function createTodoWriteToolDefinition(
 		label: "Todos",
 		description: TODO_WRITE,
 		parameters: todoWriteSchema,
+		// The result is the list from the arguments; rerunning after a crash gives the same list.
+		replay: "safe",
 		executionMode: "sequential",
 		async execute(_toolCallId, { merge, todos }: TodoWriteToolInput, _signal, _onUpdate, ctx) {
 			const next = mergeTodos(options.getTodos(), todos, merge);

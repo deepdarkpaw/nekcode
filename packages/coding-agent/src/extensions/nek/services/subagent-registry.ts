@@ -18,6 +18,21 @@ export interface StartSubagentInput {
 	/** Parent abort signal of a foreground subagent; background subagents survive the parent's Esc. */
 	signal?: AbortSignal;
 	createSession: () => Promise<AgentSession>;
+	/** Runs once the child exists and before its prompt is sent, e.g. to remember its session for a crash rerun. */
+	beforeLaunch?: (record: SubagentRecord) => Promise<void>;
+}
+
+/**
+ * Arguments of `reattach()`: a child that a crashed run of the same tool call started. Its reopened session resumes
+ * an interrupted run by itself; `prompt` is sent only when it never reached the child.
+ */
+export interface ReattachSubagentInput {
+	description: string;
+	type: string;
+	prompt: string;
+	background: boolean;
+	signal?: AbortSignal;
+	createSession: () => Promise<AgentSession>;
 }
 
 /** Arguments of `resume()`. `reopen` restores a child that is no longer retained (e.g. after a restart). */
@@ -30,6 +45,8 @@ export interface ResumeSubagentInput {
 	reopen?: { description: string; type: string; createSession: () => Promise<AgentSession> };
 	/** Adjust the child before the run starts, e.g. restrict its active tools in plan mode. */
 	prepare?: (session: AgentSession) => void;
+	/** Runs before the prompt is sent, e.g. to remember the child for a crash rerun. */
+	beforeLaunch?: (record: SubagentRecord) => Promise<void>;
 }
 
 /** Result of `await()`: the finished records it returned (now observed) and whether the wait timed out. */
@@ -131,7 +148,25 @@ export class SubagentRegistry {
 	async start(input: StartSubagentInput): Promise<SubagentRecord> {
 		const session = await this.createWithSlot(input.createSession);
 		const entry = this.adopt(session, input.description, input.type, input.background);
+		try {
+			await input.beforeLaunch?.(entry.record);
+		} catch (error) {
+			this.dispose(entry.record.id);
+			throw error;
+		}
 		this.launch(entry, input.prompt, input.signal);
+		return entry.record;
+	}
+
+	/**
+	 * Reopen the child a crashed run of the same tool call started and follow it: its session resumes an interrupted
+	 * run by itself, and `prompt` is sent only when the child never received it. Returns the running record.
+	 */
+	async reattach(input: ReattachSubagentInput): Promise<SubagentRecord> {
+		const session = await this.createWithSlot(input.createSession);
+		const entry = this.adopt(session, input.description, input.type, input.background);
+		if (lastUserText(session) === input.prompt) this.follow(entry, input.signal);
+		else this.launch(entry, input.prompt, input.signal);
 		return entry.record;
 	}
 
@@ -150,6 +185,7 @@ export class SubagentRegistry {
 		input.prepare?.(entry.session);
 		entry.record.background = input.background;
 		entry.record.model ??= sessionModelRef(entry.session);
+		await input.beforeLaunch?.(entry.record);
 		this.launch(entry, input.prompt, input.signal);
 		return entry.record;
 	}
@@ -157,6 +193,8 @@ export class SubagentRegistry {
 	private async reopen(input: ResumeSubagentInput): Promise<SubagentEntry> {
 		if (!input.reopen) throw new Error(`Unknown subagent ${input.id}.`);
 		const session = await this.createWithSlot(input.reopen.createSession);
+		// A run a crash interrupted resumes when the child reopens; it finishes before the new prompt.
+		await session.waitForIdle();
 		const entry = this.adopt(session, input.reopen.description, input.reopen.type, input.background);
 		entry.record.status = "completed";
 		entry.record.observed = true;
@@ -277,6 +315,15 @@ export class SubagentRegistry {
 	}
 
 	private launch(entry: SubagentEntry, prompt: string, signal: AbortSignal | undefined): void {
+		this.begin(entry, signal, () => entry.session.prompt(prompt, { expandPromptTemplates: false }));
+	}
+
+	/** Follow the run a reopened child resumed by itself. */
+	private follow(entry: SubagentEntry, signal: AbortSignal | undefined): void {
+		this.begin(entry, signal, () => entry.session.waitForIdle());
+	}
+
+	private begin(entry: SubagentEntry, signal: AbortSignal | undefined, work: () => Promise<void>): void {
 		const record = entry.record;
 		record.status = "running";
 		record.observed = false;
@@ -285,11 +332,11 @@ export class SubagentRegistry {
 		setActivity(record, undefined);
 		entry.abortRequested = false;
 		this.onChange(record);
-		entry.done = this.run(entry, prompt, signal);
+		entry.done = this.run(entry, signal, work);
 	}
 
-	/** Run one prompt on the child and derive the outcome from its last assistant message. */
-	private async run(entry: SubagentEntry, prompt: string, signal: AbortSignal | undefined): Promise<void> {
+	/** Run one piece of child work (a prompt, or a resumed run) and derive the outcome from its last assistant message. */
+	private async run(entry: SubagentEntry, signal: AbortSignal | undefined, work: () => Promise<void>): Promise<void> {
 		const onAbort = () => void requestAbort(entry);
 		if (signal?.aborted) onAbort();
 		else if (signal) {
@@ -297,7 +344,7 @@ export class SubagentRegistry {
 			entry.detachAbort = () => signal.removeEventListener("abort", onAbort);
 		}
 		try {
-			await entry.session.prompt(prompt, { expandPromptTemplates: false });
+			await work();
 			finishRecord(entry.record, entry.session, this.config.finalTextMaxBytes);
 		} catch (error) {
 			entry.record.status = "errored";
@@ -451,6 +498,17 @@ function statusFromStopReason(message: AssistantMessage): SubagentStatus {
 	if (message.stopReason === "aborted") return "aborted";
 	if (message.stopReason === "error") return "errored";
 	return "completed";
+}
+
+/** Text of the child's last user message. */
+function lastUserText(session: AgentSession): string | undefined {
+	for (let index = session.messages.length - 1; index >= 0; index--) {
+		const message = session.messages[index];
+		if (message.role !== "user") continue;
+		if (typeof message.content === "string") return message.content;
+		return message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+	}
+	return undefined;
 }
 
 function lastAssistant(session: AgentSession): AssistantMessage | undefined {

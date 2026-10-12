@@ -55,9 +55,10 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 
 		await harness.session.prompt("test");
 
-		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, false]);
+		// (b#3) one run spans its retries: a single agent_end, never willRetry.
+		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([false]);
 		expect(harness.eventsOfType("agent_settled")).toHaveLength(1);
-		expect(extensionEvents).toEqual(["agent_end", "agent_end", "agent_settled:true"]);
+		expect(extensionEvents).toEqual(["agent_end", "agent_settled:true"]);
 		expect(publicEvents).toEqual(["agent_settled"]);
 	});
 

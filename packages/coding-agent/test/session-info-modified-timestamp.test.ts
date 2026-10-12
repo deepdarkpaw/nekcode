@@ -75,7 +75,7 @@ describe("SessionInfo.modified", () => {
 		});
 
 		const sessions = await SessionManager.list("/tmp", dirname(filePath));
-		const s = sessions.find((x) => x.path === filePath);
+		const s = sessions.find((x) => x.path === mgr.getSessionFile());
 		expect(s).toBeDefined();
 		expect(s!.modified.getTime()).toBe(msgTime);
 		expect(s!.modified.getTime()).not.toBe(before.mtime.getTime());

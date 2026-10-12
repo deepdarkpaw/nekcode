@@ -635,14 +635,15 @@ describe("AgentSession actionable boundaries", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.session.agent.prepareRequest = () => {
-			throw new Error("request preparation failed");
-		};
+		// (a) The old loop's prepareRequest seam is gone; a provider error that is not retried fails the run.
+		harness.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "request preparation failed" }),
+		]);
 
 		await harness.session.prompt("start");
 
 		expect(turnEnds).toBe(1);
-		expect(harness.faux.state.callCount).toBe(0);
+		expect(harness.faux.state.callCount).toBe(1);
 		expect(harness.sessionManager.getEntries()).toContainEqual(
 			expect.objectContaining({ type: "custom", customType: "failure-boundary" }),
 		);
@@ -1223,7 +1224,8 @@ describe("durable length recovery", () => {
 		expect(harness.faux.state.callCount).toBe(3);
 		expect(requests[0]).not.toContain("queued follow-up");
 		expect(requests[1]).toContain("queued follow-up");
-		expect(lifecycle.slice(0, 2)).toEqual(["agent_end", "auto_retry_start"]);
+		// (b#3) one run spans its retries: the retry starts before the run's only agent_end.
+		expect(lifecycle.slice(0, 2)).toEqual(["auto_retry_start", "agent_end"]);
 	});
 
 	it("marks the exhausted retry run as final", async () => {
@@ -1238,7 +1240,8 @@ describe("durable length recovery", () => {
 
 		await harness.session.prompt("start");
 
-		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, false]);
+		// (b#3) one run spans its retries: a single agent_end, never willRetry.
+		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([false]);
 		expect(harness.eventsOfType("auto_retry_end")).toContainEqual(
 			expect.objectContaining({ success: false, attempt: 1 }),
 		);

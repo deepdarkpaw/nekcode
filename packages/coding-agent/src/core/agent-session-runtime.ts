@@ -165,16 +165,35 @@ export class AgentSessionRuntime {
 	}
 
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
+		const errors: unknown[] = [];
 		// Settle any active response first so the aborted turn (including tool
 		// results) is persisted to the outgoing session before it is replaced.
-		await this.session.abort();
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
-			type: "session_shutdown",
-			reason,
-			targetSessionFile,
-		});
-		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		try {
+			await this.session.abort();
+		} catch (error) {
+			errors.push(error);
+		}
+		try {
+			await emitSessionShutdownEvent(this.session.extensionRunner, {
+				type: "session_shutdown",
+				reason,
+				targetSessionFile,
+			});
+		} catch (error) {
+			errors.push(error);
+		}
+		try {
+			this.beforeSessionInvalidate?.();
+		} catch (error) {
+			errors.push(error);
+		}
+		try {
+			await this.session.dispose();
+		} catch (error) {
+			errors.push(error);
+		}
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) throw new AggregateError(errors, "Session teardown failed");
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
@@ -402,12 +421,27 @@ export class AgentSessionRuntime {
 	}
 
 	async dispose(): Promise<void> {
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
-			type: "session_shutdown",
-			reason: "quit",
-		});
-		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		const errors: unknown[] = [];
+		try {
+			await emitSessionShutdownEvent(this.session.extensionRunner, {
+				type: "session_shutdown",
+				reason: "quit",
+			});
+		} catch (error) {
+			errors.push(error);
+		}
+		try {
+			this.beforeSessionInvalidate?.();
+		} catch (error) {
+			errors.push(error);
+		}
+		try {
+			await this.session.dispose();
+		} catch (error) {
+			errors.push(error);
+		}
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) throw new AggregateError(errors, "Session disposal failed");
 	}
 }
 

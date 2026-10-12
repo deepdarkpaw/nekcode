@@ -63,6 +63,8 @@ export function createAskQuestionToolDefinition(): ToolDefinition<typeof askQues
 		label: "Question",
 		description: ASK_QUESTION,
 		parameters: askQuestionSchema,
+		// Asking again after a crash is the recovery: the dialog reopens.
+		replay: "safe",
 		executionMode: "sequential",
 		async execute(_toolCallId, { questions, title }: AskQuestionToolInput, signal, _onUpdate, ctx) {
 			signal?.throwIfAborted();

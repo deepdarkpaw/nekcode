@@ -137,7 +137,7 @@ Start a fresh session. Can be canceled by a `session_before_switch` extension ev
 
 With optional parent session tracking:
 ```json
-{"type": "new_session", "parentSession": "/path/to/parent-session.jsonl"}
+{"type": "new_session", "parentSession": "/path/to/parent-session.sqlite"}
 ```
 
 Response:
@@ -173,7 +173,7 @@ Response:
     "isCompacting": false,
     "steeringMode": "all",
     "followUpMode": "one-at-a-time",
-    "sessionFile": "/path/to/session.jsonl",
+    "sessionFile": "/path/to/session.sqlite",
     "sessionId": "abc123",
     "sessionName": "my-feature-work",
     "autoCompactionEnabled": true,
@@ -538,7 +538,7 @@ Response:
   "command": "get_session_stats",
   "success": true,
   "data": {
-    "sessionFile": "/path/to/session.jsonl",
+    "sessionFile": "/path/to/session.sqlite",
     "sessionId": "abc123",
     "userMessages": 5,
     "assistantMessages": 5,
@@ -594,7 +594,7 @@ Response:
 Load a different session file. Can be canceled by a `session_before_switch` extension event handler.
 
 ```json
-{"type": "switch_session", "sessionPath": "/path/to/session.jsonl"}
+{"type": "switch_session", "sessionPath": "/path/to/session.sqlite"}
 ```
 
 Response:

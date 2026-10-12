@@ -6,7 +6,7 @@ import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } fro
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type {
 	FauxModelDefinition,
@@ -110,6 +110,9 @@ export function createTestUiContext(overrides: Partial<ExtensionUIContext> = {})
 
 export interface HarnessOptions {
 	models?: FauxModelDefinition[];
+	responses?: FauxResponseStep[];
+	tokensPerSecond?: number;
+	tokenSize?: { min?: number; max?: number };
 	settings?: Partial<Settings>;
 	tools?: AgentTool[];
 	initialActiveToolNames?: string[];
@@ -150,8 +153,10 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const tempDir = createTempDir();
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
 		models: options.models,
+		tokensPerSecond: options.tokensPerSecond,
+		tokenSize: options.tokenSize,
 	});
-	fauxProvider.setResponses([]);
+	fauxProvider.setResponses(options.responses ?? []);
 	const model = fauxProvider.getModel();
 	const toolMap = options.tools ? Object.fromEntries(options.tools.map((tool) => [tool.name, tool])) : undefined;
 	const withConfiguredAuth = options.withConfiguredAuth ?? true;
@@ -189,38 +194,17 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		});
 	}
 
+	const modelRuntime = getModelRuntime(modelRegistry);
 	const agent = new Agent({
-		getApiKey: () => (withConfiguredAuth ? "faux-key" : undefined),
-		streamFn: streamSimple,
 		initialState: {
 			model,
 			systemPrompt: "",
 			tools: [],
 		},
 		convertToLlm,
-		onPayload: async (payload) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				return payload;
-			}
-			return runner.emitBeforeProviderRequest(payload);
-		},
-		onResponse: async (response) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("after_provider_response")) {
-				return;
-			}
-			await runner.emit({
-				type: "after_provider_response",
-				status: response.status,
-				headers: response.headers,
-			});
-		},
-		transformContext: async (messages: AgentMessage[]) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner) return messages;
-			return runner.emitContext(messages);
-		},
+		// Agent is retained as the public state holder; DurableEngine owns execution. Host-side summarization (manual
+		// compaction, branch summaries) still streams through it, as in pi.
+		streamFn: streamSimple,
 	});
 	const extensionsResult = options.extensionFactories
 		? await createTestExtensionsResult(options.extensionFactories, tempDir)
@@ -233,7 +217,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		sessionManager,
 		settingsManager,
 		cwd: tempDir,
-		modelRuntime: getModelRuntime(modelRegistry),
+		modelRuntime,
+		convertToLlm,
 		resourceLoader,
 		baseToolsOverride: toolMap,
 		initialActiveToolNames: options.initialActiveToolNames,

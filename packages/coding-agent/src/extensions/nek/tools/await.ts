@@ -64,6 +64,8 @@ export function createAwaitToolDefinition(
 		label: "Waiting",
 		description: AWAIT_DESCRIPTION,
 		parameters: awaitSchema,
+		// Waiting has no effect of its own; it waits again after a crash.
+		replay: "safe",
 		async execute(_toolCallId, { subagent_id, block_until_ms }: AwaitToolInput, signal) {
 			const registry = options.getRegistry();
 			const scope = subagent_id ? [subagent_id] : undefined;

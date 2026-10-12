@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,7 +10,7 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
-import { createTestResourceLoader } from "./utilities.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
@@ -45,10 +45,6 @@ function createAssistantMessage(text: string, overrides?: Partial<AssistantMessa
 		...overrides,
 	};
 }
-
-type SessionWithExtensionEmitHook = {
-	_emitExtensionEvent: (event: AgentEvent) => Promise<void>;
-};
 
 describe("AgentSession retry", () => {
 	let session: AgentSession;
@@ -112,25 +108,27 @@ describe("AgentSession retry", () => {
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries, baseDelayMs: 1, maxAgentDelayMs } });
 
+		// (a) A slow message_end extension handler replaces the old test's private _emitExtensionEvent hook.
+		const extensionsResult =
+			delayAssistantMessageEndMs > 0
+				? await createTestExtensionsResult([
+						(pi) => {
+							pi.on("message_end", async (event) => {
+								if (event.message.role !== "assistant") return;
+								await new Promise((resolve) => setTimeout(resolve, delayAssistantMessageEndMs));
+							});
+						},
+					])
+				: undefined;
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settingsManager,
 			cwd: tempDir,
 			modelRuntime: getModelRuntime(modelRegistry),
-			resourceLoader: createTestResourceLoader(),
+			resourceLoader: createTestResourceLoader(extensionsResult === undefined ? {} : { extensionsResult }),
 		});
-
-		if (delayAssistantMessageEndMs > 0) {
-			const sessionWithHook = session as unknown as SessionWithExtensionEmitHook;
-			const original = sessionWithHook._emitExtensionEvent.bind(sessionWithHook);
-			sessionWithHook._emitExtensionEvent = async (event: AgentEvent) => {
-				if (event.type === "message_end" && event.message.role === "assistant") {
-					await new Promise((resolve) => setTimeout(resolve, delayAssistantMessageEndMs));
-				}
-				await original(event);
-			};
-		}
+		if (extensionsResult !== undefined) await session.bindExtensions({});
 
 		return { session, getCallCount: () => callCount };
 	}

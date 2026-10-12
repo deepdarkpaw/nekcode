@@ -15,6 +15,7 @@ export const workspaceSourcePaths = {
 	aiOAuth: fileURLToPath(new URL("./packages/ai/src/oauth.ts", import.meta.url)),
 	aiProviders: fileURLToPath(new URL("./packages/ai/src/providers", import.meta.url)),
 	aiUtils: fileURLToPath(new URL("./packages/ai/src/utils", import.meta.url)),
+	durableSrc: fileURLToPath(new URL("./packages/durable/src", import.meta.url)),
 	agentIndex: fileURLToPath(new URL("./packages/agent/src/index.ts", import.meta.url)),
 	agentNode: fileURLToPath(new URL("./packages/agent/src/node.ts", import.meta.url)),
 	serverIndex: fileURLToPath(new URL("./packages/server/src/index.ts", import.meta.url)),
@@ -22,6 +23,25 @@ export const workspaceSourcePaths = {
 	codingAgentIndex: fileURLToPath(new URL("./packages/coding-agent/src/index.ts", import.meta.url)),
 	tuiIndex: fileURLToPath(new URL("./packages/tui/src/index.ts", import.meta.url)),
 } as const;
+
+/** `@earendil-works/pi-durable` export subpaths and their source modules, mirroring the package `exports`. */
+const durableSubpaths: ReadonlyArray<readonly [string, string]> = [
+	["", "index.ts"],
+	["/env", "env/index.ts"],
+	["/env/node", "env/node.ts"],
+	["/tools", "tools/index.ts"],
+	["/storage/memory", "storage/memory.ts"],
+	["/storage/jsonl", "storage/jsonl/index.ts"],
+	["/storage/jsonl/node", "storage/jsonl/node.ts"],
+	["/storage/sqlite", "storage/sqlite/index.ts"],
+	["/storage/sqlite/node", "storage/sqlite/node.ts"],
+	["/testing", "testing/index.ts"],
+];
+
+const durableAliases = durableSubpaths.map(([subpath, module]) => ({
+	find: new RegExp(`^@earendil-works/pi-durable${subpath.replaceAll("/", "\\/")}$`),
+	replacement: `${workspaceSourcePaths.durableSrc}/${module}`,
+}));
 
 export default defineConfig({
 	test: {
@@ -50,6 +70,7 @@ export default defineConfig({
 				find: /^@earendil-works\/pi-ai\/providers\/(.+)$/,
 				replacement: `${workspaceSourcePaths.aiProviders}/$1.ts`,
 			},
+			...durableAliases,
 			{ find: /^@earendil-works\/pi-agent-core$/, replacement: workspaceSourcePaths.agentIndex },
 			{ find: /^@earendil-works\/pi-agent-core\/node$/, replacement: workspaceSourcePaths.agentNode },
 			{ find: /^@earendil-works\/pi-server$/, replacement: workspaceSourcePaths.serverIndex },

@@ -140,6 +140,8 @@ Tools may declare an `outputSchema` and return matching `structuredContent` for 
 
 Use sequential execution when tools share mutable in-memory state.
 File-mutating tools should wrap the complete read-modify-write operation with `withFileMutationQueue()`.
+
+A call interrupted by a crash gets an "interrupted" error result after the session reopens. Declare `replay: "safe"` when running the same call twice is harmless; such a call runs again instead. A replay-safe tool can keep values for its rerun with `ctx.getToolCallMemo(toolCallId)`. See [Durable Sessions](durable-sessions.md).
 Truncate large model-facing results and tell the model where to read the complete output.
 
 See [`hello.ts`](../examples/extensions/hello.ts), [`todo.ts`](../examples/extensions/todo.ts), [`dynamic-tools.ts`](../examples/extensions/dynamic-tools.ts), and [`truncated-tool.ts`](../examples/extensions/truncated-tool.ts).

@@ -247,7 +247,8 @@ describe("AgentSessionRuntime characterization", () => {
 
 		expect(readFileSync(storedPath, "utf8")).toBe(storedSession);
 		expect(runtime.session.sessionFile).not.toBe(storedPath);
-		expect(readFileSync(runtime.session.sessionFile!, "utf8")).toContain('"id":"imported"');
+		// The imported file is a JSONL session; the runtime opens the database it was imported into.
+		expect(SessionManager.open(runtime.session.sessionFile!).getSessionId()).toBe("imported");
 	});
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {

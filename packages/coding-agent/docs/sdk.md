@@ -39,6 +39,8 @@ Sessions are persistent by default. `SessionManager` owns the persisted or in-me
 
 `SessionManager` is authoritative for finalized model context. Restore external history by constructing the session with a manager containing those entries. Assigning `session.agent.state.messages` does not replace persisted context.
 
+Persistent sessions are SQLite databases run by the durable engine: opening a session whose last turn was interrupted by a crash continues that turn. `session.agent` holds the session's state for compatibility; its own loop never runs, and `agent.subscribe()` listeners receive the turn's loop events. See [Durable Sessions](durable-sessions.md).
+
 Use an in-memory manager when the host does not want session files:
 
 ```typescript

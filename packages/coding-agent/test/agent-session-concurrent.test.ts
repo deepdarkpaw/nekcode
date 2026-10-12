@@ -16,16 +16,11 @@ import {
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import {
-	type BuildSystemPromptOptions,
-	type NormalizedBuildSystemPromptOptions,
-	normalizeBuildSystemPromptOptions,
-} from "../src/core/system-prompt.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 // Mock stream that mimics AssistantMessageEventStream
@@ -137,11 +132,8 @@ describe("AgentSession concurrent prompt guard", () => {
 		// Start first prompt (don't await, it will block until abort)
 		const firstPrompt = session.prompt("First message");
 
-		// Wait a tick for isStreaming to be set
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		// Verify we're streaming
-		expect(session.isStreaming).toBe(true);
+		// The run starts once the prompt's preflight finished; on the durable engine that is not within one fixed tick.
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true));
 
 		// Second prompt should reject
 		await expect(session.prompt("Second message")).rejects.toThrow(
@@ -427,59 +419,30 @@ describe("AgentSession concurrent prompt guard", () => {
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 
+		// (a) A real tool_call handler replaces the old test's stubbed private extension runner.
+		const snapshots: string[][] = [];
+		const extensionsResult = await createTestExtensionsResult([
+			(pi) => {
+				pi.on("tool_call", () => {
+					snapshots.push(
+						sessionManager
+							.getEntries()
+							.filter((entry) => entry.type === "message")
+							.map((entry) => entry.message.role),
+					);
+				});
+			},
+		]);
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settingsManager,
 			cwd: tempDir,
 			modelRuntime: getModelRuntime(modelRegistry),
-			resourceLoader: createTestResourceLoader(),
+			resourceLoader: createTestResourceLoader({ extensionsResult }),
 			baseToolsOverride: { dummy: tool },
 		});
-
-		const snapshots: string[][] = [];
-		const sessionWithRunner = session as unknown as {
-			_extensionRunner?: {
-				hasHandlers: (eventType: string) => boolean;
-				emit: (event: { type: string; message?: { role?: string } }) => Promise<void>;
-				emitMessageEnd: (event: { type: string; message?: { role?: string } }) => Promise<undefined>;
-				emitToolCall: (event: { type: string; toolCallId: string }) => Promise<undefined>;
-				emitInput: (
-					text: string,
-					images: unknown,
-					source: "interactive" | "rpc" | "extension",
-					streamingBehavior?: "steer" | "followUp",
-				) => Promise<{ action: "continue" }>;
-				emitBeforeAgentStart: (
-					prompt: string,
-					images: unknown,
-					systemPromptOptions: BuildSystemPromptOptions,
-				) => Promise<{ messages: []; systemPromptOptions: NormalizedBuildSystemPromptOptions }>;
-				invalidate: (message?: string) => void;
-				notifyToolsChanged: () => void;
-			};
-		};
-		sessionWithRunner._extensionRunner = {
-			hasHandlers: (eventType) => eventType === "tool_call",
-			emit: async () => {},
-			emitMessageEnd: async () => undefined,
-			emitToolCall: async () => {
-				snapshots.push(
-					sessionManager
-						.getEntries()
-						.filter((entry) => entry.type === "message")
-						.map((entry) => entry.message.role),
-				);
-				return undefined;
-			},
-			emitInput: async () => ({ action: "continue" }),
-			emitBeforeAgentStart: async (_prompt, _images, systemPromptOptions) => ({
-				messages: [],
-				systemPromptOptions: normalizeBuildSystemPromptOptions(systemPromptOptions),
-			}),
-			invalidate: () => {},
-			notifyToolsChanged: () => {},
-		};
+		await session.bindExtensions({});
 
 		await session.prompt("hi");
 		await session.agent.waitForIdle();
@@ -578,65 +541,37 @@ describe("AgentSession concurrent prompt guard", () => {
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 
+		// (a) A real, slow message_end handler replaces the old test's stubbed private extension runner.
+		const extensionsResult = await createTestExtensionsResult([
+			(pi) => {
+				pi.on("message_end", async (event) => {
+					if (event.message.role === "assistant") await new Promise((resolve) => setTimeout(resolve, 40));
+				});
+			},
+		]);
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settingsManager,
 			cwd: tempDir,
 			modelRuntime: getModelRuntime(modelRegistry),
-			resourceLoader: createTestResourceLoader(),
+			resourceLoader: createTestResourceLoader({ extensionsResult }),
 			baseToolsOverride: { dummy: tool },
 		});
-
-		const sessionWithRunner = session as unknown as {
-			_extensionRunner?: {
-				hasHandlers: (eventType: string) => boolean;
-				emit: (event: { type: string; message?: { role?: string } }) => Promise<void>;
-				emitMessageEnd: (event: { type: string; message?: { role?: string } }) => Promise<undefined>;
-				emitInput: (
-					text: string,
-					images: unknown,
-					source: "interactive" | "rpc" | "extension",
-					streamingBehavior?: "steer" | "followUp",
-				) => Promise<{ action: "continue" }>;
-				emitBeforeAgentStart: (
-					prompt: string,
-					images: unknown,
-					systemPromptOptions: BuildSystemPromptOptions,
-				) => Promise<{ messages: []; systemPromptOptions: NormalizedBuildSystemPromptOptions }>;
-				invalidate: (message?: string) => void;
-				notifyToolsChanged: () => void;
-			};
-		};
-		sessionWithRunner._extensionRunner = {
-			hasHandlers: () => false,
-			emit: async () => {},
-			emitMessageEnd: async (event) => {
-				if (event.type === "message_end" && event.message?.role === "assistant") {
-					await new Promise((resolve) => setTimeout(resolve, 40));
-				}
-				return undefined;
-			},
-			emitInput: async () => ({ action: "continue" }),
-			emitBeforeAgentStart: async (_prompt, _images, systemPromptOptions) => ({
-				messages: [],
-				systemPromptOptions: normalizeBuildSystemPromptOptions(systemPromptOptions),
-			}),
-			invalidate: () => {},
-			notifyToolsChanged: () => {},
-		};
+		await session.bindExtensions({});
 
 		await session.prompt("hi");
 		await session.agent.waitForIdle();
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
 		const messageEntries = sessionManager.getEntries().filter((entry) => entry.type === "message");
+		// The old stubbed runner changed the prompt options between turns, which added a system patch; a real runner
+		// keeps the prompt, so the run records only its messages.
 		expect(messageEntries.map((entry) => entry.message.role)).toEqual([
 			"system",
 			"user",
 			"assistant",
 			"toolResult",
-			"system",
 			"assistant",
 		]);
 	});

@@ -8,6 +8,7 @@ import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { markRuntimeStreamFunction } from "./durable/models.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
@@ -323,6 +324,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			websocketConnectTimeoutMs: options.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs(),
 			maxRetries: options.maxRetries ?? providerRetrySettings.maxRetries,
 			maxRetryDelayMs: options.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+			onPayload: options.onPayload ?? transformProviderPayload,
+			onResponse: options.onResponse ?? handleProviderResponse,
+			onProviderStreamEvent: options.onProviderStreamEvent ?? handleProviderStreamEvent,
 			transformHeaders: async (requestHeaders) => {
 				const headers = mergeProviderAttributionHeaders(
 					requestModel,
@@ -334,19 +338,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					? headerRunner.emitBeforeProviderHeaders(headers ?? {})
 					: (headers ?? {});
 			},
-		};
-	};
-	const cacheContextIsCurrent = (requestModel: Model<any>) => {
-		const messages = agent.state.messages;
-		return () => {
-			const currentModel = agent.state.model;
-			const currentMessages = agent.state.messages;
-			return (
-				currentModel.provider === requestModel.provider &&
-				currentModel.id === requestModel.id &&
-				messages.length <= currentMessages.length &&
-				messages.every((message, index) => currentMessages[index] === message)
-			);
 		};
 	};
 	const transformProviderPayload = async (payload: unknown) => {
@@ -365,17 +356,30 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 	const handleProviderStreamEvent: NonNullable<ModelsSimpleStreamOptions["onProviderStreamEvent"]> = async (
 		data,
-		model,
+		requestModel,
 	) => {
 		const runner = extensionRunnerRef.current;
 		if (!runner?.hasHandlers("provider_stream_event")) return;
 		await runner.emit({
 			data,
 			type: "provider_stream_event",
-			provider: model.provider,
-			api: model.api,
-			model: model.id,
+			provider: requestModel.provider,
+			api: requestModel.api,
+			model: requestModel.id,
 		});
+	};
+	const cacheContextIsCurrent = (requestModel: Model<any>) => {
+		const messages = agent.state.messages;
+		return () => {
+			const currentModel = agent.state.model;
+			const currentMessages = agent.state.messages;
+			return (
+				currentModel.provider === requestModel.provider &&
+				currentModel.id === requestModel.id &&
+				messages.length <= currentMessages.length &&
+				messages.every((message, index) => currentMessages[index] === message)
+			);
+		};
 	};
 
 	const agent = new Agent({
@@ -387,27 +391,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			messages: existingSession.messages,
 		},
 		convertToLlm: convertToLlmWithBlockImages,
-		streamFn: async (model, context, options) => {
-			const requestOptions = buildRequestOptions(model, options);
-			// Compaction and summaries use their own routing ids; only session requests
-			// replace the cache entry, so warming restarts from them. Keep warming while
-			// the current transcript still extends the request's prefix. Agent state may
-			// shallow-copy the messages array or refresh the model object without changing
-			// the provider request, so top-level object identity is not a valid cache key.
+		// Agent is retained as the public state holder; DurableEngine owns AgentSession execution. Summaries stream
+		// through this function; session requests go through the model runtime directly.
+		streamFn: markRuntimeStreamFunction(async (requestModel, context, options) => {
+			const requestOptions = buildRequestOptions(requestModel, options);
 			if (options?.sessionId === sessionManager.getSessionId()) {
-				cacheWarmer.start({ model, context, options: requestOptions }, cacheContextIsCurrent(model));
+				cacheWarmer.start(
+					{ model: requestModel, context, options: requestOptions },
+					cacheContextIsCurrent(requestModel),
+				);
 			}
-			return modelRuntime.streamSimple(model, context, requestOptions);
-		},
+			return modelRuntime.streamSimple(requestModel, context, requestOptions);
+		}),
 		onPayload: transformProviderPayload,
 		onResponse: handleProviderResponse,
 		onProviderStreamEvent: handleProviderStreamEvent,
 		sessionId: sessionManager.getSessionId(),
-		transformContext: async (messages) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner) return messages;
-			return runner.emitContext(messages);
-		},
 		steeringMode: settingsManager.getSteeringMode(),
 		followUpMode: settingsManager.getFollowUpMode(),
 		transport: settingsManager.getTransport(),
@@ -437,6 +436,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		resourceLoader,
 		customTools: options.customTools,
 		modelRuntime,
+		convertToLlm: convertToLlmWithBlockImages,
 		cacheWarmer,
 		initialActiveToolNames,
 		usesDefaultTools: options.tools === undefined && !options.noTools,

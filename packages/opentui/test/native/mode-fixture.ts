@@ -11,6 +11,7 @@ import {
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 } from "@earendil-works/pi-coding-agent/core/agent-session-runtime";
+import { setSqliteDriver } from "@earendil-works/pi-coding-agent/core/durable/sqlite";
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent/core/extensions/types";
 import { SessionManager } from "@earendil-works/pi-coding-agent/core/session-manager";
 import type { InteractiveModeOptions } from "@earendil-works/pi-coding-agent/modes/interactive/interactive-mode";
@@ -18,7 +19,11 @@ import type { Component, TuiMode } from "@earendil-works/pi-tui";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { OpenTuiMode } from "../../src/mode/opentui-mode.ts";
 import { RendererHost } from "../../src/mode/renderer-host.ts";
+import { bunSqliteDriver } from "../../src/storage/bun-sqlite.ts";
 import "./helpers.ts";
+
+// As the Bun entry does (src/main.ts).
+setSqliteDriver(bunSqliteDriver);
 
 export interface ModeFixture {
 	mode: OpenTuiMode;

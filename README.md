@@ -10,6 +10,7 @@ nekcode（命令名 `nek`）是一个运行在终端里的编程助手，基于 
 - **结构化搜索 `ast_grep`**、Cursor 风格的分块读文件、Claude Code 风格的精确替换编辑。
 - **MCP 服务器**和按需加载工具的 `tool_search`。
 - **`web_search`** 联网搜索，无需 API key。
+- **崩溃后续跑**：每一步都写入会话数据库（SQLite），进程被杀掉后用 `nek -c` 重新打开，中断的回合会接着跑完。见 [Durable 会话](packages/coding-agent/docs/durable-sessions.md)。
 
 ## 一键安装
 
