@@ -25,7 +25,7 @@ import type {
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
-import { contentText, getCurrentSystemMessage, normalizeContext } from "@earendil-works/pi-ai";
+import { contentText, getCurrentSystemMessage, normalizeContext, type SystemMessage } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -78,7 +78,7 @@ import { DurableEngine } from "./durable/engine.ts";
 import { agentMessageEntry, type ConvertToLlm } from "./durable/entries.ts";
 import type { DurableHostHooks } from "./durable/hooks.ts";
 import { toStrictJson } from "./durable/json.ts";
-import { HookedModels } from "./durable/models.ts";
+import { HookedModels, isCustomStreamFunction } from "./durable/models.ts";
 import type { PromptSection } from "./durable/registry.ts";
 import { derivedEntryId, plannedContextEdit } from "./durable/session-format.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
@@ -126,7 +126,7 @@ import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import {
 	buildSystemPrompt,
-	buildSystemPromptState,
+	buildSystemPromptSections,
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
@@ -570,7 +570,7 @@ export class AgentSession {
 			},
 			context: async (messages, signal) => {
 				this._durableSignal = signal;
-				return await this._extensionRunner.emitContext(messages);
+				return this._projectForcedPrompt(await this._extensionRunner.emitContext(messages));
 			},
 			toolCall: async (event) => {
 				if (!this._extensionRunner.hasHandlers("tool_call")) return undefined;
@@ -718,6 +718,10 @@ export class AgentSession {
 			},
 		});
 		models.setFallbackModel(this.model);
+		// An Agent built with its own streamFn streamed every request through it in pi; requests keep doing so.
+		models.setStreamFunction(() =>
+			isCustomStreamFunction(this.agent.streamFunction, streamSimple) ? this.agent.streamFunction : undefined,
+		);
 		this._durableModels = models;
 		const store = this.sessionManager.durableStore();
 		const engine = await DurableEngine.open({
@@ -1727,10 +1731,9 @@ export class AgentSession {
 	}
 
 	/** Pi's structured prompt sections for `options`, in order; a forced prompt is one opaque section. */
+	/** The structured prompt sections the transcript records; a forced prompt only shapes requests. */
 	private _promptSections(options: NormalizedBuildSystemPromptOptions): PromptSection[] {
-		const state = buildSystemPromptState(options);
-		if (state.sections === undefined) return state.content === "" ? [] : [{ key: "preamble", value: state.content }];
-		return Object.entries(state.sections).map(([key, value]) => ({ key, value }));
+		return Object.entries(buildSystemPromptSections(options)).map(([key, value]) => ({ key, value }));
 	}
 
 	/** The active tools, in order. */
@@ -1873,6 +1876,18 @@ export class AgentSession {
 	 * collapse into one head holding the forced text and the current tools. Runs after the
 	 * `context` extension handlers.
 	 */
+	private _projectForcedPrompt(messages: AgentMessage[]): AgentMessage[] {
+		const forced = this._runSystemPromptOptions?.forceSystemPrompt;
+		if (forced === undefined) return messages;
+		const current = getCurrentSystemMessage(messages);
+		const head: SystemMessage = {
+			role: "system",
+			content: forced,
+			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
+			timestamp: current?.timestamp ?? Date.now(),
+		};
+		return [head, ...messages.filter((message) => message.role !== "system")];
+	}
 
 	/** Restore the active tool loadout declared by the session transcript, if it declares one. */
 	private _restoreToolsFromTranscript(): void {
@@ -2529,9 +2544,13 @@ export class AgentSession {
 		await (await this._engineOrThrow()).setModel(model, thinkingLevel);
 		this._durableModels?.setFallbackModel(model);
 		this.agent.state.model = model;
-		this.agent.state.thinkingLevel = thinkingLevel;
 		this.sessionManager.appendModelChange(model.provider, model.id);
-		if (options.persist) this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		if (options.persist) {
+			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+			this._addPersistedDefaultToNonEmptyScope(model);
+		}
+		// Records and announces a thinking change, as pi did; the engine already has the level.
+		this.setThinkingLevel(requestedThinkingLevel);
 		await this._emitModelSelect(model, previousModel, "set");
 	}
 

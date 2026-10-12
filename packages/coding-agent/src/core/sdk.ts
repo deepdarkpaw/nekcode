@@ -8,6 +8,7 @@ import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { markRuntimeStreamFunction } from "./durable/models.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
@@ -390,8 +391,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			messages: existingSession.messages,
 		},
 		convertToLlm: convertToLlmWithBlockImages,
-		// Agent is retained as the public state holder; DurableEngine owns AgentSession execution.
-		streamFn: async (requestModel, context, options) => {
+		// Agent is retained as the public state holder; DurableEngine owns AgentSession execution. Summaries stream
+		// through this function; session requests go through the model runtime directly.
+		streamFn: markRuntimeStreamFunction(async (requestModel, context, options) => {
 			const requestOptions = buildRequestOptions(requestModel, options);
 			if (options?.sessionId === sessionManager.getSessionId()) {
 				cacheWarmer.start(
@@ -400,7 +402,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				);
 			}
 			return modelRuntime.streamSimple(requestModel, context, requestOptions);
-		},
+		}),
 		onPayload: transformProviderPayload,
 		onResponse: handleProviderResponse,
 		onProviderStreamEvent: handleProviderStreamEvent,

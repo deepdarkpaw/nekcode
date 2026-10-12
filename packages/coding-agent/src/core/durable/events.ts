@@ -41,6 +41,8 @@ export interface EventAdapterHost {
 	entriesAfter(id: number): Promise<EntryRecord[]>;
 	/** The retry policy's `maxRetries`, for `auto_retry_start.maxAttempts`. */
 	maxRetries(): number;
+	/** The backoff before retry `attempt`, as the retry policy computes it. */
+	retryDelayMs(attempt: number): number;
 	now(): number;
 	report(error: unknown): void;
 	/** A finished call's `structuredContent` and `terminate`, which the result entry does not carry; taken once. */
@@ -120,7 +122,7 @@ export class DurableEventAdapter {
 		const startsTurn = batch.some((event) => event.type === "turn_start" || event.type === "run_start");
 		const deferred: DurableMessageEnd[] = [];
 		// Durable lists retry events before the failed attempt's entry; pi announces the retry after that message ends.
-		const retries: { attempt: number; at: number; errorMessage: string }[] = [];
+		const retries: { attempt: number; errorMessage: string }[] = [];
 		// Durable lists submission records after `run_end`; the run's outcome depends on them.
 		for (const event of batch) if (event.type === "submission") this.#noteSubmission(event.record);
 		for (const [index, event] of batch.entries()) {
@@ -168,7 +170,7 @@ export class DurableEventAdapter {
 					await this.#queueUpdate();
 					break;
 				case "auto_retry_start":
-					retries.push({ attempt: event.attempt, at: event.at, errorMessage: event.errorMessage });
+					retries.push({ attempt: event.attempt, errorMessage: event.errorMessage });
 					break;
 				case "compaction_start":
 					await this.#host.emit({ type: "compaction_start", reason: event.reason });
@@ -188,7 +190,7 @@ export class DurableEventAdapter {
 		}
 		// Input placed without a turn change in this commit, such as a write placed into an idle conversation.
 		for (const end of deferred) await this.#messageEnd(end.entry);
-		for (const retry of retries) await this.#retryStart(retry.attempt, retry.at, retry.errorMessage);
+		for (const retry of retries) await this.#retryStart(retry.attempt, retry.errorMessage);
 	}
 
 	#roleOf(entry: EntryRecord): string {
@@ -467,7 +469,7 @@ export class DurableEventAdapter {
 		this.#outcome = record.reason === "aborted" ? "aborted" : "error";
 	}
 
-	async #retryStart(attempt: number, at: number, errorMessage: string): Promise<void> {
+	async #retryStart(attempt: number, errorMessage: string): Promise<void> {
 		this.#retryAttempt = attempt;
 		// Pi's failed attempt ends its turn (and its run); the retried attempt starts the next turn when it shows.
 		if (this.#turnActive) await this.#endTurn();
@@ -475,7 +477,8 @@ export class DurableEventAdapter {
 			type: "auto_retry_start",
 			attempt,
 			maxAttempts: this.#host.maxRetries(),
-			delayMs: Math.max(0, at - this.#host.now()),
+			// Pi announces the policy's backoff, not the time left when the event is delivered.
+			delayMs: this.#host.retryDelayMs(attempt),
 			errorMessage,
 		});
 	}

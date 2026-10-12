@@ -31,6 +31,7 @@ function adapterWith(missed: EntryRecord[]): { adapter: DurableEventAdapter; eve
 		readTaskOutcome: async () => undefined,
 		entriesAfter: async (id) => missed.filter((each) => each.id > id),
 		maxRetries: () => 3,
+		retryDelayMs: (attempt) => 2 ** (attempt - 1),
 		now: () => 0,
 		report: (error) => {
 			throw error;

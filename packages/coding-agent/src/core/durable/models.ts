@@ -1,42 +1,97 @@
-import type {
-	AnyModel,
-	Api,
-	AssistantImages,
-	AssistantMessage,
-	AssistantMessageEventStream,
-	AuthCheck,
-	AuthInteraction,
-	AuthOperationOptions,
-	AuthResult,
-	AuthType,
-	ClassifierApi,
-	ClassifierContext,
-	ClassifierModel,
-	ClassifierResult,
-	Context,
-	Credential,
-	DeferredHandle,
-	ImageApi,
-	ImageModel,
-	ImagesContext,
-	Model,
-	Models,
-	ModelsApiStreamOptions,
-	ModelsClassifierOptions,
-	ModelsDeferredCancelOptions,
-	ModelsDeferredFetchOptions,
-	ModelsImagesOptions,
-	ModelsRefreshOptions,
-	ModelsRefreshResult,
-	ModelsSimpleStreamOptions,
-	ModelType,
-	ModelTypeMap,
-	Provider,
-	ProviderHeaders,
-	ProviderResponse,
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import {
+	type AnyModel,
+	type Api,
+	type AssistantImages,
+	type AssistantMessage,
+	type AssistantMessageEventStream,
+	type AuthCheck,
+	type AuthInteraction,
+	type AuthOperationOptions,
+	type AuthResult,
+	type AuthType,
+	type ClassifierApi,
+	type ClassifierContext,
+	type ClassifierModel,
+	type ClassifierResult,
+	type Context,
+	type Credential,
+	createAssistantMessageEventStream,
+	type DeferredHandle,
+	type ImageApi,
+	type ImageModel,
+	type ImagesContext,
+	type Model,
+	type Models,
+	type ModelsApiStreamOptions,
+	type ModelsClassifierOptions,
+	type ModelsDeferredCancelOptions,
+	type ModelsDeferredFetchOptions,
+	type ModelsImagesOptions,
+	type ModelsRefreshOptions,
+	type ModelsRefreshResult,
+	type ModelsSimpleStreamOptions,
+	type ModelType,
+	type ModelTypeMap,
+	normalizeContext,
+	type Provider,
+	type ProviderHeaders,
+	type ProviderResponse,
 } from "@earendil-works/pi-ai";
 
 type AuthOverrides = Parameters<Models["getAuth"]>[1];
+
+/** Stream functions that already go through the model runtime (the SDK's own); see `HookedModels.setStreamFunction`. */
+const runtimeStreamFunctions = new WeakSet<StreamFn>();
+
+/** Mark a stream function as the model runtime's, so sessions request through the runtime instead. */
+export function markRuntimeStreamFunction(streamFn: StreamFn): StreamFn {
+	runtimeStreamFunctions.add(streamFn);
+	return streamFn;
+}
+
+/** Whether `streamFn` is a caller's own stream function rather than the model runtime's. */
+export function isCustomStreamFunction(streamFn: StreamFn, defaultStreamFn: StreamFn): boolean {
+	return streamFn !== defaultStreamFn && !runtimeStreamFunctions.has(streamFn);
+}
+
+/** A stream function's result as one event stream, also when it resolves asynchronously or fails. */
+function eventStreamOf(
+	result: AssistantMessageEventStream | Promise<AssistantMessageEventStream>,
+	model: Model<Api>,
+): AssistantMessageEventStream {
+	if (!(result instanceof Promise)) return result;
+	const stream = createAssistantMessageEventStream();
+	void (async () => {
+		try {
+			const inner = await result;
+			for await (const event of inner) stream.push(event);
+			stream.end(await inner.result());
+		} catch (error) {
+			const message: AssistantMessage = {
+				role: "assistant",
+				content: [],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "error",
+				errorMessage: error instanceof Error ? error.message : String(error),
+				timestamp: Date.now(),
+			};
+			stream.push({ type: "error", reason: "error", error: message });
+			stream.end(message);
+		}
+	})();
+	return stream;
+}
 
 /**
  * Pi's provider extension points, injected as plain functions so the engine does not depend on `ExtensionRunner`.
@@ -74,10 +129,19 @@ export class HookedModels implements Models {
 	#inner: Models;
 	#hooks: ProviderHooks;
 	#fallbackModel?: Model<Api>;
+	#streamFunction: () => StreamFn | undefined = () => undefined;
 
 	constructor(inner: Models, hooks: ProviderHooks) {
 		this.#inner = inner;
 		this.#hooks = hooks;
+	}
+
+	/**
+	 * Send chat requests through a caller's own stream function when `get` returns one (an `AgentSession` built with an
+	 * `Agent` whose `streamFn` is its own, as pi's loop used it); otherwise through `inner`.
+	 */
+	setStreamFunction(get: () => StreamFn | undefined): void {
+		this.#streamFunction = get;
 	}
 
 	/** Use the explicitly selected model when a provider exposes a request handler without a catalog entry. */
@@ -136,10 +200,13 @@ export class HookedModels implements Models {
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
 		const requestOptions = this.#withHooks(model, options);
 		this.#hooks.beforeStream?.(model, context, requestOptions);
+		const custom = this.#streamFunction();
+		if (custom !== undefined) return eventStreamOf(custom(model, normalizeContext(context), requestOptions), model);
 		return this.#inner.streamSimple(model, context, requestOptions);
 	}
 
 	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage> {
+		if (this.#streamFunction() !== undefined) return this.streamSimple(model, context, options).result();
 		return this.#inner.completeSimple(model, context, this.#withHooks(model, options));
 	}
 

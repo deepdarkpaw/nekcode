@@ -2,6 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model, Models } from "@earendil-works/pi-ai";
+import { retryDelayMs } from "@earendil-works/pi-ai/utils/retry";
 import {
 	type AgentEventStream,
 	type Conversation,
@@ -575,6 +576,7 @@ export class DurableEngine {
 				return extras;
 			},
 			maxRetries: () => this.#options.settingsManager.getRetrySettings().maxRetries,
+			retryDelayMs: (attempt) => retryDelayMs(this.#options.settingsManager.getRetrySettings(), attempt),
 			now: () => Date.now(),
 			report: (error) => this.#options.onReport?.(error),
 		});
