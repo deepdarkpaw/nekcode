@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -130,6 +131,22 @@ describe("durable session lock", { timeout: 60_000 }, () => {
 				.getEntries()
 				.map((entry) => entry.type === "message" && entry.message.role),
 		).toEqual(["user", "user"]);
+	});
+});
+
+describe("long session paths", () => {
+	it("creates, reopens, and lists a session whose path is longer than MAX_PATH", async () => {
+		const directory = join(dir(), "a".repeat(120), "b".repeat(120));
+		const session = SessionManager.create("/work/project", directory);
+		session.appendMessage({ role: "user", content: "deep", timestamp: 1 });
+		session.appendMessage(assistant("reply"));
+		const file = session.getSessionFile()!;
+		expect(file.length).toBeGreaterThan(260);
+		const store = session.durableStore();
+		await store.pin();
+		await store.unpin();
+		expect(SessionManager.open(file).getEntries()).toHaveLength(2);
+		expect((await SessionManager.list("/work/project", directory))[0]?.firstMessage).toBe("deep");
 	});
 });
 

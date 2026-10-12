@@ -1,3 +1,4 @@
+import { win32 } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { openNodeSqliteStorage, type SyncSqliteConnection } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -26,14 +27,27 @@ export function setSqliteDriver(next: SqliteDriver): void {
 	driver = next;
 }
 
+/** Windows extended-length path prefix (`\\?\`). */
+const EXTENDED_PREFIX = "\\\\?\\";
+
+/**
+ * The path SQLite opens. On Windows SQLite cannot open a path longer than MAX_PATH (260 characters, its `-journal`
+ * and `-wal` files included) unless it has the extended-length prefix, and session paths embed the working directory.
+ */
+export function sqliteFilePath(path: string): string {
+	if (process.platform !== "win32" || path.startsWith(EXTENDED_PREFIX)) return path;
+	const absolute = win32.resolve(path);
+	return absolute.startsWith("\\\\") ? `${EXTENDED_PREFIX}UNC\\${absolute.slice(2)}` : `${EXTENDED_PREFIX}${absolute}`;
+}
+
 /** Open a session database with the current driver. */
 export function openSqlite(path: string, options: { readonly readOnly?: boolean } = {}): SyncSqliteConnection {
-	return driver.open(path, { ...options, busyTimeoutMs: BUSY_TIMEOUT_MS });
+	return driver.open(sqliteFilePath(path), { ...options, busyTimeoutMs: BUSY_TIMEOUT_MS });
 }
 
 /** Open a session database as durable storage for a Harness, with the current driver. */
 export function openSqliteStorage(path: string): Promise<SqliteStorage> {
-	return openNodeSqliteStorage(path, {
+	return openNodeSqliteStorage(sqliteFilePath(path), {
 		busyTimeoutMs: BUSY_TIMEOUT_MS,
 		connect: (file, busyTimeoutMs) => driver.open(file, { busyTimeoutMs }),
 	});
