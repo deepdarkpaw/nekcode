@@ -824,6 +824,48 @@ export class AgentSession {
 		}
 	}
 
+	/**
+	 * Pi dispatches turn_end for a failed or aborted answer too; durable asks no hook for it, so the host runs the
+	 * boundary here and appends its entries after the answer. A continuation is ignored, as in pi's loop.
+	 */
+	private async _dispatchFailedTurnEnd(message: AssistantMessage, outcome: "error" | "aborted"): Promise<void> {
+		if (!this._extensionRunner.hasHandlers("turn_end")) return;
+		const messageEntryId = this._findAnswerEntryId(message);
+		if (messageEntryId === undefined) {
+			this._extensionRunner.emitError({
+				extensionPath: "<boundary>",
+				event: "turn_end",
+				error: "turn_end could not resolve the persisted assistant entry ID",
+			});
+			return;
+		}
+		const boundary = await this._extensionRunner.emitBoundary(
+			{
+				type: "turn_end",
+				turnIndex: this._turnIndex,
+				message,
+				toolResults: [],
+				messageEntryId,
+				toolResultEntryIds: [],
+				outcome,
+			},
+			(entries) => this._boundaryContext(entries),
+		);
+		this._applyBoundaryDrafts(this.sessionManager, boundary.entries);
+		await this.sessionManager.flush();
+	}
+
+	/** Session entry of a committed answer: the newest assistant message entry with its timestamp. */
+	private _findAnswerEntryId(message: AssistantMessage): string | undefined {
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index]!;
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			if (entry.message.timestamp === message.timestamp) return entry.id;
+		}
+		return undefined;
+	}
+
 	private _reportInvalidBoundaryContinuation(event: "turn_end" | "agent_before_settle"): void {
 		this._extensionRunner.emitError({
 			extensionPath: "<boundary>",
@@ -986,6 +1028,12 @@ export class AgentSession {
 			if (stop !== "error" && stop !== "length") this._overflowRecoveryAttempted = false;
 		}
 		if (event.type === "turn_end") this._lastToolResults = event.toolResults;
+		if (event.type === "turn_end" && event.message.role === "assistant") {
+			const stopReason = (event.message as AssistantMessage).stopReason;
+			if (stopReason === "error" || stopReason === "aborted") {
+				await this._dispatchFailedTurnEnd(event.message as AssistantMessage, stopReason);
+			}
+		}
 		if (event.type === "message_start" && event.message.role === "assistant") {
 			if (this._assistantStartedByHook) return;
 			this._assistantStreaming = true;

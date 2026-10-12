@@ -243,6 +243,7 @@ export class DurableEventAdapter {
 
 	/** First committed partial: pi's `message_start` with empty content, then the content so far as updates. */
 	async #startPartial(message: AssistantMessage): Promise<void> {
+		if (this.#runActive && !this.#turnActive) await this.#startTurn();
 		const first = structuredClone(message);
 		this.#partial = { ...first, content: [] };
 		this.#openBlock = undefined;
@@ -468,6 +469,8 @@ export class DurableEventAdapter {
 
 	async #retryStart(attempt: number, at: number, errorMessage: string): Promise<void> {
 		this.#retryAttempt = attempt;
+		// Pi's failed attempt ends its turn (and its run); the retried attempt starts the next turn when it shows.
+		if (this.#turnActive) await this.#endTurn();
 		await this.#host.emit({
 			type: "auto_retry_start",
 			attempt,

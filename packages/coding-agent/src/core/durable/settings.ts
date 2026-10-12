@@ -70,6 +70,11 @@ export function createHarnessSettings(
 		},
 		toolExecution: "parallel",
 		// Pi's texts for calls the model made to tools it was not offered, and for calls an abort left unstarted.
-		toolErrorText: (code, toolName) => (code === "aborted" ? "Operation aborted" : `Tool ${toolName} not found`),
+		toolErrorText: (code, toolName) =>
+			code === "aborted"
+				? "Operation aborted"
+				: code === "truncated"
+					? `Tool call "${toolName}" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.`
+					: `Tool ${toolName} not found`,
 	};
 }
