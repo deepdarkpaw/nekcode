@@ -54,12 +54,14 @@ export type HostCompactionDecision = { readonly cancel: true } | { readonly comp
  * compaction. Handlers must tolerate that.
  */
 export interface DurableHostHooks {
+	/** Before a run's next turn prepares its request (pi's `prepareNextTurn`); entries written meanwhile are in it. */
+	beforeTurn?(): Promise<void>;
 	/** Pi's `afterResponse`; a replacement is committed instead of the provider answer. */
 	afterResponse?(event: {
 		readonly message: AssistantMessage;
 	}): Promise<{ readonly message?: AssistantMessage } | undefined>;
-	/** Pi's `onYield`; entries are committed after the answer, before queued boundary inputs. */
-	onYield?(event: { readonly message: AssistantMessage; readonly entryId?: EntryId }): Promise<
+	/** Pi's `onYield`; `entryId` is the committed answer. Entries are committed after it, before queued boundary inputs. */
+	onYield?(event: { readonly message: AssistantMessage; readonly entryId: EntryId }): Promise<
 		| {
 				readonly continue?: UserInput | true;
 				readonly entries?: readonly EntryDraft[];

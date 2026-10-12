@@ -141,18 +141,26 @@ function planCompaction(
 
 /** A context edit omits its target or replaces the target's model messages with the edited ones. */
 function planContextEdit(entry: ContextEditEntry, tree: PlanningTree, convert: ConvertToLlm): EntryPlan {
-	const target = tree.getEntry(entry.targetId);
 	const base: EntryPlan = { source: entry, kind: `nek.${entry.type}`, data: { entry: json(entry) } };
-	if (target === undefined) return base;
-	const edit: PlannedEdit =
-		entry.replacement === null
-			? { target: entry.targetId, action: "omit" }
-			: {
-					target: entry.targetId,
-					action: "replace",
-					messages: jsonMessages(convert(projectContextEntry(target, entry))),
-				};
-	return { ...base, edits: [edit] };
+	const edit = plannedContextEdit(entry, tree, convert);
+	return edit === undefined ? base : { ...base, edits: [edit] };
+}
+
+/** The durable edit of a pi context edit, by pi ID; none when its target is not in the tree. */
+export function plannedContextEdit(
+	entry: ContextEditEntry,
+	tree: PlanningTree,
+	convert: ConvertToLlm,
+): PlannedEdit | undefined {
+	const target = tree.getEntry(entry.targetId);
+	if (target === undefined) return undefined;
+	return entry.replacement === null
+		? { target: entry.targetId, action: "omit" }
+		: {
+				target: entry.targetId,
+				action: "replace",
+				messages: jsonMessages(convert(projectContextEntry(target, entry))),
+			};
 }
 
 /** The pi side of one durable record: the session header, a pi entry, or nothing for durable bookkeeping. */

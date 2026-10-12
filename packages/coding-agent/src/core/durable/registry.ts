@@ -232,7 +232,10 @@ export function createHookExtension(bridge: HookBridge): Extension {
 					const result = await bridge.hooks.afterResponse?.({ message });
 					return result?.message === undefined ? undefined : { message: result.message };
 				},
-				onYield: async (message) => await bridge.hooks.onYield?.({ message }),
+				onYield: async (message, _api, _context, entryId) => await bridge.hooks.onYield?.({ message, entryId }),
+				beforeTurn: async () => {
+					await bridge.hooks.beforeTurn?.();
+				},
 				afterTools: async (assistant, results, api, context) => {
 					const conversation = await bridge.harness().conversation(api.conversationId, context);
 					if (conversation === undefined) return undefined;

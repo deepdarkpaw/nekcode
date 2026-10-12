@@ -148,6 +148,8 @@ function readLocatedHeader(location: SessionLocation): { header: SessionHeader |
 export class SessionManager extends SessionTree {
 	/** In-memory sessions get durable storage only when an engine asks for it. */
 	#memoryStore: DurableSessionStore | undefined;
+	/** Durable entry ID of each pi entry, as of the last read of the store. */
+	#durableIds: ReadonlyMap<string, number> = new Map();
 
 	private constructor(
 		cwd: string,
@@ -173,6 +175,19 @@ export class SessionManager extends SessionTree {
 
 	protected sessionFileName(fileTimestamp: string, sessionId: string): string {
 		return `${fileTimestamp}_${sessionId}.sqlite`;
+	}
+
+	/** A new session; an in-memory session drops the store of the one it replaces (see `durableStore`). */
+	override newSession(options?: NewSessionOptions): string | undefined {
+		this.#memoryStore = undefined;
+		return super.newSession(options);
+	}
+
+	/** Branch into a new session; in memory it replaces this one, so the replaced session's store is dropped. */
+	override createBranchedSession(leafId: string): string | undefined {
+		const path = super.createBranchedSession(leafId);
+		this.#memoryStore = undefined;
+		return path;
 	}
 
 	/** Switch to a different session file (used for resume and branching) */
@@ -201,6 +216,7 @@ export class SessionManager extends SessionTree {
 		}
 		this.sessionFile = path;
 		this._loadEntries(projected.fileEntries);
+		this.#durableIds = projected.placement.durableIds;
 		this.flushed = true;
 	}
 
@@ -272,7 +288,11 @@ export class SessionManager extends SessionTree {
 		await this.flush();
 		if (!this.persist) {
 			const snapshot = await this.#memoryStore?.memorySnapshot();
-			if (snapshot !== undefined) this._loadEntries(projectSnapshot(snapshot).fileEntries);
+			if (snapshot !== undefined) {
+				const projected = projectSnapshot(snapshot);
+				this._loadEntries(projected.fileEntries);
+				this.#durableIds = projected.placement.durableIds;
+			}
 			return;
 		}
 		if (this.sessionFile && existsSync(this.sessionFile)) this._loadDatabase(this.sessionFile);
@@ -284,6 +304,11 @@ export class SessionManager extends SessionTree {
 			return;
 		}
 		if (this.sessionFile && this.flushed) await DurableSessionStore.forPath(this.sessionFile).flush();
+	}
+
+	/** Durable entry ID of a pi entry, as of the last read of the store (`refresh()`). */
+	durableIdOf(piId: string): number | undefined {
+		return this.#durableIds.get(piId);
 	}
 
 	/**

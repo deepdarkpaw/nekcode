@@ -46,7 +46,13 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
-import { CompactionEntry, type EntryDraft, type EntryId, type Submission } from "@earendil-works/pi-durable";
+import {
+	CompactionEntry,
+	type ContextEdit,
+	type EntryDraft,
+	type EntryId,
+	type Submission,
+} from "@earendil-works/pi-durable";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
@@ -73,6 +79,7 @@ import type { DurableHostHooks } from "./durable/hooks.ts";
 import { toStrictJson } from "./durable/json.ts";
 import { HookedModels } from "./durable/models.ts";
 import type { PromptSection } from "./durable/registry.ts";
+import { derivedEntryId, plannedContextEdit } from "./durable/session-format.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
@@ -561,26 +568,34 @@ export class AgentSession {
 					message: { ...(replacement as AssistantMessage), content: Array.isArray(content) ? content : [] },
 				};
 			},
-			onYield: async ({ message }) => {
-				// Durable invokes onYield before the answer commit, so no pi entry ID exists yet. The handlers may rerun
-				// after a crash before that commit; their pinned result applies once. agent_before_settle runs after
-				// agent_end, at settlement (see _settleRun).
+			onYield: async ({ message, entryId }) => {
+				// Durable invokes onYield after the answer commit. The handlers may rerun after a crash before the decision
+				// commit; their pinned result applies once. agent_before_settle runs after agent_end, at settlement (see
+				// _settleRun).
+				await this.sessionManager.refresh();
 				const boundary = await this._extensionRunner.emitBoundary(
 					{
 						type: "turn_end",
 						turnIndex: this._turnIndex,
 						message,
 						toolResults: [],
-						messageEntryId: "",
+						messageEntryId: derivedEntryId(entryId),
 						toolResultEntryIds: [],
 						outcome: "completed",
 					},
 					(entries) => this._boundaryContext(entries),
 				);
+				// Pi continues only when the context with the committed entries ends in a non-assistant message.
+				const continues = boundary.continue && this._boundaryContext(boundary.entries).canContinue;
+				if (boundary.continue && !continues) this._reportInvalidBoundaryContinuation("turn_end");
 				return {
-					...(boundary.continue ? { continue: true } : {}),
+					...(continues ? { continue: true } : {}),
 					entries: this._durableBoundaryEntries(boundary.entries),
 				};
+			},
+			// Pi compacts before a run's next turn when the context passed the threshold.
+			beforeTurn: async () => {
+				await this._compactBeforeNextTurn();
 			},
 			afterTools: async ({ assistant, results, message, toolResults }) => {
 				const boundary = await this._extensionRunner.emitBoundary(
@@ -589,20 +604,18 @@ export class AgentSession {
 						turnIndex: this._turnIndex,
 						message,
 						toolResults: [...toolResults],
-						messageEntryId: String(assistant),
-						toolResultEntryIds: results.map(String),
+						messageEntryId: derivedEntryId(assistant),
+						toolResultEntryIds: results.map(derivedEntryId),
 						outcome: "completed",
 					},
 					(entries) => this._boundaryContext(entries),
 				);
-				// The run continues with another request unless every call asked to terminate. Pi compacts before that
-				// request when the context passed the threshold, and its turn_start handlers run now, before durable
-				// prepares it.
+				// The run continues with another request unless every call asked to terminate. Its turn_start handlers run
+				// now, before durable prepares it.
 				const terminated = toolResults.map(
 					(result) => this._engine?.takeResultTerminate(result.toolCallId) === true,
 				);
 				if (!terminated.every(Boolean)) {
-					await this._compactBeforeNextRequest();
 					this._earlyTurnStarts++;
 					await this._emitExtensionTurnStart();
 				}
@@ -811,6 +824,14 @@ export class AgentSession {
 		}
 	}
 
+	private _reportInvalidBoundaryContinuation(event: "turn_end" | "agent_before_settle"): void {
+		this._extensionRunner.emitError({
+			extensionPath: "<boundary>",
+			event,
+			error: `${event} requested continuation without runnable model context`,
+		});
+	}
+
 	private _boundaryContext(
 		entries: SessionBoundaryDraft[] = [],
 		boundary: "turn_end" | "agent_before_settle" = "turn_end",
@@ -875,10 +896,12 @@ export class AgentSession {
 				return [agentMessageEntry(message, convertToLlm)];
 			}
 			if (draft.type === "context_edit") {
+				const edit = this._durableContextEdit(draft.targetId, draft.replacement);
 				return [
 					{
 						kind: "nek.context_edit",
 						data: { targetId: draft.targetId, replacement: toStrictJson(draft.replacement) },
+						...(edit === undefined ? {} : { edits: [edit] }),
 					},
 				];
 			}
@@ -887,7 +910,17 @@ export class AgentSession {
 				content: `The conversation history before this point was compacted into the following summary:\n\n<summary>\n${draft.summary}\n</summary>`,
 				timestamp: Date.now(),
 			};
-			const firstKept = draft.firstKeptEntryId === null ? "self" : Number(draft.firstKeptEntryId);
+			// As a pi compaction: the path from the first kept entry on, minus its system messages; nothing when that entry
+			// is not on the path.
+			const path = this.sessionManager.getBranch();
+			const firstKept =
+				draft.firstKeptEntryId === null ? -1 : path.findIndex((e) => e.id === draft.firstKeptEntryId);
+			const head = firstKept < 0 ? undefined : this.sessionManager.durableIdOf(path[firstKept]!.id);
+			const edits: ContextEdit[] = (head === undefined ? [] : path.slice(firstKept)).flatMap((entry) => {
+				if (entry.type !== "message" || entry.message.role !== "system") return [];
+				const target = this.sessionManager.durableIdOf(entry.id);
+				return target === undefined ? [] : [{ target: target as EntryId, action: "omit" as const }];
+			});
 			return [
 				{
 					kind: CompactionEntry.kind,
@@ -896,10 +929,32 @@ export class AgentSession {
 						reason: "manual",
 						...(draft.details === undefined ? {} : { details: toStrictJson(draft.details) }),
 					},
-					head: Number.isSafeInteger(firstKept) ? (firstKept as EntryId) : "self",
+					head: head === undefined ? "self" : (head as EntryId),
+					...(edits.length === 0 ? {} : { edits }),
 				},
 			];
 		});
+	}
+
+	/** The durable edit of a boundary context edit, its target resolved to its durable entry; none when unknown. */
+	private _durableContextEdit(
+		targetId: string,
+		replacement: ContextEditEntry["replacement"],
+	): ContextEdit | undefined {
+		const entry: ContextEditEntry = {
+			type: "context_edit",
+			id: "",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			targetId,
+			replacement,
+		};
+		const edit = plannedContextEdit(entry, this.sessionManager, convertToLlm);
+		const target = this.sessionManager.durableIdOf(targetId);
+		if (edit === undefined || target === undefined) return undefined;
+		return edit.action === "omit"
+			? { target: target as EntryId, action: "omit" }
+			: { target: target as EntryId, action: "replace", messages: edit.messages };
 	}
 
 	private async _handleDurableEvent(event: AgentSessionEvent): Promise<void> {
@@ -1100,11 +1155,7 @@ export class AgentSession {
 			shouldContinue &&
 			this._boundaryContext(drafts, "agent_before_settle").canContinue;
 		if (result.continue && !continuing && !this._agentRunAbortRequested) {
-			this._extensionRunner.emitError({
-				extensionPath: "<runtime>",
-				event: "agent_before_settle",
-				error: "Ignored continue: the context cannot continue.",
-			});
+			this._reportInvalidBoundaryContinuation("agent_before_settle");
 		}
 		if (engine !== undefined) {
 			try {
@@ -2868,8 +2919,8 @@ export class AgentSession {
 		}
 	}
 
-	/** Pi's compaction before the next request of a run, when the context passed the threshold after a tool round. */
-	private async _compactBeforeNextRequest(): Promise<void> {
+	/** Pi's compaction before a run's next turn, when the context passed the threshold. */
+	private async _compactBeforeNextTurn(): Promise<void> {
 		const model = this.model;
 		const settings = this.settingsManager.getCompactionSettings(model);
 		if (!settings.enabled || !model || model.contextWindow <= 0) return;
