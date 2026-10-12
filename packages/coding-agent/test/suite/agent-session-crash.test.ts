@@ -1,12 +1,16 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { type FauxResponseStep, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ENV_AGENT_DIR } from "../../src/config.ts";
+import { emitSessionShutdownEvent } from "../../src/core/extensions/runner.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
+import { DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/config.ts";
+import { createNekExtension } from "../../src/extensions/nek/index.ts";
 import { testTool, textResult } from "../durable/support.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -167,6 +171,43 @@ describe("AgentSession crash recovery through SessionManager reopen", { timeout:
 		});
 		await withTimeout(harness.session.waitForIdle(), 30_000, "compaction reopen");
 		expect(harness.session.messages.some((message) => message.role === "compactionSummary")).toBe(true);
+	});
+
+	it("reattaches a foreground subagent to its child session after reopen", async () => {
+		const path = sessionPath();
+		await killChild(await startChild(path, "subagent", "child-request"));
+		vi.stubEnv(ENV_AGENT_DIR, join(dirname(path), "agent-home"));
+		const childRequests: string[] = [];
+		let parentRequests = 0;
+		const step: FauxResponseStep = (context) => {
+			const serialized = JSON.stringify(context.messages);
+			if (serialized.includes("You are currently working inside a subagent.")) {
+				childRequests.push(serialized);
+				return fauxAssistantMessage("Found the files.");
+			}
+			parentRequests++;
+			return fauxAssistantMessage("parent done");
+		};
+		const harness = await reopen(path, {
+			extensionFactories: [createNekExtension({ role: "root", config: DEFAULT_NEK_CONFIG })],
+			responses: Array.from({ length: 4 }, () => step),
+		});
+		await harness.session.bindExtensions({ mode: "print" });
+		await withTimeout(harness.session.waitForIdle(), 30_000, "subagent reopen");
+
+		// The rerun reopened the child the killed run started; its interrupted request was sent again, once.
+		expect(readdirSync(join(dirname(path), "subagents")).filter((name) => name.endsWith(".sqlite"))).toHaveLength(1);
+		expect(childRequests).toHaveLength(1);
+		expect(childRequests[0]?.match(/List the files\./g)).toHaveLength(1);
+		const result = harness.session.messages.findLast(
+			(message) => message.role === "toolResult" && message.toolName === "subagent",
+		);
+		expect(JSON.stringify(result?.role === "toolResult" ? result.content : undefined)).toContain("Found the files.");
+		expect(parentRequests).toBe(1);
+		expect(harness.session.getLastAssistantText()).toBe("parent done");
+		// Shutdown disposes the child sessions, as the runtime does on quit.
+		await emitSessionShutdownEvent(harness.session.extensionRunner, { type: "session_shutdown", reason: "quit" });
+		vi.unstubAllEnvs();
 	});
 
 	it("reruns nek agent_before_settle continuation after reopen", async () => {

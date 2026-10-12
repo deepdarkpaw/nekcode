@@ -1,7 +1,12 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import type { AgentSession } from "../../../core/agent-session.ts";
-import type { AgentToolUpdateCallback, ExtensionContext, ToolDefinition } from "../../../core/extensions/types.ts";
+import type {
+	AgentToolUpdateCallback,
+	ExtensionContext,
+	ToolCallMemo,
+	ToolDefinition,
+} from "../../../core/extensions/types.ts";
 import { backgroundSubagentStartText, formatSubagentResult } from "../prompts/subagent.ts";
 import { findAgentType } from "../services/agent-types.ts";
 import { resolveChildModel } from "../services/child-session.ts";
@@ -88,6 +93,22 @@ export interface SubagentToolOptions {
 	restrictTools(session: AgentSession, type: AgentType, forceReadonly: boolean): void;
 }
 
+/** What a crash rerun of one subagent call needs to reattach to the child the first run started. */
+type SubagentCallMemo = {
+	id: string;
+	sessionFile: string;
+	description: string;
+	type: string;
+	prompt: string;
+	background: boolean;
+};
+
+/** Tool call memo name of {@link SubagentCallMemo}. */
+const SUBAGENT_MEMO = "nek.subagent";
+
+/** Remember a started child before its prompt is sent; children without a session file cannot be reopened. */
+type Remember = ((record: SubagentRecord) => Promise<void>) | undefined;
+
 /** Snapshot of a record for tool details, so later activity does not mutate a stored result. */
 export function snapshotSubagent(record: SubagentRecord): SubagentRecord {
 	return { ...record };
@@ -101,6 +122,10 @@ function subagentResult(text: string, record: SubagentRecord) {
  * Cursor-style subagent tool as `subagent` (plan.md section 7.7). Starts or resumes an in-process subagent. Foreground calls block until
  * the child finishes and return its final text; background calls return at once and report through the completion
  * notice. Plan mode forces read-only children. The default parallel execution mode lets one message start several.
+ *
+ * Crash recovery: the call remembers its child in the tool call memo before the prompt is sent, and reruns after a
+ * crash (`replay: "safe"`). The rerun reopens that child, whose session resumes the interrupted run, instead of
+ * starting another one.
  */
 export function createSubagentToolDefinition(
 	options: SubagentToolOptions,
@@ -110,10 +135,9 @@ export function createSubagentToolDefinition(
 		label: "Subagent",
 		description: options.description,
 		parameters: createSubagentSchema(options.agentTypes.map((type) => type.name)),
-		async execute(_toolCallId, params: SubagentToolInput, signal, onUpdate, ctx) {
-			const record = params.resume
-				? await resumeSubagent(options, params, signal, ctx)
-				: await startSubagent(options, params, signal, ctx);
+		replay: "safe",
+		async execute(toolCallId, params: SubagentToolInput, signal, onUpdate, ctx) {
+			const record = await startOrReattach(options, params, signal, ctx, ctx.getToolCallMemo?.(toolCallId));
 			if (record.background) return subagentResult(backgroundSubagentStartText(record), record);
 			const done = await options.getRegistry().wait(record.id, activityReporter(onUpdate));
 			if (done.background && done.status === "running") {
@@ -133,6 +157,55 @@ function activityReporter(onUpdate: AgentToolUpdateCallback<SubagentToolData> | 
 	return (record: SubagentRecord) => onUpdate(subagentResult(record.activity ?? "", record));
 }
 
+/** Start or resume the requested child, or reattach to the one a crashed run of this call started. */
+async function startOrReattach(
+	options: SubagentToolOptions,
+	params: SubagentToolInput,
+	signal: AbortSignal | undefined,
+	ctx: ExtensionContext,
+	memo: ToolCallMemo | undefined,
+): Promise<SubagentRecord> {
+	const previous = await memo?.get<SubagentCallMemo>(SUBAGENT_MEMO);
+	if (previous !== undefined) {
+		return options.getRegistry().get(previous.id) ?? reattachSubagent(options, previous, signal, ctx);
+	}
+	const remember: Remember =
+		memo &&
+		(async (record) => {
+			if (record.sessionFile === undefined) return;
+			await memo.set<SubagentCallMemo>(SUBAGENT_MEMO, {
+				id: record.id,
+				sessionFile: record.sessionFile,
+				description: record.description,
+				type: record.type,
+				prompt: params.prompt,
+				background: record.background,
+			});
+		});
+	return params.resume
+		? resumeSubagent(options, params, signal, ctx, remember)
+		: startSubagent(options, params, signal, ctx, remember);
+}
+
+async function reattachSubagent(
+	options: SubagentToolOptions,
+	previous: SubagentCallMemo,
+	signal: AbortSignal | undefined,
+	ctx: ExtensionContext,
+): Promise<SubagentRecord> {
+	const type = findAgentType(options.agentTypes, previous.type) ?? resolveAgentType(options, undefined);
+	const forceReadonly = type.readonly || options.getMode() === "plan";
+	return options.getRegistry().reattach({
+		description: previous.description,
+		type: previous.type,
+		prompt: previous.prompt,
+		background: previous.background,
+		signal: previous.background ? undefined : signal,
+		createSession: () =>
+			options.createSession({ type, model: undefined, forceReadonly, resumeFile: previous.sessionFile }, ctx),
+	});
+}
+
 function resolveAgentType(options: SubagentToolOptions, name: string | undefined): AgentType {
 	const requested = name ?? DEFAULT_AGENT_TYPE;
 	const type = findAgentType(options.agentTypes, requested);
@@ -146,6 +219,7 @@ async function startSubagent(
 	params: SubagentToolInput,
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
+	remember: Remember,
 ): Promise<SubagentRecord> {
 	const type = resolveAgentType(options, params.subagent_type);
 	const model = resolveChildModel(params.model ?? type.model, ctx);
@@ -158,6 +232,7 @@ async function startSubagent(
 		background,
 		signal: background ? undefined : signal,
 		createSession: () => options.createSession({ type, model, forceReadonly }, ctx),
+		...(remember === undefined ? {} : { beforeLaunch: remember }),
 	});
 }
 
@@ -166,6 +241,7 @@ async function resumeSubagent(
 	params: SubagentToolInput,
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
+	remember: Remember,
 ): Promise<SubagentRecord> {
 	const id = params.resume ?? "";
 	const registry = options.getRegistry();
@@ -183,6 +259,7 @@ async function resumeSubagent(
 		background,
 		signal: background ? undefined : signal,
 		prepare: (session) => options.restrictTools(session, type, forceReadonly),
+		...(remember === undefined ? {} : { beforeLaunch: remember }),
 		reopen: branchSubagent && {
 			description: params.description,
 			type: branchSubagent.type,

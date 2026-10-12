@@ -79,6 +79,7 @@ import type {
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
+	ToolCallMemo,
 	ToolResultEvent,
 	ToolResultEventResult,
 	TurnEndEvent,
@@ -370,6 +371,7 @@ export class ExtensionRunner {
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
+	private getToolCallMemoFn: (toolCallId: string) => ToolCallMemo | undefined = () => undefined;
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () =>
 		normalizeBuildSystemPromptOptions({ cwd: this.cwd });
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
@@ -442,6 +444,7 @@ export class ExtensionRunner {
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
+		this.getToolCallMemoFn = contextActions.getToolCallMemo ?? (() => undefined);
 		this.getSystemPromptOptionsFn =
 			contextActions.getSystemPromptOptions ?? (() => normalizeBuildSystemPromptOptions({ cwd: this.cwd }));
 
@@ -910,6 +913,10 @@ export class ExtensionRunner {
 			getSystemPrompt: () => {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
+			},
+			getToolCallMemo: (toolCallId) => {
+				runner.assertActive();
+				return runner.getToolCallMemoFn(toolCallId);
 			},
 		};
 	}

@@ -16,6 +16,7 @@ import {
 	type ToolRegistration,
 	ToolTask,
 } from "@earendil-works/pi-durable";
+import type { ToolCallMemo, ToolCallMemoValue } from "../extensions/types.ts";
 import { convertToLlm } from "../messages.ts";
 import { type CompactionBridge, createBeforeCompact } from "./compaction.ts";
 import { agentContext, sameModelContext } from "./context.ts";
@@ -108,6 +109,8 @@ export type PendingResults = {
 	readonly extras: Map<string, ResultExtras>;
 	/** Calls whose final result asked to end the run, until the round's `afterTools` takes them. */
 	readonly terminated: Set<string>;
+	/** Memos of the calls running now, by call ID; see `ExtensionContext.getToolCallMemo`. */
+	readonly calls: Map<string, ToolCallMemo>;
 };
 
 /** The parts of a pi tool result that only events carry. */
@@ -123,7 +126,7 @@ export type HookBridge = CompactionBridge & {
 };
 
 export function createPendingResults(): PendingResults {
-	return { byTask: new Map(), extras: new Map(), terminated: new Set() };
+	return { byTask: new Map(), extras: new Map(), terminated: new Set(), calls: new Map() };
 }
 
 function setExtras(pending: PendingResults, callId: string, extras: ResultExtras): void {
@@ -170,10 +173,13 @@ export function toDurableTool(tool: AgentTool, pending: PendingResults): ToolReg
 			}
 			const signal = context.abortSignal;
 			let result: AgentToolResult<unknown>;
+			pending.calls.set(api.callId, toolCallMemo(api, context));
 			try {
 				result = await tool.execute(api.callId, args, signal, (partial) => publishPartial(api, partial, context));
 			} catch (error) {
 				return errorResult(error instanceof Error ? error.message : String(error));
+			} finally {
+				pending.calls.delete(api.callId);
 			}
 			if (result.structuredContent !== undefined) {
 				pending.byTask.set(api.taskId, { structuredContent: result.structuredContent });
@@ -190,6 +196,16 @@ export function toDurableTool(tool: AgentTool, pending: PendingResults): ToolReg
 				...(result.terminate === true ? { control: { terminate: true } } : {}),
 			};
 		},
+	};
+}
+
+/** A tool call's memo over its durable tool task memos, apart from the wrapper's own names. */
+function toolCallMemo(api: ToolExecutionApi, context: Context): ToolCallMemo {
+	return {
+		get: async <T extends ToolCallMemoValue>(name: string) =>
+			(await api.memo(`tool:${name}`, context)) as T | undefined,
+		set: async <T extends ToolCallMemoValue>(name: string, value: T) =>
+			(await api.memo(`tool:${name}`, toStrictJson(value), context)) as T,
 	};
 }
 

@@ -43,6 +43,8 @@ export function createSwitchModeToolDefinition(
 		label: "Mode",
 		description: SWITCH_MODE,
 		parameters: switchModeSchema,
+		// The confirmation is asked again after a crash; switching to the same mode twice is harmless.
+		replay: "safe",
 		executionMode: "sequential",
 		async execute(_toolCallId, { explanation, target_mode_id }: SwitchModeToolInput, signal, _onUpdate, ctx) {
 			signal?.throwIfAborted();

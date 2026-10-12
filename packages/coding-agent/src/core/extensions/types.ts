@@ -357,6 +357,28 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/**
+	 * Durable memory of a running tool call, for a tool with `replay: "safe"`: values stored here are read back when
+	 * the call reruns after a crash, so the rerun can reattach to work the first run started. `undefined` outside a
+	 * tool call or without durable storage; absent from contexts built outside a session.
+	 */
+	getToolCallMemo?(toolCallId: string): ToolCallMemo | undefined;
+}
+
+/** A JSON value a {@link ToolCallMemo} stores. */
+export type ToolCallMemoValue =
+	| string
+	| number
+	| boolean
+	| null
+	| ToolCallMemoValue[]
+	| { [key: string]: ToolCallMemoValue };
+
+/** Named values that survive a crash for one tool call; the first value stored under a name wins. */
+export interface ToolCallMemo {
+	get<T extends ToolCallMemoValue>(name: string): Promise<T | undefined>;
+	/** Store `value` unless the name holds one already; returns the stored value. */
+	set<T extends ToolCallMemoValue>(name: string, value: T): Promise<T>;
 }
 
 /**
@@ -1978,6 +2000,7 @@ export interface ExtensionContextActions {
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+	getToolCallMemo?: (toolCallId: string) => ToolCallMemo | undefined;
 }
 
 /**
