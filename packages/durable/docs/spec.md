@@ -2190,7 +2190,7 @@ Admission and terminal transitions:
 |---|---|---|
 | input, idle with empty inbox | `placed`, with user entry | create run and generation |
 | write, idle with empty inbox | `done`, with entry | append entry; no run |
-| nek: triggered write, idle, entry ends in model input | `done`, with entry | append entry; create run and generation with the write as its input |
+| nek: triggered write, idle, entry ends in model input or `continueContext` | `done`, with entry | append entry; create run and generation with the write as its input |
 | input or write, busy or non-empty inbox | `queued` | append inbox item |
 | boundary places user item | `placed`, with entry | add ID to current or successor run |
 | boundary places write | `done`, with entry | append entry |
@@ -2207,7 +2207,10 @@ run's only input; settling it again is a no-op, and it identifies the run in
 and the write is placed without a run. On an idle conversation with queued
 items, the trigger applies only when the final boundary selects no user item.
 A busy conversation queues it as a plain write: a boundary places it without
-starting anything, because the running run already continues.
+starting anything, because the running run already continues. With
+`continueContext: true` an idle triggered write starts the run whatever its
+entry holds: the host checked that the conversation's context ends in a
+non-assistant message (pi's `continue()`).
 
 `requestId` deduplicates within one conversation before any write; reusing one
 for the other submission type rejects. A busy input with `whenBusy: "reject"`
@@ -2559,6 +2562,7 @@ consuming commit may rerun them. Abort errors always propagate.
 | `beforeRequest` | replacement chain | report, continue |
 | `afterResponse` | message replacement chain (nek) | report, continue |
 | `onYield` | entries in order; first continuation wins and stops asking | report, continue |
+| `beforeTurn` | each in order (nek) | report, continue |
 | `beforeTool` | argument replacement chain; first block wins | block tool with error text |
 | `afterTool` | result replacement chain | report, continue |
 | `afterTools` | entries in order (nek) | report, continue |
@@ -2569,17 +2573,34 @@ semantic event channel; current UI status is document state.
 
 nek: hook results are committed in the commit that consumes them. `afterResponse`
 replaces the classified and committed message; a crash before that commit loses
-both, and the request is sent again, asking the hooks again. `onYield` and
-`afterTools` decisions with something in them are pinned in the generation
-task's memos `pi.hook.onYield` and `pi.hook.afterTools` before their consuming
-commit. A rerun after a crash in between applies the pinned decision without
-asking the hooks; for `onYield` that applies to the answer of the resent
-request. `onYield` entries follow the answer, and `afterTools` entries follow
-the round's results, both before the boundary's placed items, and a head entry
-among them advances the boundary's active range as a placed write does.
-`continue: true` hands the run over without a user message, only when the last
-of the entries with model messages ends in a non-assistant message; otherwise
-it is reported and the run ends.
+both, and the request is sent again, asking the hooks again. When `onYield`
+hooks exist, the final answer commits first and the generation moves to phase
+`yield { answer }`, which asks them with the answer's entry ID and then commits
+the decision and the final boundary; a crash in between resumes in `yield` with
+the committed answer. Without `onYield` hooks the answer and its boundary
+commit together, as specified above. `onYield` and `afterTools` decisions with
+something in them are pinned in the generation task's memos `pi.hook.onYield`
+and `pi.hook.afterTools` before their consuming commit. A rerun after a crash
+in between applies the pinned decision without asking the hooks. `onYield`
+entries follow the answer, and `afterTools` entries follow the round's
+results, both before the boundary's placed items, and a head entry among them
+advances the boundary's active range as a placed write does.
+
+`continue: true` keeps the run going without a user message; the host checked
+that the context can continue. Its boundary polls the queues as pi's loop
+does: the `postTools` selection first (steers join the continuation, follow-ups
+wait for its answer), and the final selection only when that placed nothing; a
+queued reset ends the run instead. A run's next turn (after a tool round or a
+`continue: true` answer) is a successor generation created with input
+`{ next: { steered } }`. Its first preparation asks `beforeTurn` before reading
+the context, so entries the host writes meanwhile (pi's compaction before a
+turn) are part of the request; when the handing-over boundary placed nothing,
+the preparation commit applies the `postTools` selection again after the prompt
+entries, so steering queued meanwhile joins the turn, unless a reset is
+queued.
+
+A request aborted before its first content leaves an empty `aborted` assistant
+entry (nek), as pi's loop records one.
 
 ```ts
 type HookResult<T> = T | undefined | Promise<T | undefined>;
@@ -2605,8 +2626,13 @@ interface GenerationHooks {
     api: HookApi,
     context: Context,
   ): HookResult<{ readonly message: AssistantMessage }>;
-  /** A final answer; `continue` appends a user message, or with `true` none, and continues the run. */
-  onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<YieldDecision>;
+  /**
+   * A final answer; `continue` appends a user message, or with `true` none, and continues the run. nek: `entry` is
+   * the committed answer.
+   */
+  onYield(answer: AssistantMessage, api: HookApi, context: Context, entry: EntryId): HookResult<YieldDecision>;
+  /** nek: before a run's next turn prepares its first request, before the context is read. */
+  beforeTurn(api: HookApi, context: Context): HookResult<void>;
   /** After every tool of the round is terminal; `results` are the round's result entries in call order. */
   afterTools(
     assistant: EntryId,
@@ -2616,7 +2642,7 @@ interface GenerationHooks {
   ): HookResult<{ readonly entries: readonly EntryDraft[] }>;
 }
 
-/** nek: `entries` follow the answer in its commit. */
+/** nek: `entries` follow the answer, before the boundary's placed items. */
 type YieldDecision = {
   readonly continue?: UserInput | true;
   readonly entries?: readonly EntryDraft[];

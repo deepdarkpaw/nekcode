@@ -644,9 +644,9 @@ export interface HookApi extends DocumentReader {
 export type HookResult<T> = T | undefined | Promise<T | undefined>;
 
 /**
- * nek: what `onYield` decides. `entries` are appended after the answer in its commit. `continue` continues the run: a
- * user input appends a user message, and `true` continues from the appended entries alone, only when the last of them
- * with model messages ends in a non-assistant message.
+ * nek: what `onYield` decides. `entries` are appended after the answer. `continue` continues the run: a user input
+ * appends a user message, and `true` continues from the context as it is; the host checked that it ends in a
+ * non-assistant message.
  */
 export type YieldDecision = {
 	readonly continue?: UserInput | true;
@@ -655,6 +655,12 @@ export type YieldDecision = {
 
 /** Hooks of the built-in generation task. */
 export interface GenerationHooks {
+	/**
+	 * nek: before a run's next turn (after a tool round or a `continue: true` answer) prepares its first request, before
+	 * the context is read. Entries the host writes meanwhile are part of the request; pi compacts here
+	 * (`prepareNextTurn`). Steering queued until then joins the turn when its boundary placed none.
+	 */
+	beforeTurn(api: HookApi, context: Context): HookResult<void>;
 	/** Before every request attempt, including recovery; the result is used for that request only. */
 	beforeRequest(
 		request: { readonly messages: readonly Message[] },
@@ -670,8 +676,11 @@ export interface GenerationHooks {
 		api: HookApi,
 		context: Context,
 	): HookResult<{ readonly message: AssistantMessage }>;
-	/** A final answer; the first `continue` continues the run. nek: every hook's `entries` are appended, in hook order. */
-	onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<YieldDecision>;
+	/**
+	 * A final answer; the first `continue` continues the run. nek: every hook's `entries` are appended, in hook order;
+	 * the answer is already committed as `entry`.
+	 */
+	onYield(answer: AssistantMessage, api: HookApi, context: Context, entry: EntryId): HookResult<YieldDecision>;
 	/**
 	 * After every tool of the round is terminal; `results` are the round's result entries in call order. nek: every
 	 * hook's `entries` are appended after the results, in hook order, in the round's closing commit.

@@ -18,6 +18,7 @@ import {
 } from "@earendil-works/pi-ai";
 import {
 	defineTool,
+	type EntryId,
 	type EntryRecord,
 	GenerationTask,
 	type Harness,
@@ -104,17 +105,26 @@ describe("nek boundary hooks", () => {
 		await opened.harness.close(context);
 	});
 
-	it("reports and ignores continue: true when the entries do not end in model input", async () => {
+	it("passes the committed answer to onYield and continues on continue: true as the host decided", async () => {
 		const setup = chatSetup();
+		const seen: EntryId[] = [];
 		addHooks(setup.registry, GenerationTask, {
-			onYield: () => ({ continue: true, entries: [{ kind: "nek.label", data: { label: "x" } }] }),
+			onYield: (_message, _api, _context, entry) => {
+				seen.push(entry);
+				// The host checks that the context can continue; entries without model messages do not stop it.
+				return seen.length === 1
+					? { continue: true, entries: [{ kind: "nek.label", data: { label: "x" } }] }
+					: undefined;
+			},
 		});
-		setup.faux.setResponses([answer("only")]);
+		setup.faux.setResponses([answer("only"), answer("again")]);
 		const opened = await openChat(new MemoryStorage(), setup);
 		await (await opened.root.submit({ type: "input", content: "go" }, context)).wait(context);
 		await opened.harness.waitForIdle(context);
-		expect(await transcript(opened)).toEqual(["pi.user:go", "pi.assistant:only", "nek.label:"]);
-		expect(setup.reports.map(String)).toEqual([expect.stringContaining("continue: true ignored")]);
+		const kinds = new Map((await allEntries(opened.root)).map((entry: EntryRecord) => [entry.id, entry.kind]));
+		expect(seen.map((id) => kinds.get(id))).toEqual(["pi.assistant", "pi.assistant"]);
+		expect(await transcript(opened)).toEqual(["pi.user:go", "pi.assistant:only", "nek.label:", "pi.assistant:again"]);
+		expect(setup.reports).toEqual([]);
 		await opened.harness.close(context);
 	});
 
@@ -291,15 +301,15 @@ describe("nek boundary kills", { timeout: 60_000 }, () => {
 				return undefined;
 			},
 		});
-		// The killed answer never committed, so the request is sent again.
-		setup.faux.setResponses([answer("again"), answer("second")]);
+		// The answer committed before onYield was asked, so the resumed generation keeps it.
+		setup.faux.setResponses([answer("again")]);
 		const opened = await reopen(path, setup);
 		await opened.harness.waitForIdle(context);
 		expect(await transcript(opened)).toEqual([
 			"pi.user:go",
-			"pi.assistant:again",
+			"pi.assistant:first",
 			"nek.reminder:reminder",
-			"pi.assistant:second",
+			"pi.assistant:again",
 		]);
 		// Only the continued generation asks; the pinned decision was applied as it was.
 		expect(asked).toBe(1);

@@ -48,7 +48,10 @@ import type {
 } from "./types.ts";
 import { recordUsage } from "./usage.ts";
 
-export type GenerationInput = Record<string, never>;
+export type GenerationInput = {
+	/** nek: set on a run's next turn; `steered` when the boundary that handed over placed queued input. */
+	readonly next?: { readonly steered: boolean };
+};
 
 export type GenerationCheckpoint =
 	| {
@@ -79,6 +82,11 @@ export type GenerationCheckpoint =
 			cutoff: EntryId;
 			handle: DeferredHandle;
 			pollAt: number;
+	  }
+	| {
+			/** nek: the final answer is committed; its `onYield` decision and the final boundary follow. */
+			phase: "yield";
+			answer: EntryId;
 	  }
 	| {
 			/** Waiting on the round's tool tasks, which the generation owns (spec §8.5). */
@@ -138,6 +146,9 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 					return failModelError(runtime, overflow, context);
 				}
 			}
+			// nek: a next turn's host work before the context is read, then its second steering poll (pi's loop).
+			const next = attempt === 1 && compacted === undefined ? task.input.next : undefined;
+			if (next !== undefined) await runtime.hooks.each("beforeTurn", (hook) => hook(runtime, context));
 			const view = await runtime.context(conversationId, context);
 			const shown = replaySections(view.messages);
 			const report = (error: unknown) => runtime.report(error);
@@ -165,8 +176,21 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 				return;
 			}
 			await runtime.commit(async (tx) => {
+				// Read before the first write of the commit.
+				const boundary = next?.steered === false ? await prepareBoundary(tx, conversationId, settings) : undefined;
 				let cutoff = (await tx.scanEntries({ conversationId }, 1)).items[0]?.id;
 				for (const entry of entries) cutoff = (await tx.appendEntry(SystemEntry, conversationId, entry)).id;
+				// nek: steering queued while the turn prepared joins it, after the prompt changes; a queued reset waits for the
+				// next boundary.
+				if (
+					boundary !== undefined &&
+					!boundary.inbox.items.some((item) => item.mode === "write" && item.entry.head === "self")
+				) {
+					const { users, last } = await applyBoundary(tx, boundary, "postTools", runtime.now());
+					const live = await tx.doc(LiveDoc, conversationId);
+					if (live.run?.taskId === runtime.taskId) live.run.inputs.push(...users);
+					cutoff = last ?? cutoff;
+				}
 				if (cutoff === undefined) throw new Error(`Conversation ${conversationId} has no entries to send`);
 				// Checked in this commit, so a compaction admitted during preparation counts.
 				if (threshold === "background" && (await tx.doc(LiveDoc, conversationId)).compactions === undefined) {
@@ -209,6 +233,12 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			const message = await streamResponse(runtime, model, messages, options, attempt, context);
 			const request = { attempt, compacted, model: ref, cutoff, messages: view.messages };
 			await classify(runtime, request, message, context);
+		},
+		yield: async (task, runtime, context) => {
+			const { answer } = task.state.checkpoint;
+			const message = (await runtime.entry(AssistantEntry, answer, context))?.model?.[0];
+			if (message?.role !== "assistant") throw new Error(`Answer entry ${answer} is not an assistant message`);
+			await settleAnswer(runtime, answer, message, context);
 		},
 		retry: async (task, runtime, context) => {
 			const { attempt, compacted, until } = task.state.checkpoint;
@@ -270,9 +300,23 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			checkpoint.phase === "tools"
 				? await readCalls(runtime, checkpoint.assistant, checkpoint.pending, context)
 				: [];
+		// nek: a request aborted before its first content leaves an empty aborted answer, as pi's loop records it.
+		const requestModel =
+			checkpoint.phase === "request"
+				? runtime.models.getModel(checkpoint.model.provider, checkpoint.model.modelId)
+				: undefined;
 		await runtime.commit(async (tx) => {
 			const live = await tx.doc(LiveDoc, conversationId);
+			const generation = live.generation;
+			const contentless =
+				generation !== undefined &&
+				generation.message === undefined &&
+				generation.retry === undefined &&
+				generation.deferred === undefined;
 			await convertPartial(tx, live, conversationId);
+			if (requestModel !== undefined && contentless) {
+				await appendAssistant(tx, conversationId, abortedAnswer(requestModel, runtime.now()));
+			}
 			for (const call of unstarted) {
 				const result = hostToolError(runtime.settings, "aborted", call.name, `Tool ${call.name} was aborted`);
 				await appendToolResult(tx, conversationId, call, result, runtime.now());
@@ -345,6 +389,28 @@ async function failNoModel(runtime: Runtime, ref: ModelRef | undefined, context:
 		endRun(tx, live, runtime.taskId, { status: "unanswered", reason: "no_model" });
 		return { status: "terminal", outcome: { status: "failed", error: { message, detail: { reason: "no_model" } } } };
 	}, context);
+}
+
+/** nek: the empty answer of a request aborted before its first content, shaped as pi-ai reports an abort. */
+function abortedAnswer(model: Model<Api>, timestamp: number): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "aborted",
+		errorMessage: "Request was aborted",
+		timestamp,
+	};
 }
 
 /**
@@ -516,9 +582,34 @@ async function classify(
  * A final answer; the final boundary places queued items (spec §6). The first `onYield` continuation appends a user
  * message and hands the run to a successor generation, but only when the boundary selected no user item and no reset.
  * Otherwise the run's inputs settle `done`, and selected user items start the next run. nek: the hooks' entries follow
- * the answer in the same commit, before the boundary's items; `continue: true` hands over without a user message.
+ * the answer, before the boundary's items; `continue: true` hands over without a user message.
  */
 async function answer(runtime: Runtime, message: AssistantMessage, context: Context): Promise<void> {
+	let yieldHooks = 0;
+	await runtime.hooks.each("onYield", () => {
+		yieldHooks++;
+	});
+	if (yieldHooks === 0) return settleAnswer(runtime, undefined, message, context);
+	// nek: with `onYield` hooks the answer commits first, so they see its entry, as pi's turn_end does; the decision and
+	// the boundary follow in the `yield` phase, which a crash in between resumes.
+	await runtime.commit(async (tx): Promise<Next> => {
+		const live = await tx.doc(LiveDoc, runtime.conversationId);
+		const entry = await appendAssistant(tx, runtime.conversationId, message);
+		delete live.generation;
+		return { status: "running", checkpoint: { phase: "yield", answer: entry.id } };
+	}, context);
+}
+
+/**
+ * The final answer's `onYield` decision, then the final boundary or the continuation; the answer is appended in the
+ * boundary's commit unless already committed as `committed` (nek).
+ */
+async function settleAnswer(
+	runtime: Runtime,
+	committed: EntryId | undefined,
+	message: AssistantMessage,
+	context: Context,
+): Promise<void> {
 	// nek: hooks asked so far add their entries until the first continuation, which ends the asking.
 	const decision = await pinnedDecision(
 		runtime,
@@ -528,7 +619,9 @@ async function answer(runtime: Runtime, message: AssistantMessage, context: Cont
 			const entries: EntryDraft[] = [];
 			await runtime.hooks.each("onYield", async (hook) => {
 				if (continuation !== undefined) return;
-				const result = await hook(message, runtime, context);
+				// `answer()` commits the answer first whenever an onYield hook exists.
+				if (committed === undefined) throw new Error("onYield asked before the answer was committed");
+				const result = await hook(message, runtime, context, committed);
 				continuation = result?.continue;
 				entries.push(...(result?.entries ?? []));
 			});
@@ -539,30 +632,38 @@ async function answer(runtime: Runtime, message: AssistantMessage, context: Cont
 	);
 	const continuation = decision?.continue;
 	const hookEntries = decision?.entries ?? [];
-	// nek: `continue: true` needs the hook entries to end in model input, as pi's continue does.
-	const continues = continuation === true ? endsInInput(hookEntries) : continuation !== undefined;
-	if (continuation === true && !continues) {
-		runtime.report(new Error("onYield continue: true ignored: its entries do not end in a non-assistant message"));
-	}
 	const conversationId = runtime.conversationId;
 	await runtime.commit(async (tx): Promise<Next> => {
 		// Queue modes are read on the Session line, when the boundary is decided.
 		const boundary = await prepareBoundary(tx, conversationId, runtime.settings);
 		const live = await tx.doc(LiveDoc, conversationId);
-		const entry = await appendAssistant(tx, conversationId, message);
-		const result: Next = { status: "terminal", outcome: { status: "completed", result: { entryId: entry.id } } };
+		const answerId = committed ?? (await appendAssistant(tx, conversationId, message)).id;
+		const result: Next = { status: "terminal", outcome: { status: "completed", result: { entryId: answerId } } };
 		await appendHookEntries(tx, boundary, hookEntries);
-		const { users, reset } = await applyBoundary(tx, boundary, "final", runtime.now());
-		if (continuation !== undefined && continues && users.length === 0 && !reset) {
-			if (continuation !== true) {
-				const user = { role: "user", content: continuation, timestamp: runtime.now() } as const;
-				await tx.appendEntry(UserEntry, conversationId, { model: [user] });
+		if (continuation === true) {
+			// nek: `continue: true` keeps the run going, polling the queues as pi's loop does: queued steering joins the
+			// continuation and follow-ups wait for its answer; without steering, follow-ups join it. The host checked that
+			// the context can continue (pi's condition: it ends in a non-assistant message).
+			const now = runtime.now();
+			let { users, reset } = await applyBoundary(tx, boundary, "postTools", now);
+			if (!reset && users.length === 0) ({ users, reset } = await applyBoundary(tx, boundary, "final", now));
+			if (!reset) {
+				if (live.run?.taskId === runtime.taskId) live.run.inputs.push(...users);
+				handOver(live, runtime.taskId, await createGeneration(tx, conversationId, { steered: users.length > 0 }));
+				return result;
 			}
-			handOver(live, runtime.taskId, await createGeneration(tx, conversationId));
-			delete live.generation;
+			endRun(tx, live, runtime.taskId, { status: "done", answer: answerId });
+			if (users.length > 0) await startRun(tx, conversationId, live, users);
 			return result;
 		}
-		endRun(tx, live, runtime.taskId, { status: "done", answer: entry.id });
+		const { users, reset } = await applyBoundary(tx, boundary, "final", runtime.now());
+		if (continuation !== undefined && users.length === 0 && !reset) {
+			const user = { role: "user", content: continuation, timestamp: runtime.now() } as const;
+			await tx.appendEntry(UserEntry, conversationId, { model: [user] });
+			handOver(live, runtime.taskId, await createGeneration(tx, conversationId));
+			return result;
+		}
+		endRun(tx, live, runtime.taskId, { status: "done", answer: answerId });
 		if (users.length > 0) await startRun(tx, conversationId, live, users);
 		return result;
 	}, context);
@@ -687,7 +788,7 @@ async function finishToolRound(
 			} else {
 				delete live.tools;
 				if (live.run?.taskId === runtime.taskId) live.run.inputs.push(...users);
-				handOver(live, runtime.taskId, await createGeneration(tx, conversationId));
+				handOver(live, runtime.taskId, await createGeneration(tx, conversationId, { steered: users.length > 0 }));
 			}
 		}
 		return { status: "terminal", outcome: { status: "completed", result: { entryId: assistant } } };
@@ -717,9 +818,14 @@ export async function startRun(
 	live.run = { taskId: await createGeneration(tx, conversationId), inputs };
 }
 
-/** A generation owned by its conversation. */
-function createGeneration(tx: Tx, conversationId: ConversationId): Promise<TaskId<GenerationResult>> {
-	return tx.createTask(GenerationTask, {}, { ownership: { kind: "conversation" }, conversationId });
+/** A generation owned by its conversation; nek: `next` marks a run's next turn. */
+function createGeneration(
+	tx: Tx,
+	conversationId: ConversationId,
+	next?: GenerationInput["next"],
+): Promise<TaskId<GenerationResult>> {
+	const input: GenerationInput = next === undefined ? {} : { next };
+	return tx.createTask(GenerationTask, input, { ownership: { kind: "conversation" }, conversationId });
 }
 
 /** Hand run control from `from` to `to`; the run's inputs move with it. */

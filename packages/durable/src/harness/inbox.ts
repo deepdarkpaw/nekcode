@@ -46,7 +46,12 @@ export type Boundary = {
 };
 
 /** Selected user items, in ID order, and whether a `head: "self"` write (a reset) was placed. */
-export type BoundaryResult = { readonly users: SubmissionId[]; readonly reset: boolean };
+export type BoundaryResult = {
+	readonly users: SubmissionId[];
+	readonly reset: boolean;
+	/** nek: the newest entry the boundary appended. */
+	readonly last?: EntryId;
+};
 
 /**
  * Read what a boundary needs. Table reads must precede the commit's first table write, so callers prepare the
@@ -91,6 +96,7 @@ export async function applyBoundary(
 	const users = [...pick("steer", boundary.steeringMode), ...(final ? pick("followUp", boundary.followUpMode) : [])];
 	users.sort((a, b) => a - b);
 
+	let last: EntryId | undefined;
 	// `appendEntry()` copies the drafts' values; the items are removed only afterwards.
 	for (const index of writes) {
 		const item = items[index] as Draft<Extract<InboxItem, { mode: "write" }>>;
@@ -100,6 +106,7 @@ export async function applyBoundary(
 			continue;
 		}
 		const entry = await tx.appendEntry(conversationId, draft);
+		last = entry.id;
 		if (draft.head !== undefined) boundary.head = draft.head === "self" ? entry.id : draft.head;
 		tx.placeSubmission(item.id, entry.id);
 	}
@@ -114,6 +121,7 @@ export async function applyBoundary(
 				continue;
 			}
 			const entry = await tx.appendEntry(conversationId, draft);
+			last = entry.id;
 			tx.placeSubmission(queued.id, entry.id);
 			placed.push(queued.id);
 			continue;
@@ -121,14 +129,16 @@ export async function applyBoundary(
 		const item = queued as Draft<Extract<InboxItem, { mode: "steer" | "followUp" }>>;
 		const message = { role: "user", content: item.content as UserInput, timestamp: now } as const;
 		const entry = await tx.appendEntry(UserEntry, conversationId, { model: [message] });
+		last = entry.id;
 		// nek: entries that follow the input.
-		for (const after of item.after ?? []) await tx.appendEntry(conversationId, after as unknown as EntryDraft);
+		for (const after of item.after ?? [])
+			last = (await tx.appendEntry(conversationId, after as unknown as EntryDraft)).id;
 		tx.placeSubmission(item.id, entry.id);
 		placed.push(item.id);
 	}
 	const removed = [...writes, ...users].sort((a, b) => b - a);
 	for (const index of removed) items.splice(index, 1);
-	return { users: placed, reset };
+	return { users: placed, reset, ...(last === undefined ? {} : { last }) };
 }
 
 /** Whether a head write targets an entry before the active range, so placing it would bring back cut history. */
