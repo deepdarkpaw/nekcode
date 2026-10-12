@@ -65,6 +65,7 @@ import { agentMessageEntry, type ConvertToLlm } from "./durable/entries.ts";
 import type { DurableHostHooks } from "./durable/hooks.ts";
 import { toStrictJson } from "./durable/json.ts";
 import { HookedModels } from "./durable/models.ts";
+import type { PromptSection } from "./durable/registry.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
@@ -107,6 +108,7 @@ import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import {
 	buildSystemPrompt,
+	buildSystemPromptState,
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
@@ -388,6 +390,13 @@ export class AgentSession {
 	 */
 	private _assistantStartedByHook = false;
 	private _assistantStreaming = false;
+	/**
+	 * Extension `agent_start`/`turn_start` handlers that already ran before durable prepared the request they announce
+	 * (when the host starts a run, and after a tool round), so a loadout they change applies to that request, as in pi.
+	 * The stream's matching events then go to listeners only.
+	 */
+	private _earlyAgentStart = false;
+	private _earlyTurnStarts = 0;
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -556,6 +565,12 @@ export class AgentSession {
 					},
 					(entries) => this._boundaryContext(entries),
 				);
+				// The run continues with another request unless every call asked to terminate; its turn_start handlers
+				// run now, before durable prepares it.
+				if (!toolResults.every((result) => this._engine?.peekResultTerminate(result.toolCallId) === true)) {
+					this._earlyTurnStarts++;
+					await this._emitExtensionTurnStart();
+				}
 				return { entries: this._durableBoundaryEntries(boundary.entries) };
 			},
 		};
@@ -858,6 +873,7 @@ export class AgentSession {
 		if (event.type === "agent_end") {
 			this._runEnded = true;
 			this._settling = true;
+			this._earlyTurnStarts = 0;
 		}
 		if (event.type === "agent_settled") {
 			await this._settleRun(event.outcome);
@@ -906,8 +922,10 @@ export class AgentSession {
 			)
 				this._emit({ type: "entry_appended", entry });
 		}
-		if (event.type === "agent_start") await this._extensionRunner.emit({ type: "agent_start" });
-		else if (event.type === "agent_end")
+		if (event.type === "agent_start") {
+			if (this._earlyAgentStart) this._earlyAgentStart = false;
+			else await this._extensionRunner.emit({ type: "agent_start" });
+		} else if (event.type === "agent_end")
 			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
 		else if (event.type === "compaction_end") {
 			const entry = getLatestCompactionEntry(this.sessionManager.getBranch());
@@ -929,9 +947,10 @@ export class AgentSession {
 					fromExtension: false,
 				});
 			}
-		} else if (event.type === "turn_start")
-			await this._extensionRunner.emit({ type: "turn_start", turnIndex: this._turnIndex++, timestamp: Date.now() });
-		else if (event.type === "message_start")
+		} else if (event.type === "turn_start") {
+			if (this._earlyTurnStarts > 0) this._earlyTurnStarts--;
+			else await this._emitExtensionTurnStart();
+		} else if (event.type === "message_start")
 			await this._extensionRunner.emit({ type: "message_start", message: event.message });
 		else if (event.type === "message_update")
 			await this._extensionRunner.emit({
@@ -1423,7 +1442,53 @@ export class AgentSession {
 		});
 		for (const name of validToolNames) this._pendingToolNames.delete(name);
 		this._rebuildSystemPrompt(validToolNames);
+		this._syncDurableLoadout();
 		this._extensionRunner.notifyToolsChanged();
+	}
+
+	private async _emitExtensionTurnStart(): Promise<void> {
+		await this._extensionRunner.emit({ type: "turn_start", turnIndex: this._turnIndex++, timestamp: Date.now() });
+	}
+
+	/** Run extension `agent_start` and `turn_start` handlers for a run the host is about to start. */
+	private async _emitRunStartEarly(): Promise<void> {
+		this._earlyAgentStart = true;
+		await this._extensionRunner.emit({ type: "agent_start" });
+		this._earlyTurnStarts++;
+		await this._emitExtensionTurnStart();
+	}
+
+	/** Pi's structured prompt sections for `options`, in order; a forced prompt is one opaque section. */
+	private _promptSections(options: NormalizedBuildSystemPromptOptions): PromptSection[] {
+		const state = buildSystemPromptState(options);
+		if (state.sections === undefined) return state.content === "" ? [] : [{ key: "preamble", value: state.content }];
+		return Object.entries(state.sections).map(([key, value]) => ({ key, value }));
+	}
+
+	/** The active tools, in order. */
+	private _activeAgentTools(): AgentTool[] {
+		return [...this.agent.state.tools];
+	}
+
+	/**
+	 * Hand the active tools to the engine. During a run the prompt follows them before the next request, keeping the
+	 * run's `before_agent_start` changes, as pi refreshed it before each turn.
+	 */
+	private _syncDurableLoadout(): void {
+		const engine = this._engine;
+		if (engine === undefined) return;
+		engine.setTools(this._activeAgentTools());
+		const runOptions = this._runSystemPromptOptions;
+		if (!this._isAgentRunActive || runOptions === undefined) return;
+		const options = normalizeBuildSystemPromptOptions({
+			...runOptions,
+			selectedTools: this.getActiveToolNames(),
+			toolSnippets: { ...this._baseSystemPromptOptions.toolSnippets, ...runOptions.toolSnippets },
+			toolGuidelines: { ...this._baseSystemPromptOptions.toolGuidelines, ...runOptions.toolGuidelines },
+		});
+		// Keep session.systemPrompt and ctx.getSystemPrompt() in step with what the provider sees.
+		this._runSystemPromptOptions = options;
+		this._trackDelivery(engine.setPrompt(this._promptSections(options)), "set_active_tools");
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1706,6 +1771,7 @@ export class AgentSession {
 		this._flushPendingBashMessages();
 		if (!this.model) throw new Error(formatNoModelSelectedMessage());
 		await this._getRequiredRequestAuth(this.model);
+		const selectedToolsBefore = [...this._baseSystemPromptOptions.selectedTools];
 		const before = await this._extensionRunner.emitBeforeAgentStart(
 			expanded,
 			currentImages,
@@ -1736,7 +1802,15 @@ export class AgentSession {
 		}
 		messages.push(...this.agent.peekQueuedMessages());
 		this.agent.clearAllQueues();
+		// Handlers may edit selectedTools or call setActiveTools(), which updates the live loadout instead. An explicit
+		// edit wins; otherwise the live loadout is authoritative, so a setActiveTools() call is not undone here.
+		const handlerEditedTools =
+			before.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
+			before.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
+		if (handlerEditedTools) this.setActiveToolsByName(before.systemPromptOptions.selectedTools);
+		before.systemPromptOptions.selectedTools = this.getActiveToolNames();
 		this._runSystemPromptOptions = before.systemPromptOptions;
+		this._pendingToolNames.clear();
 		preflightResult?.("started");
 		this._isAgentRunActive = true;
 		this._agentRunAbortRequested = false;
@@ -1746,8 +1820,11 @@ export class AgentSession {
 		try {
 			const engine = await this._engineOrThrow();
 			await engine.markSettlementPending();
+			// Handlers may change the loadout; the run's first request offers it.
+			await this._emitRunStartEarly();
 			submission = await engine.prompt(content, {
-				systemPrompt: buildSystemPrompt(before.systemPromptOptions),
+				systemPrompt: this._promptSections(this._runSystemPromptOptions ?? before.systemPromptOptions),
+				tools: this._activeAgentTools(),
 				messages,
 				whenBusy: "reject",
 			});

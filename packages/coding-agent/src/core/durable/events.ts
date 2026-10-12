@@ -26,6 +26,7 @@ import type { AgentSessionEvent } from "../agent-session.ts";
 import type { CompactionResult } from "../compaction/index.ts";
 import type { AgentActivityOutcome } from "../extensions/types.ts";
 import { type CompactionRecord, compactionSummaryText, findCompactionRecord, storedAgentMessage } from "./entries.ts";
+import type { ResultExtras } from "./registry.ts";
 
 /** Pi session events the adapter produces. */
 export type DurableSessionEvent = AgentSessionEvent;
@@ -42,6 +43,8 @@ export interface EventAdapterHost {
 	maxRetries(): number;
 	now(): number;
 	report(error: unknown): void;
+	/** A finished call's `structuredContent` and `terminate`, which the result entry does not carry; taken once. */
+	takeResultExtras?(toolCallId: string): ResultExtras | undefined;
 }
 
 type Block = AssistantMessage["content"][number];
@@ -434,6 +437,9 @@ export class DurableEventAdapter {
 					}
 				: { content: [], details: {} };
 		const isError = message?.role === "toolResult" ? message.isError : true;
+		const extras = this.#host.takeResultExtras?.(event.toolCallId);
+		if (extras?.structuredContent !== undefined) result.structuredContent = extras.structuredContent;
+		if (extras?.terminate === true) result.terminate = true;
 		await this.#host.emit({
 			type: "tool_execution_end",
 			toolCallId: event.toolCallId,

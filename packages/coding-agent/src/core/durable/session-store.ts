@@ -70,6 +70,9 @@ function createSwitchableSettings(current: () => HarnessSettings): HarnessSettin
 		get followUpMode() {
 			return current().followUpMode;
 		},
+		get toolErrorText() {
+			return current().toolErrorText;
+		},
 	};
 }
 

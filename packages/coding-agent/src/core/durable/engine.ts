@@ -36,7 +36,10 @@ import {
 	createPendingResults,
 	createPromptExtension,
 	createToolsExtension,
+	PROMPT_SECTION_KEY,
 	PromptDoc,
+	type PromptSection,
+	storedPromptSections,
 } from "./registry.ts";
 import type { DurableSessionStore } from "./session-store.ts";
 import { createHarnessSettings } from "./settings.ts";
@@ -65,8 +68,13 @@ export type DurableEngineOptions = {
 
 /** Options of {@link DurableEngine.prompt}. */
 export type DurablePromptOptions = {
-	/** Effective system prompt for this run, after `before_agent_start`. Absent keeps the stored one. */
-	readonly systemPrompt?: string;
+	/**
+	 * Effective system prompt for this run, after `before_agent_start`: ordered sections, or one text. Absent keeps the
+	 * stored one.
+	 */
+	readonly systemPrompt?: string | readonly PromptSection[];
+	/** Tools offered from this run on; absent keeps the current ones. */
+	readonly tools?: readonly AgentTool[];
 	/** Messages placed right after the input in its placement commit, as pi places `before_agent_start` messages. */
 	readonly messages?: readonly AgentMessage[];
 	/** What to do when the conversation is busy; default `reject` (throws `ConversationBusy`). */
@@ -104,6 +112,8 @@ export class DurableEngine {
 	#adapter: DurableEventAdapter | undefined;
 	#model: Model<Api> | undefined;
 	#closed = false;
+	/** Keys of the installed prompt extension's sections, in order. */
+	#promptKeys: string[] = [PROMPT_SECTION_KEY];
 
 	private constructor(
 		harness: Harness,
@@ -190,6 +200,8 @@ export class DurableEngine {
 				id === ROOT_CONVERSATION_ID ? await harness.root(context) : await harness.conversation(id, context);
 			if (conversation === undefined) throw new Error(`Conversation ${id} does not exist`);
 			engine = new DurableEngine(harness, registry, lock, conversation, options, pending, store);
+			// A resumed request renders the stored prompt's sections.
+			engine.#installPromptKeys(storedPromptSections(await harness.snapshot(PromptDoc, conversation.id, context)));
 			await engine.#configureModel(context);
 			await engine.#attach();
 			harness.resume();
@@ -220,8 +232,17 @@ export class DurableEngine {
 	 */
 	async prompt(content: UserInput, options: DurablePromptOptions = {}): Promise<Submission> {
 		const context = BACKGROUND_CONTEXT;
+		if (options.tools !== undefined) this.setTools(options.tools);
 		const systemPrompt = options.systemPrompt;
-		if (systemPrompt !== undefined) await this.#storePrompt(systemPrompt, context);
+		if (systemPrompt !== undefined) {
+			const sections =
+				typeof systemPrompt !== "string"
+					? systemPrompt
+					: systemPrompt === ""
+						? []
+						: [{ key: PROMPT_SECTION_KEY, value: systemPrompt }];
+			await this.#storePrompt(sections, context);
+		}
 		const convert = this.#options.hooks?.convertToLlm ?? convertToLlm;
 		const after = (options.messages ?? []).map((message) => agentMessageEntry(message, convert));
 		return this.#conversation.submit(
@@ -299,6 +320,11 @@ export class DurableEngine {
 		);
 	}
 
+	/** Whether a finished call's result asked to end the run (`terminate`), before its event takes the value. */
+	peekResultTerminate(toolCallId: string): boolean {
+		return this.#pending.extras.get(toolCallId)?.terminate === true;
+	}
+
 	/** Resolve once listeners received the events of every committed entry and no run is open. */
 	delivered(): Promise<void> {
 		return this.#drain();
@@ -360,6 +386,14 @@ export class DurableEngine {
 	}
 
 	/**
+	 * Replace the effective prompt during a run, such as after the active tools changed; the next request renders it
+	 * through a `pi.system` change. Idle, `prompt()` stores the run's prompt instead.
+	 */
+	async setPrompt(sections: readonly PromptSection[]): Promise<void> {
+		await this.#storePrompt(sections, BACKGROUND_CONTEXT);
+	}
+
+	/**
 	 * Fork the conversation after `at` and switch to the fork; the source conversation stays as it is. Returns the new
 	 * conversation's ID, which the host persists to reopen it.
 	 */
@@ -411,19 +445,31 @@ export class DurableEngine {
 	 * Store the effective prompt and, when idle, append the `pi.system` entries the next request needs, in one commit.
 	 * When the conversation is busy or its tail moved since the view was read, generation preparation appends them.
 	 */
-	async #storePrompt(text: string, context: Context): Promise<void> {
+	async #storePrompt(sections: readonly PromptSection[], context: Context): Promise<void> {
 		const conversation = this.#conversation;
+		this.#installPromptKeys(sections);
 		const [view, agent] = await Promise.all([conversation.context(context), conversation.agent(context)]);
 		const tail = view.entries[view.entries.length - 1]?.id;
-		const drafts = planSystemEntries(view, text, agent.tools, Date.now());
+		const drafts = planSystemEntries(view, sections, agent.tools, Date.now());
 		await conversation.commit(async (tx) => {
 			const doc = await tx.doc(PromptDoc, conversation.id);
-			if (doc.text !== text) doc.text = text;
+			if (JSON.stringify(storedPromptSections(doc)) !== JSON.stringify(sections)) {
+				doc.sections = sections.map((part) => ({ key: part.key, value: part.value }));
+				doc.text = "";
+			}
 			if ((await tx.doc(LiveDoc, conversation.id)).run !== undefined) return;
 			const newest = (await tx.scanEntries({ conversationId: conversation.id }, 1)).items[0]?.id;
 			if (newest !== tail) return;
 			for (const draft of drafts) await tx.appendEntry(SystemEntry, conversation.id, draft);
 		}, context);
+	}
+
+	/** Reinstall the prompt extension when the section keys or their order changed. */
+	#installPromptKeys(sections: readonly PromptSection[]): void {
+		const keys = sections.map((part) => part.key);
+		if (keys.join("\u0000") === this.#promptKeys.join("\u0000")) return;
+		this.#promptKeys = keys;
+		this.#registry.install(createPromptExtension(keys));
 	}
 
 	async #configureModel(context: Context): Promise<void> {
@@ -453,6 +499,11 @@ export class DurableEngine {
 				return task?.state.status === "terminal" ? task.state.outcome : undefined;
 			},
 			entriesAfter: (id) => this.#entriesAfter(id),
+			takeResultExtras: (toolCallId) => {
+				const extras = this.#pending.extras.get(toolCallId);
+				this.#pending.extras.delete(toolCallId);
+				return extras;
+			},
 			maxRetries: () => this.#options.settingsManager.getRetrySettings().maxRetries,
 			now: () => Date.now(),
 			report: (error) => this.#options.onReport?.(error),

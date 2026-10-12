@@ -1,14 +1,14 @@
 import type { SystemMessage, Tool, ToolReference } from "@earendil-works/pi-ai";
 import { declarationsEqual, getCurrentTools, toToolDeclaration } from "@earendil-works/pi-ai/utils/transcript";
 import { type ContextEdit, type ContextView, SystemEntry, type TypedEntryDraft } from "@earendil-works/pi-durable";
-import { PROMPT_SECTION_KEY } from "./registry.ts";
+import type { PromptSection } from "./registry.ts";
 
 type SystemDraft = TypedEntryDraft<never>;
 type ToolChanges = { readonly toolsRemoved: ToolReference[]; readonly toolsAdded: Tool[] };
 
 /**
  * The `pi.system` entries durable's generation preparation would append for `prompt` and `tools`, planned the same way
- * (durable `harness/prompt.ts`, `planSystemEntries`) for the engine's single untagged section. The engine appends them
+ * (durable `harness/prompt.ts`, `planSystemEntries`) for the engine's prompt sections. The engine appends them
  * before the run's input, so the system message precedes the user message as in pi's loop; preparation then finds the
  * prompt and tools already in effect and appends nothing.
  *
@@ -17,11 +17,11 @@ type ToolChanges = { readonly toolsRemoved: ToolReference[]; readonly toolsAdded
  */
 export function planSystemEntries(
 	view: ContextView,
-	prompt: string,
+	prompt: readonly PromptSection[],
 	tools: readonly Tool[],
 	timestamp: number,
 ): SystemDraft[] {
-	const desired = new Map<string, string>(prompt === "" ? [] : [[PROMPT_SECTION_KEY, prompt]]);
+	const desired = new Map<string, string>(prompt.map((part) => [part.key, part.value]));
 	const head = view.head;
 	if (head !== undefined && !view.entries.some((entry) => SystemEntry.is(entry) && entry.id > head.id)) {
 		const edits: ContextEdit[] = view.entries

@@ -62,5 +62,7 @@ export function createHarnessSettings(settings: SettingsManager, currentModel: C
 			return settings.getFollowUpMode();
 		},
 		toolExecution: "parallel",
+		// Pi's texts for calls the model made to tools it was not offered, and for calls an abort left unstarted.
+		toolErrorText: (code, toolName) => (code === "aborted" ? "Operation aborted" : `Tool ${toolName} not found`),
 	};
 }

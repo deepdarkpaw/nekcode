@@ -27,8 +27,11 @@ export const PROMPT_EXTENSION = "nek-prompt";
 export const HOOKS_EXTENSION = "nek-hooks";
 export const TOOLS_EXTENSION = "nek-tools";
 
-/** Section key of the effective system prompt. */
+/** Section key of a prompt stored as one text (sessions written before keyed sections). */
 export const PROMPT_SECTION_KEY = "nek";
+
+/** One named part of the system prompt, rendered verbatim (pi's sections carry their own tags). */
+export type PromptSection = { key: string; value: string };
 
 /** Built-in tools whose interrupted calls rerun after a crash: they only read, so a second run is harmless. */
 export const REPLAY_SAFE_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -47,10 +50,11 @@ export const REPLAY_SAFE_TOOL_NAMES: ReadonlySet<string> = new Set([
 const UNBOUNDED = Number.MAX_SAFE_INTEGER;
 
 /**
- * The effective system prompt of a conversation for its current run, after `before_agent_start`. It lives in a
- * document so a request prepared after a crash renders exactly the prompt the run started with.
+ * The effective system prompt of a conversation for its current run, after `before_agent_start`, as pi's ordered
+ * sections. It lives in a document so a request prepared after a crash renders exactly the prompt the run started
+ * with. `text` holds a prompt stored as one text, rendered under {@link PROMPT_SECTION_KEY} when `sections` is absent.
  */
-export const PromptDoc = defineDoc<{ text: string }>({
+export const PromptDoc = defineDoc<{ text: string; sections?: PromptSection[] }>({
 	kind: "nek.prompt",
 	version: 1,
 	scope: "conversation",
@@ -63,20 +67,30 @@ export const PromptDoc = defineDoc<{ text: string }>({
 const BLOCK_MEMO = "nek:block";
 type BlockMemo = { reason: string; terminate: boolean };
 
-/** Prompt extension: one untagged section rendering the conversation's stored effective prompt. */
-export function createPromptExtension(): Extension {
+/** The stored prompt's sections in order; a prompt stored as one text is one section. */
+export function storedPromptSections(doc: { text: string; sections?: PromptSection[] } | undefined): PromptSection[] {
+	if (doc === undefined) return [];
+	if (doc.sections !== undefined) return doc.sections;
+	return doc.text === "" ? [] : [{ key: PROMPT_SECTION_KEY, value: doc.text }];
+}
+
+/**
+ * Prompt extension: one untagged section per key, in order, each rendering the conversation's stored value. The host
+ * reinstalls it when the keys change; durable renders sections in extension order.
+ */
+export function createPromptExtension(keys: readonly string[] = [PROMPT_SECTION_KEY]): Extension {
 	return defineExtension({
 		name: PROMPT_EXTENSION,
-		sections: [
+		sections: keys.map((key) =>
 			section(
-				PROMPT_SECTION_KEY,
+				key,
 				async (input, context) => {
-					const text = (await input.read.snapshot(PromptDoc, input.conversationId, context))?.text;
-					return text === undefined || text === "" ? undefined : text;
+					const doc = await input.read.snapshot(PromptDoc, input.conversationId, context);
+					return storedPromptSections(doc).find((part) => part.key === key)?.value;
 				},
 				{ tag: false },
 			),
-		],
+		),
 	});
 }
 
@@ -84,7 +98,21 @@ export function createPromptExtension(): Extension {
  * Values a wrapped tool reports that the result entry cannot carry, kept until `afterTool` of the same task reads
  * them. In memory only: a crash loses them, like the rest of an unfinished execution.
  */
-type PendingResults = Map<number, { readonly structuredContent: AgentToolResult["structuredContent"] }>;
+export type PendingResults = {
+	/** `structuredContent` a tool returned, by tool task, for `afterTool`. */
+	readonly byTask: Map<number, { readonly structuredContent: AgentToolResult["structuredContent"] }>;
+	/**
+	 * The final result's `structuredContent` and `terminate`, by tool call ID, until the call's `tool_execution_end`
+	 * event takes them; durable's result entry has no place for them.
+	 */
+	readonly extras: Map<string, ResultExtras>;
+};
+
+/** The parts of a pi tool result that only events carry. */
+export type ResultExtras = {
+	readonly structuredContent?: AgentToolResult["structuredContent"];
+	readonly terminate?: boolean;
+};
 
 /** What the hook extension needs from the engine. */
 export type HookBridge = CompactionBridge & {
@@ -93,7 +121,12 @@ export type HookBridge = CompactionBridge & {
 };
 
 export function createPendingResults(): PendingResults {
-	return new Map();
+	return { byTask: new Map(), extras: new Map() };
+}
+
+function setExtras(pending: PendingResults, callId: string, extras: ResultExtras): void {
+	if (extras.structuredContent === undefined && extras.terminate !== true) pending.extras.delete(callId);
+	else pending.extras.set(callId, extras);
 }
 
 /**
@@ -127,7 +160,10 @@ export function toDurableTool(tool: AgentTool, pending: PendingResults): ToolReg
 		outputLimits: { maxBytes: UNBOUNDED, maxLines: UNBOUNDED, retain: tool.name === "bash" ? "tail" : "head" },
 		execute: async (args, api, context) => {
 			const blocked = await api.memo<BlockMemo>(BLOCK_MEMO, context);
-			if (blocked !== undefined) return blockedResult(blocked);
+			if (blocked !== undefined) {
+				setExtras(pending, api.callId, { terminate: blocked.terminate });
+				return blockedResult(blocked);
+			}
 			const signal = context.abortSignal;
 			let result: AgentToolResult<unknown>;
 			try {
@@ -136,8 +172,12 @@ export function toDurableTool(tool: AgentTool, pending: PendingResults): ToolReg
 				return errorResult(error instanceof Error ? error.message : String(error));
 			}
 			if (result.structuredContent !== undefined) {
-				pending.set(api.taskId, { structuredContent: result.structuredContent });
+				pending.byTask.set(api.taskId, { structuredContent: result.structuredContent });
 			}
+			setExtras(pending, api.callId, {
+				...(result.structuredContent === undefined ? {} : { structuredContent: result.structuredContent }),
+				...(result.terminate === true ? { terminate: true } : {}),
+			});
 			return {
 				content: result.content ?? [],
 				details: toStrictJson(result.details),
@@ -248,8 +288,8 @@ export function createHookExtension(bridge: HookBridge): Extension {
 				},
 				// Runs after execution and before the result commit; a crash in between reruns the call or interrupts it.
 				afterTool: async (call, result, api, context) => {
-					const stored = bridge.pending.get(api.taskId);
-					bridge.pending.delete(api.taskId);
+					const stored = bridge.pending.byTask.get(api.taskId);
+					bridge.pending.byTask.delete(api.taskId);
 					if (bridge.hooks.toolResult === undefined) return undefined;
 					if ((await api.memo<BlockMemo>(BLOCK_MEMO, context)) !== undefined) return undefined;
 					const content = (result.content ?? []) as (TextContent | ImageContent)[];
@@ -264,6 +304,18 @@ export function createHookExtension(bridge: HookBridge): Extension {
 						...(result.usage === undefined ? {} : { usage: result.usage }),
 					});
 					if (patch === undefined) return undefined;
+					// A new structured result replaces the tool's; new content without one drops it, as in pi.
+					const structuredContent =
+						patch.structuredContent !== undefined
+							? patch.structuredContent
+							: patch.content !== undefined
+								? undefined
+								: stored?.structuredContent;
+					const previous = bridge.pending.extras.get(call.id);
+					setExtras(bridge.pending, call.id, {
+						...(structuredContent === undefined ? {} : { structuredContent }),
+						...(previous?.terminate === true ? { terminate: true } : {}),
+					});
 					return {
 						...result,
 						content: patch.content ?? content,
