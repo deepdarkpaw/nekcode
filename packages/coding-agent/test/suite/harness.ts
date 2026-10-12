@@ -15,7 +15,7 @@ import type {
 	Model,
 	ToolResultMessage,
 } from "@earendil-works/pi-ai/compat";
-import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { registerFauxProvider, streamSimple } from "@earendil-works/pi-ai/compat";
 import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type { ExtensionRunner, ExtensionUIContext } from "../../src/core/extensions/index.ts";
@@ -202,8 +202,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 			tools: [],
 		},
 		convertToLlm,
-		// Agent is retained as the public state holder; DurableEngine owns execution.
-		streamFn: modelRuntime.streamSimple.bind(modelRuntime),
+		// Agent is retained as the public state holder; DurableEngine owns execution. Host-side summarization (manual
+		// compaction, branch summaries) still streams through it, as in pi.
+		streamFn: streamSimple,
 	});
 	const extensionsResult = options.extensionFactories
 		? await createTestExtensionsResult(options.extensionFactories, tempDir)

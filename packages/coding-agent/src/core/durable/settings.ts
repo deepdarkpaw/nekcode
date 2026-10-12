@@ -28,7 +28,12 @@ export type CurrentModel = () => { readonly provider: string; readonly id: strin
  * `HarnessSettings` read live from pi's `SettingsManager`. Durable resolves settings at every use and pins the
  * request-relevant parts into checkpoints, so every getter returns strict JSON (no `undefined` fields).
  */
-export function createHarnessSettings(settings: SettingsManager, currentModel: CurrentModel): HarnessSettings {
+export function createHarnessSettings(
+	settings: SettingsManager,
+	currentModel: CurrentModel,
+	options: { readonly autoCompaction?: boolean } = {},
+): HarnessSettings {
+	const autoCompaction = options.autoCompaction ?? true;
 	return {
 		get stream(): ConversationStreamOptions {
 			const provider = settings.getProviderRetrySettings();
@@ -46,8 +51,10 @@ export function createHarnessSettings(settings: SettingsManager, currentModel: C
 		},
 		get compaction(): CompactionPolicy {
 			const model = currentModel();
-			// Pi compacts only at the blocking threshold, so durable's background compaction stays off.
-			return { ...settings.getCompactionSettings(model), backgroundTokens: 0 };
+			// Pi compacts only at the blocking threshold, so durable's background compaction stays off. A host that runs
+			// pi's own automatic compaction turns durable's off entirely; manual compaction ignores `enabled`.
+			const compaction = { ...settings.getCompactionSettings(model), backgroundTokens: 0 };
+			return autoCompaction ? compaction : { ...compaction, enabled: false };
 		},
 		get progress(): ProgressPolicy {
 			return {

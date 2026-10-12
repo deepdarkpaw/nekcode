@@ -108,6 +108,19 @@ export const SettlementDoc = defineDoc<{ pending: boolean }>({
 	initial: () => ({ pending: false }),
 });
 
+/**
+ * A manual compaction in progress, so a session reopened after a crash during it compacts again. Absent `pending` or
+ * `false`: none.
+ */
+export const CompactionRequestDoc = defineDoc<{ pending: boolean; instructions?: string }>({
+	kind: "nek.compaction-request",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	initial: () => ({ pending: false }),
+});
+
 export function hashSummary(summary: string): string {
 	return createHash("sha256").update(summary).digest("hex").slice(0, 32);
 }

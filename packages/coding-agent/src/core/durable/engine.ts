@@ -26,7 +26,13 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { convertToLlm } from "../messages.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import { agentContext } from "./context.ts";
-import { agentMessageEntry, CompactionDetailsDoc, type CompactionRecord, SettlementDoc } from "./entries.ts";
+import {
+	agentMessageEntry,
+	CompactionDetailsDoc,
+	type CompactionRecord,
+	CompactionRequestDoc,
+	SettlementDoc,
+} from "./entries.ts";
 import { DurableEventAdapter, type DurableSessionEvent } from "./events.ts";
 import type { DurableHostHooks } from "./hooks.ts";
 import { acquireSessionLock, type SessionLock, sessionLockPath } from "./lock.ts";
@@ -60,6 +66,11 @@ export type DurableEngineOptions = {
 	readonly thinkingLevel?: ThinkingLevel;
 	/** Pi extension callbacks; they may rerun after a crash (see {@link DurableHostHooks}). */
 	readonly hooks?: DurableHostHooks;
+	/**
+	 * Whether durable compacts automatically (threshold and overflow). `false` when the host runs pi's own automatic
+	 * compaction; default `true`.
+	 */
+	readonly autoCompaction?: boolean;
 	/** Conversation to attach to; default the root conversation. */
 	readonly conversationId?: ConversationId;
 	/** Extension and delivery failures that do not fail an operation. Must not throw. */
@@ -161,7 +172,9 @@ export class DurableEngine {
 		const report = (error: unknown): void => options.onReport?.(error);
 		let engine: DurableEngine | undefined;
 		const currentModel = () => (engine === undefined ? options.model : engine.#model);
-		const settings = createHarnessSettings(options.settingsManager, currentModel);
+		const settings = createHarnessSettings(options.settingsManager, currentModel, {
+			...(options.autoCompaction === undefined ? {} : { autoCompaction: options.autoCompaction }),
+		});
 		const pending = createPendingResults();
 		registry.install(createPromptExtension());
 		registry.install(
@@ -310,6 +323,44 @@ export class DurableEngine {
 			const doc = await tx.doc(SettlementDoc, conversationId);
 			if (doc.pending) doc.pending = false;
 		}, BACKGROUND_CONTEXT);
+	}
+
+	/** Mark a manual compaction in progress; see `CompactionRequestDoc`. */
+	async markCompactionPending(instructions: string | undefined): Promise<void> {
+		const conversationId = this.#conversation.id;
+		await this.#conversation.commit(async (tx) => {
+			const doc = await tx.doc(CompactionRequestDoc, conversationId);
+			doc.pending = true;
+			if (instructions === undefined) delete doc.instructions;
+			else doc.instructions = instructions;
+		}, BACKGROUND_CONTEXT);
+	}
+
+	async clearCompactionPending(): Promise<void> {
+		const conversationId = this.#conversation.id;
+		await this.#conversation.commit(async (tx) => {
+			const doc = await tx.doc(CompactionRequestDoc, conversationId);
+			if (doc.pending) doc.pending = false;
+			delete doc.instructions;
+		}, BACKGROUND_CONTEXT);
+	}
+
+	/** The manual compaction a crash interrupted, if any. */
+	async compactionPending(): Promise<{ instructions?: string } | undefined> {
+		const doc = await this.harness.snapshot(CompactionRequestDoc, this.#conversation.id, BACKGROUND_CONTEXT);
+		if (doc?.pending !== true) return undefined;
+		return doc.instructions === undefined ? {} : { instructions: doc.instructions };
+	}
+
+	/**
+	 * Start a run from the current context without new input, as pi's `continue()`: the caller checked that the context
+	 * ends in a non-assistant message. Writes a hidden marker entry that carries the trigger.
+	 */
+	continueRun(): Promise<Submission> {
+		return this.#conversation.submit(
+			{ type: "write", entry: { kind: "nek.continue" }, trigger: true, continueContext: true },
+			BACKGROUND_CONTEXT,
+		);
 	}
 
 	/** Write a prepared entry; a triggered write starts a run when idle (see `appendMessage`). */
