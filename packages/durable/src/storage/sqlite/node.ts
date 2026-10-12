@@ -1,9 +1,25 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { StatementSync } from "node:sqlite";
 import { DatabaseSync } from "node:sqlite";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "./database.ts";
 import { SqliteStorage } from "./storage.ts";
+
+/**
+ * nek: the synchronous SQLite connection this adapter drives. `node:sqlite`'s `DatabaseSync` provides it; a host can
+ * open another driver's connection with `NodeSqliteStorageOptions.connect`.
+ */
+export interface SyncSqliteConnection {
+	exec(sql: string): void;
+	prepare(sql: string): SyncSqliteStatement;
+	close(): void;
+}
+
+/** nek: a prepared statement of a {@link SyncSqliteConnection}; `get` may return `null` or `undefined` for no row. */
+export interface SyncSqliteStatement {
+	run(...params: SqliteValue[]): unknown;
+	get(...params: SqliteValue[]): unknown;
+	all(...params: SqliteValue[]): unknown[];
+}
 
 /** Node SQLite connection settings for a durable storage file. */
 export type NodeSqliteStorageOptions = {
@@ -11,6 +27,8 @@ export type NodeSqliteStorageOptions = {
 	readonly walAutoCheckpointPages?: number;
 	/** Time SQLite waits for a competing file lock. SQLite defaults to 0; this adapter defaults to 5,000 ms. */
 	readonly busyTimeoutMs?: number;
+	/** nek: open the connection; default `node:sqlite`'s `DatabaseSync` with the busy timeout. */
+	readonly connect?: (path: string, busyTimeoutMs: number) => SyncSqliteConnection;
 };
 
 const DEFAULT_WAL_AUTO_CHECKPOINT_PAGES = 1_000;
@@ -74,10 +92,10 @@ class SerialOperationQueue {
  * database and its transaction handles share them across transactions.
  */
 abstract class NodeSqliteExecutor implements SqliteExecutor {
-	protected readonly database: DatabaseSync;
-	protected readonly statements: Map<string, StatementSync>;
+	protected readonly database: SyncSqliteConnection;
+	protected readonly statements: Map<string, SyncSqliteStatement>;
 
-	constructor(database: DatabaseSync, statements: Map<string, StatementSync>) {
+	constructor(database: SyncSqliteConnection, statements: Map<string, SyncSqliteStatement>) {
 		this.database = database;
 		this.statements = statements;
 	}
@@ -95,7 +113,7 @@ abstract class NodeSqliteExecutor implements SqliteExecutor {
 	}
 
 	get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined> {
-		return this.runOperation(() => this.statement(sql).get(...params) as T | undefined);
+		return this.runOperation(() => (this.statement(sql).get(...params) ?? undefined) as T | undefined);
 	}
 
 	all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]> {
@@ -104,7 +122,7 @@ abstract class NodeSqliteExecutor implements SqliteExecutor {
 
 	protected abstract runOperation<T>(operation: () => T): Promise<T>;
 
-	private statement(sql: string): StatementSync {
+	private statement(sql: string): SyncSqliteStatement {
 		let statement = this.statements.get(sql);
 		if (statement === undefined) {
 			statement = this.database.prepare(sql);
@@ -117,7 +135,7 @@ abstract class NodeSqliteExecutor implements SqliteExecutor {
 class NodeSqliteTransaction extends NodeSqliteExecutor {
 	private readonly scope: TransactionScope;
 
-	constructor(database: DatabaseSync, statements: Map<string, StatementSync>, scope: TransactionScope) {
+	constructor(database: SyncSqliteConnection, statements: Map<string, SyncSqliteStatement>, scope: TransactionScope) {
 		super(database, statements);
 		this.scope = scope;
 	}
@@ -133,7 +151,7 @@ export class NodeSqliteDatabase extends NodeSqliteExecutor implements SqliteData
 	private readonly access = new SerialOperationQueue();
 	private closed = false;
 
-	constructor(database: DatabaseSync) {
+	constructor(database: SyncSqliteConnection) {
 		super(database, new Map());
 	}
 
@@ -184,7 +202,7 @@ export async function openNodeSqliteDatabase(
 	const checkpointPages = options.walAutoCheckpointPages ?? DEFAULT_WAL_AUTO_CHECKPOINT_PAGES;
 	const timeout = options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
 	if (path !== ":memory:") await mkdir(dirname(path), { recursive: true });
-	const database = new DatabaseSync(path, { timeout });
+	const database = options.connect?.(path, timeout) ?? new DatabaseSync(path, { timeout });
 	const adapter = new NodeSqliteDatabase(database);
 	try {
 		await adapter.exec("PRAGMA journal_mode = WAL");
