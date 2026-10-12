@@ -202,4 +202,20 @@ describe("durable session listing", () => {
 		expect((await SessionManager.list("/work/project", directory))[0]?.firstMessage).toBe("real first message");
 		expect(existsSync(sidecar)).toBe(true);
 	});
+
+	it("describes the Harness's own commits in the sidecar written when the store closes", async () => {
+		const directory = dir();
+		const database = persisted(directory, "before the engine");
+		const session = SessionManager.open(database);
+		const store = session.durableStore();
+		const harness = await store.pin();
+		const conversation = await harness.conversation(ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
+		const user = { role: "user", content: "written by the engine", timestamp: Date.now() } as const;
+		await conversation!.submit({ type: "write", entry: { kind: "pi.user", model: [user] } }, BACKGROUND_CONTEXT);
+		await store.unpin();
+
+		const [info] = await SessionManager.list("/work/project", directory);
+		expect(info?.messageCount).toBe(3);
+		expect(JSON.parse(readFileSync(sidecarPath(database), "utf8")).messageCount).toBe(3);
+	});
 });

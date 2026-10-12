@@ -1,4 +1,3 @@
-import { DatabaseSync } from "node:sqlite";
 import {
 	type ConversationId,
 	type ConversationRecord,
@@ -6,8 +5,10 @@ import {
 	type EntryRecord,
 	ROOT_CONVERSATION_ID,
 } from "@earendil-works/pi-durable";
+import type { SyncSqliteConnection } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { FileEntry, SessionEntry, SessionHeader } from "../session-entries.ts";
 import { derivedEntryId, hasStoredEntry, projectRecord, SESSION_HEADER_KIND } from "./session-format.ts";
+import { openSqlite } from "./sqlite.ts";
 
 /**
  * Synchronous read of a durable session database.
@@ -29,8 +30,8 @@ export type SessionSnapshot = {
 
 type RecordRow = { readonly record: string };
 
-function openDatabase(path: string): DatabaseSync {
-	const db = new DatabaseSync(path, { readOnly: true });
+function openDatabase(path: string): SyncSqliteConnection {
+	const db = openSqlite(path, { readOnly: true });
 	try {
 		const row = db.prepare("SELECT version FROM durable_schema WHERE singleton = 1").get() as
 			| { version: number }

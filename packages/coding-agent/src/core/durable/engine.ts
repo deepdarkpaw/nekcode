@@ -22,7 +22,6 @@ import {
 	type UserInput,
 	watchEvents,
 } from "@earendil-works/pi-durable";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { convertToLlm } from "../messages.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import { agentContext } from "./context.ts";
@@ -49,6 +48,7 @@ import {
 } from "./registry.ts";
 import type { DurableSessionStore } from "./session-store.ts";
 import { createHarnessSettings } from "./settings.ts";
+import { openSqliteStorage } from "./sqlite.ts";
 
 /** Options of {@link DurableEngine.open}. */
 export type DurableEngineOptions = {
@@ -200,7 +200,7 @@ export class DurableEngine {
 			harness = await store.pin(context);
 		} else {
 			const storage: Storage =
-				options.path === undefined ? new MemoryStorage() : await openNodeSqliteStorage(options.path);
+				options.path === undefined ? new MemoryStorage() : await openSqliteStorage(options.path);
 			harness = await Harness.open(
 				storage,
 				{ models: options.models, registry, settings, onReport: report },

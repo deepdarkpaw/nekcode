@@ -21,7 +21,6 @@ import {
 	type Storage,
 	type Tx,
 } from "@earendil-works/pi-durable";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type SessionEntry, SessionInfoBuilder } from "../session-entries.ts";
 import { acquireSessionLock, type SessionLock, sessionLockPath } from "./lock.ts";
 import { HookedModels } from "./models.ts";
@@ -29,6 +28,7 @@ import { createSessionDatabase, StaleSessionPlacement, writePlansSync } from "./
 import type { EntryPlan } from "./session-format.ts";
 import { sidecarFromBuilder, writeSessionSidecar } from "./session-sidecar.ts";
 import { Placement, projectSnapshot, readSessionSnapshot } from "./session-snapshot.ts";
+import { openSqliteStorage } from "./sqlite.ts";
 
 /**
  * Harness options a host binds after the store opened its Harness: models, registry, and settings are switchable
@@ -189,10 +189,18 @@ export class DurableSessionStore {
 		this.#harness = undefined;
 		// Commits through the Harness advanced the database; placement is reread at the next write.
 		this.#placement = undefined;
+		// The Harness's own commits (inputs, answers, tool results) are not in the summary, so after it ran the summary
+		// is rebuilt from the database before the sidecar describes it. Without a fresh summary no sidecar is written,
+		// and listing rebuilds it from the database.
+		let summaryFresh = harness === undefined;
 		try {
-			if (harness !== undefined) await harness.close(BACKGROUND_CONTEXT);
+			if (harness !== undefined) {
+				await harness.close(BACKGROUND_CONTEXT);
+				this.#reload(this.path);
+				summaryFresh = true;
+			}
 		} finally {
-			this.#writeSidecar();
+			if (summaryFresh) this.#writeSidecar();
 			this.#lock?.release();
 			this.#lock = undefined;
 		}
@@ -333,7 +341,7 @@ export class DurableSessionStore {
 			// Nothing written yet: create the session empty, then continue on it.
 			if (!existsSync(this.path)) this.#create(this.path, []);
 			this.#reload(this.path);
-			storage = await openNodeSqliteStorage(this.path);
+			storage = await openSqliteStorage(this.path);
 		}
 		const harness = await Harness.open(
 			storage,

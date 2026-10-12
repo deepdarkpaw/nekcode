@@ -7,13 +7,16 @@
  */
 
 import { setupCli } from "@earendil-works/pi-coding-agent/cli/setup";
+import { setSqliteDriver } from "@earendil-works/pi-coding-agent/core/durable/sqlite";
 import { main } from "@earendil-works/pi-coding-agent/main";
 import { createOpenTuiModeFactory } from "./mode/opentui-mode.ts";
 import { RendererHost } from "./mode/renderer-host.ts";
 import { createStartupHost } from "./mode/startup-host.ts";
 import { createStartupUiHooks } from "./startup/index.ts";
+import { bunSqliteDriver } from "./storage/bun-sqlite.ts";
 
 setupCli();
+setSqliteDriver(bunSqliteDriver);
 const rendererHost = new RendererHost();
 
 await main(process.argv.slice(2), {

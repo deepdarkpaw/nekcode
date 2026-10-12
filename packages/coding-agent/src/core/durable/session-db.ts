@@ -1,4 +1,3 @@
-import { DatabaseSync } from "node:sqlite";
 import {
 	type ContextEdit,
 	type ConversationId,
@@ -8,9 +7,11 @@ import {
 	ROOT_CONVERSATION_ID,
 } from "@earendil-works/pi-durable";
 import { SQLITE_MIGRATIONS } from "@earendil-works/pi-durable/storage/sqlite";
+import type { SyncSqliteConnection } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { SessionEntry } from "../session-entries.ts";
 import type { EntryPlan } from "./session-format.ts";
 import type { Placement } from "./session-snapshot.ts";
+import { openSqlite } from "./sqlite.ts";
 
 /**
  * Synchronous writes to a durable session database, for `SessionManager` appends while no Harness has the database
@@ -27,14 +28,11 @@ import type { Placement } from "./session-snapshot.ts";
  * session lock and by SQLite's write lock (`BEGIN IMMEDIATE`).
  */
 const SUPPORTED_SCHEMA_VERSION = 1;
-const BUSY_TIMEOUT_MS = 5000;
 
 type MetadataRow = { readonly next_id: string; readonly next_seq: number };
 
-function connect(path: string): DatabaseSync {
-	const db = new DatabaseSync(path);
-	db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-	return db;
+function connect(path: string): SyncSqliteConnection {
+	return openSqlite(path);
 }
 
 /** Create the durable schema in a new, empty database file. */
@@ -117,11 +115,11 @@ export class StaleSessionPlacement extends Error {
 }
 
 class RowWriter {
-	readonly #db: DatabaseSync;
+	readonly #db: SyncSqliteConnection;
 	readonly #seq: number;
 	nextId: number;
 
-	constructor(db: DatabaseSync, nextId: number, seq: number) {
+	constructor(db: SyncSqliteConnection, nextId: number, seq: number) {
 		this.#db = db;
 		this.nextId = nextId;
 		this.#seq = seq;
