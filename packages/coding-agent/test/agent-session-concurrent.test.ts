@@ -16,7 +16,7 @@ import {
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -132,11 +132,8 @@ describe("AgentSession concurrent prompt guard", () => {
 		// Start first prompt (don't await, it will block until abort)
 		const firstPrompt = session.prompt("First message");
 
-		// Wait a tick for isStreaming to be set
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		// Verify we're streaming
-		expect(session.isStreaming).toBe(true);
+		// The run starts once the prompt's preflight finished; on the durable engine that is not within one fixed tick.
+		await vi.waitFor(() => expect(session.isStreaming).toBe(true));
 
 		// Second prompt should reject
 		await expect(session.prompt("Second message")).rejects.toThrow(

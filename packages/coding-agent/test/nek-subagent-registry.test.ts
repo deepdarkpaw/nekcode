@@ -190,8 +190,8 @@ describe("SubagentRegistry", () => {
 			"Subagent limit reached (2 running). Wait for one to finish or cancel one with /subagents.",
 		);
 		gate.open();
-		await registry.await(undefined, 5_000);
-		expect(registry.runningCount()).toBe(0);
+		// On the durable engine each child settles after its own commits, so the two finish one after the other.
+		await vi.waitFor(() => expect(registry.runningCount()).toBe(0), { timeout: 5_000 });
 	});
 
 	it("evicts the earliest finished observed record beyond maxRetained and disposes its session", async () => {
