@@ -31,6 +31,7 @@ import type {
 	Settings,
 	ToolControl,
 	ToolDiagnostic,
+	ToolErrorCode,
 	ToolExecutionApi,
 	ToolExecutionResult,
 	ToolHooks,
@@ -492,7 +493,7 @@ export function harnessError(code: string, message: string): ToolExecutionResult
 /** nek: a Harness tool error in the host's text when `settings.toolErrorText` supplies one, else `harnessError()`. */
 export function hostToolError(
 	settings: Settings,
-	code: "tool_unavailable" | "aborted",
+	code: ToolErrorCode,
 	toolName: string,
 	message: string,
 ): ToolExecutionResult {

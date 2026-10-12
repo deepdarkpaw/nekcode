@@ -525,6 +525,11 @@ async function classify(
 	if (message.stopReason === "toolUse" && calls.length > 0) {
 		return startToolRound(runtime, request, message, calls, context);
 	}
+	// nek: an answer cut at the output limit may carry truncated tool calls; each fails without running, as in pi, and
+	// the run continues so the model can reissue them.
+	if (message.stopReason === "length" && calls.length > 0) {
+		return startToolRound(runtime, request, message, calls, context, true);
+	}
 	if (message.stopReason === "stop" || message.stopReason === "length" || message.stopReason === "toolUse") {
 		return answer(runtime, message, context);
 	}
@@ -680,6 +685,7 @@ async function startToolRound(
 	message: AssistantMessage,
 	calls: readonly ToolCall[],
 	context: Context,
+	truncated = false,
 ): Promise<void> {
 	const conversationId = runtime.conversationId;
 	const messages = request.messages ?? (await runtime.context(conversationId, context, request.cutoff)).messages;
@@ -699,6 +705,17 @@ async function startToolRound(
 		const tools: TaskId<ToolTaskResult>[] = [];
 		const pending: string[] = [];
 		for (const call of calls) {
+			if (truncated) {
+				const failed = hostToolError(
+					runtime.settings,
+					"truncated",
+					call.name,
+					`Tool ${call.name} was not run: the answer hit the output limit, so its arguments may be truncated`,
+				);
+				const result = await appendToolResult(tx, conversationId, call, failed, runtime.now());
+				slots.push({ callId: call.id, name: call.name, status: "done", entry: result.id });
+				continue;
+			}
 			if (!offered.has(call.name)) {
 				const unavailable = hostToolError(
 					runtime.settings,

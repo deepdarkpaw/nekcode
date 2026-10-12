@@ -2600,7 +2600,12 @@ entries, so steering queued meanwhile joins the turn, unless a reset is
 queued.
 
 A request aborted before its first content leaves an empty `aborted` assistant
-entry (nek), as pi's loop records one.
+entry (nek), as pi's loop records one. An answer that stopped at the output
+limit (`length`) with tool calls starts a tool round in which every call fails
+without running (nek, `truncated`), as pi does, so the run continues and the
+model can reissue them. `HarnessSettings.toolErrorText(code, toolName)` (nek)
+words the Harness's own tool errors (`tool_unavailable`, `aborted`,
+`truncated`) instead of the `<harness>` diagnostic.
 
 ```ts
 type HookResult<T> = T | undefined | Promise<T | undefined>;
