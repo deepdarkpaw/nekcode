@@ -171,21 +171,27 @@ describe("AgentSession crash recovery through SessionManager reopen", { timeout:
 	it("reruns nek agent_before_settle continuation after reopen", async () => {
 		const path = sessionPath();
 		await killChild(await startChild(path, "before-settle", "before-settle"));
+		// Continue once: a handler that always continues makes pi's loop run forever.
+		let continued = false;
 		const harness = await reopen(path, {
-			responses: [fauxAssistantMessage("initial"), fauxAssistantMessage("continued")],
+			responses: [fauxAssistantMessage("continued")],
 			extensionFactories: [
 				(pi) => {
-					pi.on("agent_before_settle", () => ({
-						entries: [
-							{
-								type: "custom_message",
-								customType: "recovered-continuation",
-								content: "continue",
-								display: false,
-							},
-						],
-						continue: true,
-					}));
+					pi.on("agent_before_settle", () => {
+						if (continued) return;
+						continued = true;
+						return {
+							entries: [
+								{
+									type: "custom_message",
+									customType: "recovered-continuation",
+									content: "continue",
+									display: false,
+								},
+							],
+							continue: true,
+						};
+					});
 				},
 			],
 		});

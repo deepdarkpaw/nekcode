@@ -629,6 +629,8 @@ export class AgentSession {
 	 */
 	private async _resumeSettlement(engine: DurableEngine): Promise<void> {
 		const state = await engine.settlementState();
+		// A run resumed from the database is already active; its end settles it as usual.
+		if (!state.idle) this._isAgentRunActive = true;
 		if (!state.pending || !state.idle) return;
 		this._isAgentRunActive = true;
 		this._runEnded = true;
