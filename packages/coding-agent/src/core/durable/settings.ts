@@ -75,6 +75,8 @@ export function createHarnessSettings(
 				? "Operation aborted"
 				: code === "truncated"
 					? `Tool call "${toolName}" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.`
-					: `Tool ${toolName} not found`,
+					: code === "interrupted"
+						? `The ${toolName} call was interrupted because nekcode stopped before it finished; it may have partially run.`
+						: `Tool ${toolName} not found`,
 	};
 }

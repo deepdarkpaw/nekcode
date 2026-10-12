@@ -10,7 +10,7 @@ Reopen the session as usual, for example with `nek -c` or `/resume`. The interru
 |---|---|
 | Model streaming | The partial answer stays in the history as an aborted answer, and the request is sent again. |
 | A read-only tool (`read`, `grep`, `find`, `ls`, `ast_grep`, `web_search`) | The tool runs again. |
-| Any other tool (`bash`, `edit`, `write`, MCP and extension tools) | The call gets an "interrupted" error result, and the turn continues. The tool is not run twice, because its side effects may already have happened. |
+| Any other tool (`bash`, `edit`, `write`, MCP and extension tools) | The call's result keeps its partial output and says it was interrupted, and the turn continues; the model decides whether to run it again. The tool is not rerun automatically, because its side effects may already have happened. |
 | A foreground subagent | The same child session is reopened and continues its own interrupted turn; its result returns to the parent. |
 | A question or mode-switch dialog | The dialog opens again. |
 | Queued steering or follow-up messages | They are still queued and are delivered in order. |

@@ -141,6 +141,9 @@ describe("AgentSession crash recovery through SessionManager reopen", { timeout:
 		await withTimeout(harness.session.waitForIdle(), 30_000, "unsafe-tool reopen");
 		const result = harness.session.messages.findLast((message) => message.role === "toolResult");
 		expect(result?.role === "toolResult" ? result.isError : undefined).toBe(true);
+		const text = JSON.stringify(result?.role === "toolResult" ? result.content : undefined);
+		expect(text).toContain("The probe_unsafe call was interrupted because nekcode stopped");
+		expect(text).not.toContain("<harness>");
 		expect(harness.session.getLastAssistantText()).toBe("done");
 	});
 
