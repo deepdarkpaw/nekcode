@@ -300,19 +300,18 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			checkpoint.phase === "tools"
 				? await readCalls(runtime, checkpoint.assistant, checkpoint.pending, context)
 				: [];
-		// nek: a request aborted before its first content leaves an empty aborted answer, as pi's loop records it.
-		const requestModel =
-			checkpoint.phase === "request"
-				? runtime.models.getModel(checkpoint.model.provider, checkpoint.model.modelId)
-				: undefined;
+		// nek: a run aborted before its answer's first content (preparing its first request, or requesting) leaves an
+		// empty aborted answer, as pi's loop records one; pi ends a run aborted between turns without one.
+		let ref: ModelRef | undefined;
+		if (checkpoint.phase === "request") ref = checkpoint.model;
+		else if (checkpoint.phase === "prepare" && task.input.next === undefined)
+			ref = (await runtime.agent(context)).model;
+		const requestModel = ref === undefined ? undefined : runtime.models.getModel(ref.provider, ref.modelId);
 		await runtime.commit(async (tx) => {
 			const live = await tx.doc(LiveDoc, conversationId);
 			const generation = live.generation;
 			const contentless =
-				generation !== undefined &&
-				generation.message === undefined &&
-				generation.retry === undefined &&
-				generation.deferred === undefined;
+				generation?.message === undefined && generation?.retry === undefined && generation?.deferred === undefined;
 			await convertPartial(tx, live, conversationId);
 			if (requestModel !== undefined && contentless) {
 				await appendAssistant(tx, conversationId, abortedAnswer(requestModel, runtime.now()));
