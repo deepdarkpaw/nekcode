@@ -116,6 +116,8 @@ export class DurableEventAdapter {
 			batch.some((event) => event.type === "run_end") && batch.some((event) => event.type === "run_start");
 		const startsTurn = batch.some((event) => event.type === "turn_start" || event.type === "run_start");
 		const deferred: DurableMessageEnd[] = [];
+		// Durable lists retry events before the failed attempt's entry; pi announces the retry after that message ends.
+		const retries: { attempt: number; at: number; errorMessage: string }[] = [];
 		// Durable lists submission records after `run_end`; the run's outcome depends on them.
 		for (const event of batch) if (event.type === "submission") this.#noteSubmission(event.record);
 		for (const [index, event] of batch.entries()) {
@@ -163,7 +165,7 @@ export class DurableEventAdapter {
 					await this.#queueUpdate();
 					break;
 				case "auto_retry_start":
-					await this.#retryStart(event.attempt, event.at, event.errorMessage);
+					retries.push({ attempt: event.attempt, at: event.at, errorMessage: event.errorMessage });
 					break;
 				case "compaction_start":
 					await this.#host.emit({ type: "compaction_start", reason: event.reason });
@@ -183,6 +185,7 @@ export class DurableEventAdapter {
 		}
 		// Input placed without a turn change in this commit, such as a write placed into an idle conversation.
 		for (const end of deferred) await this.#messageEnd(end.entry);
+		for (const retry of retries) await this.#retryStart(retry.attempt, retry.at, retry.errorMessage);
 	}
 
 	#roleOf(entry: EntryRecord): string {

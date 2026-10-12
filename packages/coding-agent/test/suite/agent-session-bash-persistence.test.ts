@@ -263,7 +263,8 @@ describe("AgentSession bash and persistence characterization", () => {
 	});
 
 	it("persists aborted assistant messages", async () => {
-		const harness = await createHarness();
+		// (b#5) updates come from committed partials, so the faux stream must take real time to be aborted mid-stream.
+		const harness = await createHarness({ tokensPerSecond: 2000 });
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("x".repeat(20_000))]);
 

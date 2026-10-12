@@ -47,7 +47,8 @@ describe("AgentSession retry and event characterization", () => {
 		await harness.session.prompt("test");
 
 		expect(retryEvents).toEqual(["start:1", "end:true"]);
-		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, false]);
+		// (b#3) one run spans its retries: a single agent_end, never willRetry.
+		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([false]);
 		expect(harness.faux.state.callCount).toBe(2);
 		expect(harness.session.isRetrying).toBe(false);
 	});
@@ -117,7 +118,8 @@ describe("AgentSession retry and event characterization", () => {
 		await harness.session.prompt("test");
 
 		expect(retryEvents).toEqual(["start:1", "start:2", "end:false"]);
-		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, true, false]);
+		// (b#3) one run spans its retries: a single agent_end, never willRetry.
+		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([false]);
 		expect(harness.faux.state.callCount).toBe(3);
 		expect(harness.session.isRetrying).toBe(false);
 	});
@@ -369,7 +371,8 @@ describe("AgentSession retry and event characterization", () => {
 	});
 
 	it("emits agent_end for aborted runs and persists the aborted assistant message", async () => {
-		const harness = await createHarness();
+		// (b#5) updates come from committed partials, so the faux stream must take real time to be aborted mid-stream.
+		const harness = await createHarness({ tokensPerSecond: 2000 });
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("x".repeat(20_000))]);
 

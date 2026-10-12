@@ -377,8 +377,17 @@ export class AgentSession {
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
 
 	// Retry state
+	/** Set while durable waits to retry a failed request; `abortRetry()` cancels the retry. */
 	private _retryAbortController: AbortController | undefined = undefined;
 	private _retryAttempt = 0;
+	/** `abortRetry()` or `abort()` cancelled a pending retry; the run's retry end reports "Retry cancelled". */
+	private _retryCancelled = false;
+	/**
+	 * Durable asks `afterResponse` before it commits the answer, so the answer's `message_start` may not have been
+	 * delivered yet. The hook then emits it first, as pi does, and the stream skips its own.
+	 */
+	private _assistantStartedByHook = false;
+	private _assistantStreaming = false;
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -504,6 +513,12 @@ export class AgentSession {
 				return patch;
 			},
 			afterResponse: async ({ message }) => {
+				// May rerun after a crash before the answer commit (the request is resent).
+				if (!this._assistantStreaming) {
+					this._assistantStartedByHook = true;
+					await this._extensionRunner.emit({ type: "message_start", message });
+					this._emit({ type: "message_start", message });
+				}
 				const replacement = await this._extensionRunner.emitMessageEnd({ type: "message_end", message });
 				return replacement === undefined ? undefined : { message: replacement as AssistantMessage };
 			},
@@ -854,6 +869,28 @@ export class AgentSession {
 		}
 		// Remove a placed input from the visible queue before its message_start, so listeners see the updated queue.
 		if (event.type === "message_start" && event.message.role === "user") this._dequeuePlacedInput(event.message);
+		if (event.type === "message_start" && event.message.role === "assistant") {
+			if (this._assistantStartedByHook) return;
+			this._assistantStreaming = true;
+		}
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			this._assistantStartedByHook = false;
+			this._assistantStreaming = false;
+		}
+		if (event.type === "auto_retry_start") {
+			// A retry durable scheduled after the run was asked to stop is not started.
+			if (this._agentRunAbortRequested || this._retryCancelled) return;
+			this._retryAttempt = event.attempt;
+			this._retryAbortController ??= new AbortController();
+		}
+		if (event.type === "auto_retry_end") {
+			const cancelled = this._retryCancelled || this._agentRunAbortRequested;
+			const attempt = this._retryAttempt;
+			this._retryAttempt = 0;
+			this._retryAbortController = undefined;
+			this._retryCancelled = false;
+			if (cancelled) event = { type: "auto_retry_end", success: false, attempt, finalError: "Retry cancelled" };
+		}
 		await this.sessionManager.refresh();
 		this._refreshFinalizedContext();
 		for (const entry of this.sessionManager.getEntries()) {
@@ -2852,8 +2889,12 @@ export class AgentSession {
 	/**
 	 * Cancel in-progress retry.
 	 */
+	/** Cancel a pending automatic retry: the run stops and reports "Retry cancelled". */
 	abortRetry(): void {
-		this._retryAbortController?.abort();
+		if (this._retryAbortController === undefined) return;
+		this._retryAbortController.abort();
+		this._retryCancelled = true;
+		if (this._engineOpened()) void this._engineOrThrow().then((engine) => engine.abort());
 	}
 
 	/** Whether auto-retry is currently in progress */
