@@ -116,8 +116,8 @@ export type ProjectedSession = {
 };
 
 /**
- * Project a snapshot into pi entries. Entries durable wrote without a stored pi entry get a derived identity: their
- * parent is the newest pi entry before them in their conversation's history, which for a fork's first entry is the
+ * Project a snapshot into pi entries. Entries durable wrote without a stored pi entry get a derived identity. Every
+ * entry's parent is the newest pi entry before it in its conversation's history, which for a fork's first entry is the
  * newest pi entry at or before the fork point.
  */
 export function projectSnapshot(snapshot: SessionSnapshot): ProjectedSession {
@@ -159,7 +159,13 @@ export function projectSnapshot(snapshot: SessionSnapshot): ProjectedSession {
 			visibleAt.set(record.id, parentId);
 			continue;
 		}
-		const entry: SessionEntry = projected.entry;
+		// Within a conversation the pi path is its entry order: an entry's parent is the newest pi entry before it, even
+		// when its stored parentId names an older one (written while the engine appended entries the writer had not
+		// read yet). Imported and branched entries already agree with that order.
+		const entry: SessionEntry =
+			hasStoredEntry(record) && projected.entry.parentId !== parentId
+				? { ...projected.entry, parentId }
+				: projected.entry;
 		piIdOf.set(record.id, entry.id);
 		visibleAt.set(record.id, entry.id);
 		placement.record(entry.id, record.id, record.conversationId);

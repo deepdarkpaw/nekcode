@@ -454,7 +454,12 @@ describe("nek plan mode", () => {
 		await harness.session.prompt("Stop auth. Explain the new requirement first.");
 
 		expect(requests[0]).toContain("Explain the new requirement first.");
-		expect(requests[0]).not.toContain("Implement the plan.");
+		// Durable leaves the interrupted (aborted) answer out of model context, as pi-ai does before any real provider,
+		// so the request slice after the last assistant also holds the earlier approved-plan message. It must not be
+		// sent again after the new input.
+		const afterInput = requests[0].slice(requests[0].indexOf("Stop auth. Explain the new requirement first."));
+		expect(afterInput).not.toContain("Implement the plan.");
+		expect(requests[0].split("Implement the plan.").length - 1).toBeLessThanOrEqual(1);
 		expect(currentState(harness).todos).toHaveLength(2);
 		expect(harness.session.pendingMessageCount).toBe(0);
 	});
@@ -585,15 +590,22 @@ describe("nek plan mode", () => {
 	it("suppresses approval when the planning run is interrupted after saving", async () => {
 		const record = createRecord();
 		record.approval = "implement";
-		const harness = await createNekHarness(record);
 		const ended = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		harness.session.agent.subscribe(async (event) => {
-			if (event.type === "agent_end") {
-				ended.resolve();
-				await release.promise;
-			}
+		// (a) block between agent_end and settlement through an extension handler instead of the old loop's Agent.
+		const harness = await createHarness({
+			extensionFactories: [
+				createNekExtension({ role: "root", config: DEFAULT_NEK_CONFIG }),
+				(pi) => {
+					pi.on("agent_end", async () => {
+						ended.resolve();
+						await release.promise;
+					});
+				},
+			],
 		});
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ uiContext: createUiContext(record), mode: "tui" });
 		await harness.session.prompt("/plan");
 		harness.setResponses([createPlanCall({ name: "Add auth" })]);
 		const prompt = harness.session.prompt("design auth");

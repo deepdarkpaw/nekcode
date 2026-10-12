@@ -306,6 +306,11 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+/** Identity of a custom message across its in-memory and stored copies. */
+function customMessageKey(message: CustomMessage): string {
+	return `${message.customType}\u0000${JSON.stringify(message.content)}`;
+}
+
 function _estimateMessagesTokens(messages: AgentMessage[]): number {
 	let tokens = 0;
 	for (const message of messages) {
@@ -397,6 +402,8 @@ export class AgentSession {
 	 */
 	private _earlyAgentStart = false;
 	private _earlyTurnStarts = 0;
+	/** Custom messages the host appended and announced itself; the stream's events for them are skipped once. */
+	private _hostAnnouncedCustom: string[] = [];
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -529,7 +536,12 @@ export class AgentSession {
 					this._emit({ type: "message_start", message });
 				}
 				const replacement = await this._extensionRunner.emitMessageEnd({ type: "message_end", message });
-				return replacement === undefined ? undefined : { message: replacement as AssistantMessage };
+				if (replacement === undefined) return undefined;
+				// Untyped extensions can replace a message without content; normalize at ingestion.
+				const content = (replacement as AssistantMessage).content;
+				return {
+					message: { ...(replacement as AssistantMessage), content: Array.isArray(content) ? content : [] },
+				};
 			},
 			onYield: async ({ message }) => {
 				// Durable invokes onYield before the answer commit, so no pi entry ID exists yet. The handlers may rerun
@@ -888,6 +900,13 @@ export class AgentSession {
 		if (event.type === "message_start" && event.message.role === "assistant") {
 			if (this._assistantStartedByHook) return;
 			this._assistantStreaming = true;
+		}
+		if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "custom") {
+			const index = this._hostAnnouncedCustom.indexOf(customMessageKey(event.message));
+			if (index !== -1) {
+				if (event.type === "message_end") this._hostAnnouncedCustom.splice(index, 1);
+				return;
+			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			this._assistantStartedByHook = false;
@@ -2062,14 +2081,24 @@ export class AgentSession {
 			this._pendingCustomMessages.push(appMessage);
 			return;
 		}
-		// Not triggering: while streaming, placed at the run's next boundary, never between a tool call and its result;
-		// when idle, placed at once and returned after its message events were emitted.
-		const streaming = this.isStreaming;
-		const engine = await this._engineOrThrow();
-		const submission = await engine.appendMessage(appMessage);
-		if (streaming) return;
-		await submission.wait(BACKGROUND_CONTEXT);
-		await engine.delivered();
+		if (this.isStreaming) {
+			// Placed at the run's next boundary, never between a tool call and its result.
+			await (await this._engineOrThrow()).appendMessage(appMessage);
+			return;
+		}
+		// Idle: appended and announced at once, as pi did, so code after the call sees it in the transcript. The session
+		// writes it to durable storage in order; the stream's events for that entry are not repeated.
+		this.sessionManager.appendCustomMessageEntry(
+			appMessage.customType,
+			appMessage.content,
+			appMessage.display,
+			appMessage.details,
+		);
+		for (const entry of this.sessionManager.getEntries()) this._knownSessionEntryIds.add(entry.id);
+		this._refreshFinalizedContext();
+		this._hostAnnouncedCustom.push(customMessageKey(appMessage));
+		this._emit({ type: "message_start", message: appMessage });
+		this._emit({ type: "message_end", message: appMessage });
 	}
 
 	/**
