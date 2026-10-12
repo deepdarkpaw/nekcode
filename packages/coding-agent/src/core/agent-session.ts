@@ -163,6 +163,20 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 	};
 }
 
+/** Event types of pi's agent loop, delivered to `agent.subscribe()` listeners. */
+const AGENT_EVENT_TYPES: ReadonlySet<string> = new Set([
+	"agent_start",
+	"agent_end",
+	"turn_start",
+	"turn_end",
+	"message_start",
+	"message_update",
+	"message_end",
+	"tool_execution_start",
+	"tool_execution_update",
+	"tool_execution_end",
+]);
+
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| Exclude<AgentEvent, { type: "agent_end" }>
@@ -358,6 +372,8 @@ export class AgentSession {
 	private readonly _pendingAdmissions = new Set<Promise<unknown>>();
 	private _disposed = false;
 	private _disposePromise?: Promise<void>;
+	/** Subscribers of `agent.subscribe()`; see the constructor. */
+	private readonly _agentListeners = new Set<(event: AgentEvent, signal: AbortSignal) => Promise<void> | void>();
 	/** The opened engine once its interrupted work resumed (see `_engineOrThrow`). */
 	private _engineReady?: Promise<DurableEngine>;
 	/** A manual compaction resumed after reopening; idle waits include it. */
@@ -521,6 +537,12 @@ export class AgentSession {
 		this.agent.abort = () => {
 			void this.abort();
 		};
+		// `agent` holds state only; its loop never runs. Its subscribers get the durable run's loop events and are awaited
+		// per event, as pi's loop awaited them (print and RPC modes use this for stdout backpressure).
+		this.agent.subscribe = (listener) => {
+			this._agentListeners.add(listener);
+			return () => this._agentListeners.delete(listener);
+		};
 	}
 
 	private async _openDurableEngine(): Promise<DurableEngine> {
@@ -671,6 +693,8 @@ export class AgentSession {
 				const idleTimeout = this.settingsManager.getHttpIdleTimeoutMs();
 				return {
 					sessionId: this.sessionId,
+					// Pi's loop passed the agent's transport; the settings UI and SDK users set `agent.transport`.
+					transport: this.agent.transport,
 					timeoutMs: retry.timeoutMs ?? (idleTimeout === 0 ? 2147483647 : idleTimeout),
 					websocketConnectTimeoutMs: this.settingsManager.getWebSocketConnectTimeoutMs(),
 					maxRetries: retry.maxRetries,
@@ -1168,6 +1192,25 @@ export class AgentSession {
 				isError: event.isError,
 			});
 		this._emit(event);
+		await this._notifyAgentListeners(event);
+	}
+
+	/** Deliver a loop event to `agent.subscribe()` listeners, awaiting each. */
+	private async _notifyAgentListeners(event: AgentSessionEvent): Promise<void> {
+		if (this._agentListeners.size === 0 || !AGENT_EVENT_TYPES.has(event.type)) return;
+		const agentEvent = event as AgentEvent;
+		const signal = this._durableSignal ?? new AbortController().signal;
+		for (const listener of this._agentListeners) {
+			try {
+				await listener(agentEvent, signal);
+			} catch (error) {
+				this._extensionRunner.emitError({
+					extensionPath: "<runtime>",
+					event: event.type,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 	}
 
 	/**

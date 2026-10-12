@@ -39,8 +39,8 @@ export function createHarnessSettings(
 			const provider = settings.getProviderRetrySettings();
 			const idle = settings.getHttpIdleTimeoutMs();
 			const timeoutMs = provider.timeoutMs ?? (idle === 0 ? MAX_TIMEOUT_MS : idle);
+			// The transport is the session's (`agent.transport`), supplied per request by the host.
 			return {
-				transport: settings.getTransport(),
 				timeoutMs,
 				...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
 				maxRetryDelayMs: provider.maxRetryDelayMs,
