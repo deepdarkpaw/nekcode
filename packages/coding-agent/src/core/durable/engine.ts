@@ -22,6 +22,7 @@ import {
 	type UserInput,
 	watchEvents,
 } from "@earendil-works/pi-durable";
+import type { ToolCallMemo } from "../extensions/types.ts";
 import { convertToLlm } from "../messages.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import { agentContext } from "./context.ts";
@@ -71,6 +72,11 @@ export type DurableEngineOptions = {
 	 * compaction; default `true`.
 	 */
 	readonly autoCompaction?: boolean;
+	/**
+	 * Whether interrupted work resumes as the engine opens; default `true`. With `false` it waits for `resume()`, so a
+	 * host can bind what that work calls into (extensions) first.
+	 */
+	readonly resume?: boolean;
 	/** Conversation to attach to; default the root conversation. */
 	readonly conversationId?: ConversationId;
 	/** Extension and delivery failures that do not fail an operation. Must not throw. */
@@ -123,6 +129,7 @@ export class DurableEngine {
 	#adapter: DurableEventAdapter | undefined;
 	#model: Model<Api> | undefined;
 	#closed = false;
+	#resumed = false;
 	/** Keys of the installed prompt extension's sections, in order. */
 	#promptKeys: string[] = [PROMPT_SECTION_KEY];
 
@@ -217,13 +224,20 @@ export class DurableEngine {
 			engine.#installPromptKeys(storedPromptSections(await harness.snapshot(PromptDoc, conversation.id, context)));
 			await engine.#configureModel(context);
 			await engine.#attach();
-			harness.resume();
+			if (options.resume !== false) engine.resume();
 			return engine;
 		} catch (error) {
 			if (store === undefined) await harness.close(context).catch(report);
 			else await store.unpin().catch(report);
 			throw error;
 		}
+	}
+
+	/** Resume interrupted work (runs, tools, compactions); later calls do nothing. */
+	resume(): void {
+		if (this.#resumed) return;
+		this.#resumed = true;
+		this.harness.resume();
 	}
 
 	get conversationId(): ConversationId {
@@ -369,6 +383,11 @@ export class DurableEngine {
 			{ type: "write", entry, ...(options.trigger === true ? { trigger: true } : {}) },
 			BACKGROUND_CONTEXT,
 		);
+	}
+
+	/** The memo of a tool call running now; see `ExtensionContext.getToolCallMemo`. */
+	toolCallMemo(toolCallId: string): ToolCallMemo | undefined {
+		return this.#pending.calls.get(toolCallId);
 	}
 
 	/** Whether a finished call's result asked to end the run (`terminate`); taken once, by the round's `afterTools`. */

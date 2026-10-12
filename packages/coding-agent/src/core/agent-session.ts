@@ -358,6 +358,8 @@ export class AgentSession {
 	private readonly _pendingAdmissions = new Set<Promise<unknown>>();
 	private _disposed = false;
 	private _disposePromise?: Promise<void>;
+	/** The opened engine once its interrupted work resumed (see `_engineOrThrow`). */
+	private _engineReady?: Promise<DurableEngine>;
 	/** A manual compaction resumed after reopening; idle waits include it. */
 	private _resumedCompaction?: Promise<void>;
 	/** One compact-and-retry per input, as in pi; reset when a user message starts or an answer succeeds. */
@@ -510,7 +512,11 @@ export class AgentSession {
 		});
 		if (this._initialActiveToolNames === undefined) this._restoreToolsFromTranscript();
 		const sessionFile = this.sessionManager.getSessionFile();
-		if (sessionFile === undefined || existsSync(sessionFile)) void this._engineOrThrow().catch(() => {});
+		// Existing sessions open at once; their interrupted work resumes once extensions are bound (see _engineOrThrow).
+		if (sessionFile === undefined || existsSync(sessionFile)) {
+			this._enginePromise = this._openDurableEngine();
+			this._enginePromise.catch(() => {});
+		}
 		this.agent.waitForIdle = () => this.waitForIdle();
 		this.agent.abort = () => {
 			void this.abort();
@@ -703,11 +709,19 @@ export class AgentSession {
 			thinkingLevel: this.thinkingLevel,
 			// Pi's automatic compaction runs in this session (post-run, pre-prompt, before a run's next request).
 			autoCompaction: false,
+			// Interrupted work resumes in _engineOrThrow, after session_start when extensions are bound.
+			resume: false,
 			hooks,
 			onReport: report,
 		});
 		this._engine = engine;
 		engine.subscribe((event) => this._handleDurableEvent(event));
+		return engine;
+	}
+
+	/** Resume the engine's interrupted work, then the host's: a pending settlement or manual compaction. */
+	private async _resumeEngine(engine: DurableEngine): Promise<DurableEngine> {
+		engine.resume();
 		await this._resumeSettlement(engine);
 		await this._resumeManualCompaction(engine);
 		return engine;
@@ -728,11 +742,16 @@ export class AgentSession {
 		void this._settleRun("completed").catch((error: unknown) => this._reportSettlementError(error));
 	}
 
+	/**
+	 * The engine, opened and resumed. The first use resumes interrupted work: binding extensions (after session_start)
+	 * or any operation on the session, so replayed extension tools run with their extension's state restored.
+	 */
 	private _engineOrThrow(): Promise<DurableEngine> {
-		if (this._engine !== undefined) return Promise.resolve(this._engine);
+		if (this._engineReady !== undefined) return this._engineReady;
 		if (this._disposed) return Promise.reject(new Error("AgentSession is disposed"));
 		this._enginePromise ??= this._openDurableEngine();
-		return this._enginePromise;
+		this._engineReady = this._enginePromise.then((engine) => this._resumeEngine(engine));
+		return this._engineReady;
 	}
 
 	/**
@@ -3196,6 +3215,8 @@ export class AgentSession {
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		// session_start handlers may send messages through void APIs; they are written before binding completes.
 		await this._settleAdmissions();
+		// An existing session's interrupted work resumes now that extensions saw session_start.
+		if (this._engineOpened()) await this._engineOrThrow();
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
 	}
 
@@ -3377,6 +3398,7 @@ export class AgentSession {
 				},
 				getSystemPrompt: () => this.systemPrompt,
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+				getToolCallMemo: (toolCallId) => this._engine?.toolCallMemo(toolCallId),
 			},
 			{
 				registerProvider: (name, config) => {
