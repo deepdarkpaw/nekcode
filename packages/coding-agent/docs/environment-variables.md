@@ -25,7 +25,7 @@ Commands run by the `bash` and `powershell` tools receive the current session st
 | Variable | Description |
 |----------|-------------|
 | `NEK_SESSION_ID` | Current session ID |
-| `NEK_SESSION_FILE` | Absolute path to the current session JSONL file; unset for ephemeral sessions |
+| `NEK_SESSION_FILE` | Absolute path to the current session file (`.sqlite`); unset for ephemeral sessions |
 | `NEK_PROVIDER` | Currently selected model provider |
 | `NEK_MODEL` | Currently selected model ID |
 | `NEK_REASONING_LEVEL` | Current effective reasoning level |

@@ -43,6 +43,8 @@ Run `/compact` to compact manually. See [Compaction Reference](compaction.md) fo
 
 By default, sessions are stored under `~/.nek/agent/sessions/`, grouped by working directory. Use `--session-dir`, `NEK_CODING_AGENT_SESSION_DIR`, or the `sessionDir` setting to choose another location. The CLI option has highest precedence.
 
+Each step of a turn is saved as it happens. If nekcode is killed mid-turn, reopen the session (`nek -c` or `/resume`) and the turn continues; see [Durable Sessions](durable-sessions.md).
+
 Use `--no-session` for an ephemeral run. Use `--session` when you already know the session path or ID, and `--fork` to create a new session before interactive mode starts.
 
 ## Export or share a session

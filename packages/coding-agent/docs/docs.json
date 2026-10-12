@@ -13,7 +13,7 @@
         },
         {
           "title": "How nekcode Works",
-          "path": "how-pi-works.md"
+          "path": "how-nek-works.md"
         }
       ]
     },
@@ -79,6 +79,10 @@
             {
               "title": "Use nekcode Planning and Subagents",
               "path": "nek.md"
+            },
+            {
+              "title": "OpenTUI Frontend (experimental)",
+              "path": "opentui.md"
             },
             {
               "title": "Create Prompt Templates",
@@ -155,6 +159,10 @@
         {
           "title": "Session File Format",
           "path": "session-format.md"
+        },
+        {
+          "title": "Durable Sessions and Crash Recovery",
+          "path": "durable-sessions.md"
         },
         {
           "title": "Compaction and Branch Summaries",

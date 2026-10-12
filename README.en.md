@@ -10,6 +10,7 @@ nekcode (command: `nek`) is a terminal coding agent built on [pi](https://github
 - **Structural search with `ast_grep`**, Cursor-style chunked reading, and Claude Code-style exact-replacement editing.
 - **MCP servers** and `tool_search` for on-demand tool loading.
 - **`web_search`** without an API key.
+- **Crash recovery**: every step of a turn is saved to the session database (SQLite); if nek is killed mid-turn, `nek -c` continues the interrupted turn. See [Durable sessions](packages/coding-agent/docs/durable-sessions.md).
 
 ## One-line install
 

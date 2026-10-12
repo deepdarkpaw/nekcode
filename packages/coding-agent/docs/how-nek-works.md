@@ -22,7 +22,7 @@ Prompt templates expand editor input before it becomes a user message. Selected 
 
 ## Sessions
 
-Persistent sessions are JSONL files. Each tree entry has an ID and refers to its parent. The current entry identifies the active branch.
+Persistent sessions are SQLite databases written by the durable engine, which saves each step of a turn so an interrupted turn continues when the session is reopened ([Durable Sessions](durable-sessions.md)). Each tree entry has an ID and refers to its parent. The current entry identifies the active branch.
 
 Continuing from an earlier entry creates another branch in the same file. Forking and cloning copy selected history into a new session file.
 
