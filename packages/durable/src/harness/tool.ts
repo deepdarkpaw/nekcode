@@ -28,6 +28,7 @@ import {
 	Progress,
 } from "./output.ts";
 import type {
+	Settings,
 	ToolControl,
 	ToolDiagnostic,
 	ToolExecutionApi,
@@ -65,7 +66,12 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 			const call = await readCall(runtime, task.input, context);
 			const tool = (await runtime.agent(context)).tools.find((each) => each.name === call.name);
 			if (tool === undefined) {
-				const error = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
+				const error = hostToolError(
+					runtime.settings,
+					"tool_unavailable",
+					call.name,
+					`Tool ${call.name} is not available`,
+				);
 				return settle(runtime, call, COMPLETED, () => error, context);
 			}
 			const prepared = prepare(tool, call.arguments as JsonObject);
@@ -131,7 +137,12 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 			return settle(runtime, call, { status: "aborted" }, () => result, context);
 		}
 		const message = `Tool ${call.name} was aborted`;
-		await settle(runtime, call, { status: "aborted" }, (slot) => fromSlot(slot, "aborted", message), context);
+		// nek: a call aborted before it produced anything gets the host's text, as one an abort left unstarted.
+		const result = (slot: Readonly<ToolSlot> | undefined): ToolExecutionResult =>
+			(slot?.output ?? "") === "" && slot?.details === undefined && (slot?.diagnostics ?? []).length === 0
+				? hostToolError(runtime.settings, "aborted", call.name, message)
+				: fromSlot(slot, "aborted", message);
+		await settle(runtime, call, { status: "aborted" }, result, context);
 	},
 });
 
@@ -476,6 +487,17 @@ function fromSlot(slot: Readonly<ToolSlot> | undefined, code: string, message: s
 /** An error result the Harness writes itself: no content and one `error` diagnostic with `code`. */
 export function harnessError(code: string, message: string): ToolExecutionResult {
 	return { content: [], isError: true, diagnostics: [toolDiagnostic(code, message)] };
+}
+
+/** nek: a Harness tool error in the host's text when `settings.toolErrorText` supplies one, else `harnessError()`. */
+export function hostToolError(
+	settings: Settings,
+	code: "tool_unavailable" | "aborted",
+	toolName: string,
+	message: string,
+): ToolExecutionResult {
+	const text = settings.toolErrorText?.(code, toolName);
+	return text === undefined ? harnessError(code, message) : { content: [{ type: "text", text }], isError: true };
 }
 
 function toolDiagnostic(code: string, message: string): ToolDiagnostic {

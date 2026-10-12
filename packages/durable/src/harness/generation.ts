@@ -33,7 +33,7 @@ import { assignJson } from "./json.ts";
 import { endRun, LiveDoc, type LiveState, type ToolSlot } from "./live.ts";
 import { planSystemEntries, renderSections, replaySections } from "./prompt.ts";
 import { ensureProviderSessionId } from "./provider.ts";
-import { appendToolResult, harnessError, ToolTask, type ToolTaskResult } from "./tool.ts";
+import { appendToolResult, hostToolError, ToolTask, type ToolTaskResult } from "./tool.ts";
 import type {
 	CompactionPolicy,
 	CompactionResult,
@@ -274,7 +274,7 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			const live = await tx.doc(LiveDoc, conversationId);
 			await convertPartial(tx, live, conversationId);
 			for (const call of unstarted) {
-				const result = harnessError("aborted", `Tool ${call.name} was aborted`);
+				const result = hostToolError(runtime.settings, "aborted", call.name, `Tool ${call.name} was aborted`);
 				await appendToolResult(tx, conversationId, call, result, runtime.now());
 			}
 			endRun(tx, live, runtime.taskId, { status: "unanswered", reason: "aborted" });
@@ -599,7 +599,12 @@ async function startToolRound(
 		const pending: string[] = [];
 		for (const call of calls) {
 			if (!offered.has(call.name)) {
-				const unavailable = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
+				const unavailable = hostToolError(
+					runtime.settings,
+					"tool_unavailable",
+					call.name,
+					`Tool ${call.name} is not available`,
+				);
 				const result = await appendToolResult(tx, conversationId, call, unavailable, runtime.now());
 				slots.push({ callId: call.id, name: call.name, status: "done", entry: result.id });
 				continue;

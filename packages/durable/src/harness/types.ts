@@ -436,7 +436,15 @@ export type HarnessSettings = {
 	readonly toolExecution?: ToolExecutionMode;
 	readonly steeringMode?: QueueMode;
 	readonly followUpMode?: QueueMode;
+	/**
+	 * nek: the model-visible text of a Harness tool error (`tool_unavailable`, or `aborted` for calls an abort left
+	 * unstarted), replacing the `<harness>` diagnostic; `undefined` keeps the diagnostic.
+	 */
+	readonly toolErrorText?: ToolErrorText;
 };
+
+/** nek: see `HarnessSettings.toolErrorText`. */
+export type ToolErrorText = (code: "tool_unavailable" | "aborted", toolName: string) => string | undefined;
 
 /** Resolved settings: every field over its built-in default, object fields merged. */
 export type Settings = {
@@ -449,6 +457,8 @@ export type Settings = {
 	readonly toolExecution: ToolExecutionMode;
 	readonly steeringMode: QueueMode;
 	readonly followUpMode: QueueMode;
+	/** nek: see `HarnessSettings.toolErrorText`. */
+	readonly toolErrorText?: ToolErrorText;
 };
 
 /** What `HarnessOptions.env` builds an environment for. */

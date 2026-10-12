@@ -65,6 +65,7 @@ export function resolveSettings(settings: HarnessSettings | undefined): Settings
 		toolExecution: settings?.toolExecution ?? "parallel",
 		steeringMode: settings?.steeringMode ?? "one-at-a-time",
 		followUpMode: settings?.followUpMode ?? "one-at-a-time",
+		...(settings?.toolErrorText === undefined ? {} : { toolErrorText: settings.toolErrorText }),
 	};
 }
 
