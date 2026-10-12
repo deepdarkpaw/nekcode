@@ -269,8 +269,9 @@ describe("DurableEngine", () => {
 		expect(eventShape(events).slice(-3)).toEqual(["turn_end", "agent_end", "agent_settled"]);
 		const turnEnd = events.find((event) => event.type === "turn_end");
 		expect(turnEnd?.type === "turn_end" ? turnEnd.message : undefined).toMatchObject({ stopReason: "aborted" });
-		// Durable writes no answer for a request aborted before its first committed partial.
-		expect(modelOf((await engine.entries()).at(-1)!)?.role).toBe("user");
+		// A request aborted before its first content leaves an empty aborted answer, as pi's loop records one.
+		const last = modelOf((await engine.entries()).at(-1)!);
+		expect(last).toMatchObject({ role: "assistant", content: [], stopReason: "aborted" });
 	});
 
 	it("forks after an entry and continues on the fork only", async () => {
