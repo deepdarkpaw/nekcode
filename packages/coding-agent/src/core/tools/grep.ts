@@ -19,9 +19,11 @@ import {
 } from "./truncate.ts";
 
 const grepSchema = Type.Object({
-	pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
+	pattern: Type.String({ description: "ripgrep regex, or exact text when literal is true" }),
 	path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
-	glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
+	glob: Type.Optional(
+		Type.String({ description: "Filter files by glob, e.g. '*.ts', '**/*.spec.ts', or '!**/*.test.ts' to exclude" }),
+	),
 	ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
 	literal: Type.Optional(
 		Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: false)" }),
@@ -33,12 +35,21 @@ const grepSchema = Type.Object({
 });
 
 export const grepToolSystemPromptContribution = {
-	snippet: "Search file contents for patterns (respects .gitignore)",
-	guidelines: [],
+	snippet: "Search file contents by regex or literal text (respects .gitignore)",
+	guidelines: ["Use grep for plain-text or regex search across files, not grep or rg in the shell"],
 } as const;
 
 export type GrepToolInput = Static<typeof grepSchema>;
 const DEFAULT_LIMIT = 100;
+
+/** grep description: output format, regex flavor, filters, and limits of the ripgrep-backed search. */
+const GREP_DESCRIPTION = `Search file contents with ripgrep.
+
+- Returns matching lines as \`path:line: text\`, with paths relative to the search directory; with context, surrounding lines appear as \`path-line- text\`.
+- pattern is a ripgrep (Rust) regex; set literal to match exact text that contains regex characters such as ( [ . * or ?.
+- Narrow the search with path (a directory or one file) and glob ('*.ts', or '!**/*.test.ts' to exclude files).
+- Respects .gitignore and includes dotfiles. Matching is case-sensitive unless ignoreCase is set.
+- Output is truncated to ${DEFAULT_LIMIT} matches (raise limit to see more) or ${DEFAULT_MAX_BYTES / 1024}KB, whichever is hit first; long lines are truncated to ${GREP_MAX_LINE_LENGTH} characters.`;
 
 export interface GrepToolDetails {
 	truncation?: TruncationResult;
@@ -75,8 +86,9 @@ export function createGrepToolDefinition(
 	return {
 		name: "grep",
 		label: "grep",
-		description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
+		description: GREP_DESCRIPTION,
 		promptSnippet: grepToolSystemPromptContribution.snippet,
+		promptGuidelines: [...grepToolSystemPromptContribution.guidelines],
 		parameters: grepSchema,
 		async execute(
 			_toolCallId,

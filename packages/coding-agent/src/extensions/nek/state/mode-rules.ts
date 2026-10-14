@@ -12,13 +12,15 @@ export function isMarkdownPath(path: string): boolean {
 	return MARKDOWN_EXTENSIONS.includes(extname(path.trim()).toLowerCase());
 }
 
-/** Keep the approval-gated mode switch available in both modes; only Plan exposes plan authoring tools. */
-export function modeToolNames(active: readonly string[], mode: Mode): string[] {
-	const planTools = [CREATE_PLAN_TOOL_NAME, UPDATE_PLAN_TOOL_NAME];
-	const next = mode === "agent" ? active.filter((name) => !planTools.includes(name)) : [...active];
-	if (!next.includes(SWITCH_MODE_TOOL_NAME)) next.push(SWITCH_MODE_TOOL_NAME);
-	if (mode === "plan") {
-		for (const toolName of planTools) if (!next.includes(toolName)) next.push(toolName);
+/**
+ * The mode switch and the plan authoring tools stay active in both modes, so a mode change never changes the tool
+ * declarations (which would invalidate the provider's prompt cache). create_plan and update_plan reject calls outside
+ * Plan mode, and edit/write are restricted by {@link checkModeToolCall}.
+ */
+export function withModeTools(active: readonly string[]): string[] {
+	const next = [...active];
+	for (const toolName of [SWITCH_MODE_TOOL_NAME, CREATE_PLAN_TOOL_NAME, UPDATE_PLAN_TOOL_NAME]) {
+		if (!next.includes(toolName)) next.push(toolName);
 	}
 	return next;
 }

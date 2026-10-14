@@ -236,7 +236,8 @@ describe("nek todo_write", () => {
 			"<task_management>\nYou have access to the todo_write tool to help you manage and plan tasks.",
 		);
 		expect(systemPrompt).toContain(
-			"IMPORTANT: Make sure you don't end your turn before you've completed all todos.\n</task_management>",
+			"Before ending your turn, mark finished todos completed and cancel the ones that are no longer needed.\n</task_management>",
 		);
+		expect(systemPrompt).not.toContain("IMPORTANT: Make sure you don't end your turn");
 	});
 });

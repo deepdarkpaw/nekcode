@@ -3,8 +3,14 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
-import { FooterComponent, formatCwdForFooter } from "../src/modes/interactive/components/footer.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import {
+	CONTEXT_BAR_MIN_FOOTER_WIDTH,
+	FooterComponent,
+	formatContextUsage,
+	formatCwdForFooter,
+	renderProgressBar,
+} from "../src/modes/interactive/components/footer.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 type AssistantUsage = {
@@ -308,5 +314,42 @@ describe("FooterComponent width handling", () => {
 
 		expect(stats).toContain("$1.234");
 		expect(stats).not.toContain("(sub)");
+	});
+});
+
+describe("context usage bar", () => {
+	beforeAll(() => {
+		initTheme(undefined, false);
+	});
+
+	it("draws Claude Code's eighth-block progress bar", () => {
+		expect(renderProgressBar(0, 10)).toBe(" ".repeat(10));
+		expect(renderProgressBar(0.45, 10)).toBe("████▌     ");
+		expect(renderProgressBar(0.123, 10)).toBe("█▎        ");
+		expect(renderProgressBar(1, 10)).toBe("█".repeat(10));
+		expect(renderProgressBar(1.5, 10)).toBe("█".repeat(10));
+		expect(renderProgressBar(-1, 10)).toBe(" ".repeat(10));
+		for (const ratio of [0, 0.01, 0.33, 0.5, 0.99, 1]) expect(renderProgressBar(ratio, 10)).toHaveLength(10);
+	});
+
+	it("shows the bar, percent, and tokens on wide footers and text only on narrow ones", () => {
+		const session = createSession({ sessionName: "" });
+		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 90_400, contextWindow: 200_000, percent: 45.2 });
+		const footer = new FooterComponent(session, createFooterData(1));
+
+		expect(stripAnsi(footer.render(120)[1])).toContain("▕████▌     ▏ 45.2% 90k/200k (auto)");
+		const narrow = stripAnsi(
+			new FooterComponent(session, createFooterData(1)).render(CONTEXT_BAR_MIN_FOOTER_WIDTH - 1)[1],
+		);
+		expect(narrow).toContain("45.2% 90k/200k");
+		expect(narrow).not.toContain("▕");
+	});
+
+	it("colors the bar by usage level and keeps unknown usage as text", () => {
+		const level = (percent: number) => formatContextUsage({ tokens: 1, percent }, 200_000, false, true);
+		expect(level(50)).toContain(theme.getFgAnsi("accent"));
+		expect(level(75)).toContain(theme.getFgAnsi("warning"));
+		expect(level(95)).toContain(theme.getFgAnsi("error"));
+		expect(stripAnsi(formatContextUsage({ tokens: null, percent: null }, 200_000, true, true))).toBe("?/200k (auto)");
 	});
 });

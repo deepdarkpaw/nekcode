@@ -37,8 +37,8 @@ export function childToolNames(type: AgentType, forceReadonly: boolean): string[
 
 /**
  * Create one in-process child session (plan.md section 7.4): a read-only settings manager, a resource loader with only
- * the nek subagent extension, and the parent's ModelRuntime so auth is shared. The session gets its own read state, so
- * the parent's read records are not inherited. The registry owns the session's lifetime.
+ * the nek subagent extension, and the parent's ModelRuntime so auth is shared. The child has its own read-state store restored
+ * from its own transcript; the parent's read records are not inherited. The registry owns the session's lifetime.
  */
 export async function createChildSession(spec: ChildSessionSpec): Promise<AgentSession> {
 	const cwd = spec.parentCtx.cwd;

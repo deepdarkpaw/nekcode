@@ -71,6 +71,13 @@ describe("provider retry classification", () => {
 		).toBe(true);
 	});
 
+	it.each([
+		"stream error: stream disconnected before completion: stream closed before response.completed",
+		"WebSocket stream closed before response.completed",
+	])("matches Codex stream drops before response.completed: %s", (errorMessage) => {
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(true);
+	});
+
 	it("matches Azure peak-load capacity errors", () => {
 		// Regression for #9669.
 		expect(

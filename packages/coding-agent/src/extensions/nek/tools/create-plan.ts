@@ -73,6 +73,7 @@ export function createCreatePlanToolDefinition(
 	return {
 		name: CREATE_PLAN_TOOL_NAME,
 		label: "Plan",
+		promptSnippet: "Plan mode: save a new or rewritten plan for user review",
 		description: CREATE_PLAN,
 		parameters: createPlanSchema,
 		executionMode: "sequential",

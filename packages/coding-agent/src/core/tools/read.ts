@@ -15,7 +15,7 @@ import { buildReadOutline, type ReadOutline } from "./read-outline.ts";
 import type { ReadStateStore } from "./read-state.ts";
 import { readRenderers } from "./renderers/read.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
-import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
 const readSchema = Type.Object({
 	path: Type.String({ description: "The absolute path of the file to read." }),
@@ -33,9 +33,21 @@ const readSchema = Type.Object({
 });
 
 export const readToolSystemPromptContribution = {
-	snippet: "Read file contents",
-	guidelines: ["Use read to examine files instead of cat or sed."],
+	snippet: "Read files with line numbers; large source files arrive folded along their syntax tree; images too",
+	guidelines: [
+		"Use read to view files, not cat, head, tail, or sed in the shell; read folded or truncated parts of large files with offset and limit",
+	],
 } as const;
+
+/** read description: what the tool actually returns (line prefixes, folding, truncation, images). */
+const READ_DESCRIPTION = `Read a file from the local filesystem.
+
+- Text output prefixes every line with its number as six right-aligned characters and a bar (\`    12|\`); the prefix is not part of the file.
+- Without offset and limit, a file up to about 10,000 characters is returned in full. A larger source file is returned whole but folded along its syntax tree: functions, methods, and classes of 10 or more lines show their first line, \`...\`, and their last line, with the real line numbers kept. Read a folded body with offset and limit.
+- offset is 1-based, and a negative offset counts from the end (-50 starts 50 lines before the end); limit caps the number of lines.
+- Output is truncated at ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB with a note giving the offset to continue from.
+- Images (jpeg, png, gif, webp) are returned as images.
+- When you need several files, read them in parallel in one response.`;
 
 /** Parameters accepted by the read tool. */
 export type ReadToolInput = Static<typeof readSchema>;
@@ -212,8 +224,7 @@ export function createReadToolDefinition(
 	return {
 		name: "read",
 		label: "read",
-		description:
-			"Reads a file from the local filesystem. This tool can also read image files when called with the appropriate path. Formats supported: jpeg/jpg, png, gif, webp.",
+		description: READ_DESCRIPTION,
 		promptSnippet: readToolSystemPromptContribution.snippet,
 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		parameters: readSchema,

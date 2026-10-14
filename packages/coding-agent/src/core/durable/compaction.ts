@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Message, Models, RetryPolicy, Usage } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, Models, RetryPolicy, Usage } from "@earendil-works/pi-ai";
 import {
 	CompactionEntry,
 	type CompactionHooks,
@@ -10,6 +10,7 @@ import {
 	type HookApi,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
+import { formatNoApiKeyFoundMessage } from "../auth-guidance.ts";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -18,6 +19,8 @@ import {
 	createFileOps,
 	estimateContextTokens,
 	extractFileOpsFromMessage,
+	resolveCompactionModel,
+	resolveCompactionThinkingLevel,
 } from "../compaction/index.ts";
 import { agentContext } from "./context.ts";
 import {
@@ -41,15 +44,29 @@ export type CompactionBridge = {
 	readonly hooks: DurableHostHooks;
 	/** Pi's compaction settings for the current model. */
 	readonly settings: () => CompactionSettings;
+	/** The `compaction.model` setting; unset summarizes with the conversation's model. */
+	readonly compactionModel: () => string | undefined;
+	/** The `compaction.thinkingLevel` setting; unset summarizes at the conversation's level. */
+	readonly compactionThinkingLevel: () => ThinkingLevel | undefined;
+	/** Throws when a configured compaction model cannot authenticate; its requests still resolve auth in `models`. */
+	readonly compactionAuth: (model: Model<Api>, signal: AbortSignal) => Promise<void>;
 	/** Retry policy for the summarization call. */
 	readonly retry: () => RetryPolicy;
 	readonly report: (error: unknown) => void;
 };
 
+/** Default `compactionAuth`: the model's provider must resolve auth in `models`. */
+export function requireModelAuth(models: Models): CompactionBridge["compactionAuth"] {
+	return async (model, signal) => {
+		if ((await models.getAuth(model, { signal })) !== undefined) return;
+		throw new Error(formatNoApiKeyFoundMessage(model.provider));
+	};
+}
+
 /**
  * Durable `beforeCompact` handler that keeps pi's compaction format: durable selects the range, pi's
  * `session_before_compact` handlers may cancel or supply the summary, and otherwise pi's summarizer
- * (`core/compaction`) writes it, file lists included. Pi's `tokensBefore`, details, and `fromHook` go to the
+ * (`core/compaction`) writes it, file lists included, with the `compaction.model` model when that setting is set. Pi's `tokensBefore`, details, and `fromHook` go to the
  * conversation's `nek.compaction-details` side record, since the `pi.compaction` entry carries only the summary.
  *
  * Deviation from pi: durable picks the cut, so pi's own cut-point choice, split-turn prefix summaries, and a
@@ -95,9 +112,20 @@ export function createBeforeCompact(bridge: CompactionBridge): BeforeCompact {
 		if (decision !== undefined) result = decision.compaction;
 		else {
 			const ref = agent.model;
-			const model = ref === undefined ? undefined : bridge.models.getModel(ref.provider, ref.modelId);
-			if (model === undefined) return { decline: true };
+			const mainModel = ref === undefined ? undefined : bridge.models.getModel(ref.provider, ref.modelId);
+			if (mainModel === undefined) return { decline: true };
+			let model: Model<Api> = mainModel;
 			try {
+				const configured = await resolveCompactionModel(
+					bridge.compactionModel(),
+					bridge.models,
+					async (candidate) => {
+						await bridge.compactionAuth(candidate, signal);
+						return { model: candidate };
+					},
+					signal,
+				);
+				model = configured?.model ?? mainModel;
 				result = await compact(
 					preparation,
 					model,
@@ -105,10 +133,17 @@ export function createBeforeCompact(bridge: CompactionBridge): BeforeCompact {
 					undefined,
 					compaction.instructions,
 					signal,
-					agent.thinkingLevel as ThinkingLevel,
+					resolveCompactionThinkingLevel(
+						bridge.compactionThinkingLevel(),
+						model,
+						agent.thinkingLevel as ThinkingLevel,
+					),
 					(streamModel, streamContext, options) => bridge.models.streamSimple(streamModel, streamContext, options),
 					undefined,
 					bridge.retry(),
+					undefined,
+					undefined,
+					configured?.checkRequest,
 				);
 			} catch (error) {
 				if (signal.aborted) throw error;

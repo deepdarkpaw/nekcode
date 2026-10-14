@@ -11,12 +11,13 @@ import type {
 	SessionStartEvent,
 } from "../../core/extensions/types.ts";
 import { NEK_REMINDER_TYPE, type NekRuntime } from "./index.ts";
+import { AUTONOMY } from "./prompts/autonomy.ts";
 import { freshImplementMessage } from "./prompts/implement.ts";
 import { MODE_SELECTION } from "./prompts/mode-selection.ts";
-import { modeReminder } from "./prompts/plan-mode.ts";
+import { modeReminder, systemReminder } from "./prompts/plan-mode.ts";
 import { approvedPlanMessage, planWorkflowReminder } from "./prompts/plan-workflow.ts";
 import { planId, planTodos, readPlanBody } from "./services/plan-store.ts";
-import { checkModeToolCall, modeToolNames } from "./state/mode-rules.ts";
+import { checkModeToolCall, withModeTools } from "./state/mode-rules.ts";
 import {
 	activePlan,
 	findPlan,
@@ -79,8 +80,8 @@ export function registerPlanMode(pi: ExtensionAPI, nek: NekRuntime): void {
 	pi.on("input", (event, ctx) => onPlanInput(wiring, event, ctx));
 	pi.on("before_agent_start", (event) => {
 		nek.automaticWorkAllowed = true;
+		event.systemPromptOptions.sections.autonomy = AUTONOMY;
 		event.systemPromptOptions.sections.mode_selection = MODE_SELECTION;
-		event.systemPromptOptions.sections.plan_workflow = planWorkflowReminder(nek.session);
 		return modeReminderMessage(wiring);
 	});
 	pi.on("tool_call", (event) => {
@@ -197,7 +198,7 @@ function changeUserMode(wiring: PlanWiring, ctx: ExtensionContext, next: Mode): 
 
 function syncMode(wiring: PlanWiring, ctx: ExtensionContext): void {
 	const { pi, nek } = wiring;
-	pi.setActiveTools(modeToolNames(pi.getActiveTools(), nek.session.mode));
+	pi.setActiveTools(withModeTools(pi.getActiveTools()));
 	if (ctx.hasUI) ctx.ui.setStatus(MODE_STATUS_KEY, nek.session.mode === "plan" ? "plan" : undefined);
 	syncPlanUi(ctx, nek.session, nek.config.plan.shortcut);
 }
@@ -237,10 +238,18 @@ function onPlanInput(wiring: PlanWiring, event: InputEvent, ctx: ExtensionContex
 	return undefined;
 }
 
+/**
+ * Hidden reminder of one submission: the mode reminder, then the plan workflow state (saved plans, active plan,
+ * revision). Plan mode sends both every turn; Agent mode only right after a mode change. Per-turn state lives here,
+ * not in a system prompt section, so the system prompt stays identical for the whole session.
+ */
 function modeReminderMessage(wiring: PlanWiring): BeforeAgentStartEventResult | undefined {
-	const mode = wiring.nek.session.mode;
-	const content = modeReminder(mode, mode !== wiring.announcedMode);
-	wiring.announcedMode = mode;
+	const state = wiring.nek.session;
+	const entered = state.mode !== wiring.announcedMode;
+	wiring.announcedMode = state.mode;
+	const blocks = [modeReminder(state.mode, entered)];
+	if (state.mode === "plan" || entered) blocks.push(systemReminder(planWorkflowReminder(state)));
+	const content = blocks.filter((block) => block !== undefined).join("\n\n");
 	return content ? { message: { customType: NEK_REMINDER_TYPE, content, display: false } } : undefined;
 }
 

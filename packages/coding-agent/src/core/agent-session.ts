@@ -63,6 +63,7 @@ import { generateBugReportSummary } from "./bug-report.ts";
 import type { CacheWarmer, CacheWarmingStatus } from "./cache-warmer.ts";
 import {
 	type CompactionResult,
+	type CompactionSummarizer,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
@@ -71,6 +72,8 @@ import {
 	estimateTokens,
 	generateBranchSummary,
 	prepareCompaction,
+	resolveCompactionModel,
+	resolveCompactionThinkingLevel,
 	shouldCompact,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
@@ -129,10 +132,12 @@ import {
 	buildSystemPromptSections,
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
+	renderProjectInstructions,
 } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions, DEFAULT_ACTIVE_TOOL_NAMES, type ToolsOptions } from "./tools/index.ts";
 import { createReadStateStore, type ReadStateStore } from "./tools/read-state.ts";
+import { restoreReadState } from "./tools/read-state-replay.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
@@ -497,6 +502,8 @@ export class AgentSession {
 
 	/** Read state shared by this session's read, write, and edit tools. */
 	private readonly _readState: ReadStateStore = createReadStateStore();
+	/** Replays the current branch before startup handlers or durable recovery can execute tools. */
+	private _readStateReady: Promise<void>;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -519,6 +526,9 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._readStateReady = restoreReadState(this._readState, this.sessionManager.getBranch(), this._cwd);
+		// Keep asynchronous construction errors on the readiness promise until the caller awaits it.
+		this._readStateReady.catch(() => {});
 
 		this._cachedMessages = this.sessionManager.buildSessionContext().messages;
 		for (const entry of this.sessionManager.getEntries()) this._knownSessionEntryIds.add(entry.id);
@@ -570,7 +580,8 @@ export class AgentSession {
 			},
 			context: async (messages, signal) => {
 				this._durableSignal = signal;
-				return this._projectForcedPrompt(await this._extensionRunner.emitContext(messages));
+				const transformed = await this._extensionRunner.emitContext(messages);
+				return this._withProjectInstructions(this._projectForcedPrompt(transformed));
 			},
 			toolCall: async (event) => {
 				if (!this._extensionRunner.hasHandlers("tool_call")) return undefined;
@@ -740,6 +751,10 @@ export class AgentSession {
 			// Interrupted work resumes in _engineOrThrow, after session_start when extensions are bound.
 			resume: false,
 			hooks,
+			// A configured compaction.model follows this session's auth rules for summaries (see _getCompactionSummarizer).
+			compactionAuth: async (model, signal) => {
+				await this._getSummarizationRequestAuth(model, signal);
+			},
 			onReport: report,
 		});
 		this._engine = engine;
@@ -747,8 +762,21 @@ export class AgentSession {
 		return engine;
 	}
 
+	/** Wait for transcript restoration without starting interrupted durable work. */
+	waitForReadState(): Promise<void> {
+		return this._readStateReady;
+	}
+
+	/** Rebuild from the current branch, after any earlier restoration has finished. */
+	private _restoreReadStateFromBranch(): Promise<void> {
+		const branch = this.sessionManager.getBranch();
+		this._readStateReady = this._readStateReady.then(() => restoreReadState(this._readState, branch, this._cwd));
+		return this._readStateReady;
+	}
+
 	/** Resume the engine's interrupted work, then the host's: a pending settlement or manual compaction. */
 	private async _resumeEngine(engine: DurableEngine): Promise<DurableEngine> {
+		await this._readStateReady;
 		engine.resume();
 		await this._resumeSettlement(engine);
 		await this._resumeManualCompaction(engine);
@@ -1488,6 +1516,22 @@ export class AgentSession {
 	}
 
 	/**
+	 * Model and auth for built-in compaction summaries (manual, threshold, overflow, and resumed manual compaction):
+	 * the `compaction.model` setting when set, otherwise `model`, the main model. Token budgets stay with the main
+	 * model's compaction settings. A configured model follows the main model's auth rules, so an SDK custom stream
+	 * function may supply its auth; it must still be a registered model.
+	 */
+	private async _getCompactionSummarizer(model: Model<any>, signal?: AbortSignal): Promise<CompactionSummarizer> {
+		const configured = await resolveCompactionModel(
+			this.settingsManager.getCompactionModel(),
+			this._modelRuntime,
+			(summarizer) => this._getSummarizationRequestAuth(summarizer, signal),
+			signal,
+		);
+		return configured ?? (await this._getSummarizationRequestAuth(model, signal));
+	}
+
+	/**
 	 * Install tool hooks once on the Agent instance.
 	 *
 	 * The callbacks read `this._extensionRunner` at execution time, so extension reload swaps in the
@@ -1876,6 +1920,25 @@ export class AgentSession {
 	 * collapse into one head holding the forced text and the current tools. Runs after the
 	 * `context` extension handlers.
 	 */
+	/**
+	 * Insert the `<project_instructions>` message (AGENTS.md files) right after the leading system message of one
+	 * request. It is request-only, never persisted, and identical across the session's requests, so it extends the
+	 * cached prefix. A forced prompt replaces the whole prompt, project instructions included.
+	 */
+	private _withProjectInstructions(messages: AgentMessage[]): AgentMessage[] {
+		const options = this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
+		if (options.forceSystemPrompt !== undefined) return messages;
+		const text = renderProjectInstructions(options.contextFiles);
+		if (text === undefined) return messages;
+		const index = messages[0]?.role === "system" ? 1 : 0;
+		const instructions: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text }],
+			timestamp: messages[0]?.timestamp ?? 0,
+		};
+		return [...messages.slice(0, index), instructions, ...messages.slice(index)];
+	}
+
 	private _projectForcedPrompt(messages: AgentMessage[]): AgentMessage[] {
 		const forced = this._runSystemPromptOptions?.forceSystemPrompt;
 		if (forced === undefined) return messages;
@@ -2960,7 +3023,8 @@ export class AgentSession {
 				apiKey,
 				headers,
 				env,
-			} = await this._getSummarizationRequestAuth(model, abortController.signal);
+				checkRequest,
+			} = await this._getCompactionSummarizer(model, abortController.signal);
 			abortController.signal.throwIfAborted();
 			let extensionCompaction: CompactionResult | undefined;
 			if (this._extensionRunner.hasHandlers("session_before_compact")) {
@@ -2992,12 +3056,17 @@ export class AgentSession {
 					headers,
 					undefined,
 					abortController.signal,
-					this.thinkingLevel,
+					resolveCompactionThinkingLevel(
+						this.settingsManager.getCompactionThinkingLevel(),
+						requestModel,
+						this.thinkingLevel,
+					),
 					this.agent.streamFunction,
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
 					undefined,
+					checkRequest,
 				));
 			abortController.signal.throwIfAborted();
 			const { summary, firstKeptEntryId, tokensBefore, usage, details } = generated;
@@ -3088,7 +3157,13 @@ export class AgentSession {
 			const model = this.model;
 			if (!model) throw new Error(formatNoModelSelectedMessage());
 			const settings = this.settingsManager.getCompactionSettings(model);
-			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(model, signal);
+			const {
+				model: requestModel,
+				apiKey,
+				headers,
+				env,
+				checkRequest,
+			} = await this._getCompactionSummarizer(model, signal);
 			const pathEntries = this.sessionManager.getBranch();
 			const preparation = prepareCompaction(pathEntries, settings);
 			if (!preparation) {
@@ -3127,12 +3202,17 @@ export class AgentSession {
 					headers,
 					customInstructions,
 					signal,
-					this.thinkingLevel,
+					resolveCompactionThinkingLevel(
+						this.settingsManager.getCompactionThinkingLevel(),
+						requestModel,
+						this.thinkingLevel,
+					),
 					this.agent.streamFunction,
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
 					undefined,
+					checkRequest,
 				));
 			if (signal.aborted) throw new Error("Compaction cancelled");
 
@@ -3274,6 +3354,7 @@ export class AgentSession {
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
+		await this._readStateReady;
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		// session_start handlers may send messages through void APIs; they are written before binding completes.
 		await this._settleAdmissions();
@@ -3664,6 +3745,7 @@ export class AgentSession {
 			includeAllExtensionTools: true,
 		});
 		this._pendingToolNames = new Set(previousToolNames.filter((name) => !this._toolRegistry.has(name)));
+		await this._restoreReadStateFromBranch();
 
 		const hasBindings =
 			this._extensionUIContext ||
@@ -4037,6 +4119,7 @@ export class AgentSession {
 				this.sessionManager.appendLabelChange(targetId, label);
 			}
 
+			await this._restoreReadStateFromBranch();
 			// Update finalized context from the canonical session projection.
 			this._refreshFinalizedContext();
 			this._restoreToolsFromTranscript();

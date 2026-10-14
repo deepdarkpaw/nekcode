@@ -414,7 +414,7 @@ export class SubagentRegistry {
 			const previous = record.usage ?? { input: 0, output: 0 };
 			// Replace rather than mutate: tool details and notices hold shallow snapshots of the record.
 			record.usage = {
-				input: previous.input + usage.input + usage.cacheRead + usage.cacheWrite,
+				input: previous.input + usage.input + usage.cacheWrite,
 				output: previous.output + usage.output,
 			};
 		} else {

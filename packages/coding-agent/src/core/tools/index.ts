@@ -97,6 +97,13 @@ export {
 	type ReadStateStore,
 	readStateKey,
 } from "./read-state.ts";
+export { restoreReadState } from "./read-state-replay.ts";
+export {
+	recognizeBashRead,
+	recognizePowerShellRead,
+	resolveShellRead,
+	type ShellReadEvidence,
+} from "./shell-read-recognition.ts";
 export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -170,6 +177,9 @@ export const DEFAULT_ACTIVE_TOOL_NAMES: readonly ToolName[] = [
 	"bash",
 	"edit",
 	"write",
+	"grep",
+	"find",
+	"ls",
 	"ast_grep",
 	"web_search",
 ];
@@ -186,8 +196,8 @@ export interface ToolsOptions {
 	ast_grep?: AstGrepToolOptions;
 	web_search?: WebSearchToolOptions;
 	/**
-	 * Read state shared by read, write, and edit so an edit cannot overwrite a file the model has not read.
-	 * Omitted callers get one store per tool set.
+	 * Read state shared by read, write, edit, bash, and powershell. Edit remains allowed on unread files; overwriting an
+	 * existing file with write requires a prior read. Omitted callers get one store per tool set.
 	 */
 	readState?: ReadStateStore;
 }
@@ -203,9 +213,9 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 		case "read":
 			return createReadToolDefinition(cwd, { ...options?.read, readState });
 		case "bash":
-			return createBashToolDefinition(cwd, options?.bash);
+			return createBashToolDefinition(cwd, { ...options?.bash, readState });
 		case "powershell":
-			return createPowerShellToolDefinition(cwd, options?.powershell);
+			return createPowerShellToolDefinition(cwd, { ...options?.powershell, readState });
 		case "edit":
 			return createEditToolDefinition(cwd, { ...options?.edit, readState });
 		case "write":
@@ -231,9 +241,9 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 		case "read":
 			return createReadTool(cwd, { ...options?.read, readState });
 		case "bash":
-			return createBashTool(cwd, options?.bash);
+			return createBashTool(cwd, { ...options?.bash, readState });
 		case "powershell":
-			return createPowerShellTool(cwd, options?.powershell);
+			return createPowerShellTool(cwd, { ...options?.powershell, readState });
 		case "edit":
 			return createEditTool(cwd, { ...options?.edit, readState });
 		case "write":
@@ -257,7 +267,7 @@ export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions)
 	const readState = resolveReadState(options);
 	return [
 		createReadToolDefinition(cwd, { ...options?.read, readState }),
-		createBashToolDefinition(cwd, options?.bash),
+		createBashToolDefinition(cwd, { ...options?.bash, readState }),
 		createEditToolDefinition(cwd, { ...options?.edit, readState }),
 		createWriteToolDefinition(cwd, { ...options?.write, readState }),
 		createWebSearchToolDefinition(options?.web_search),
@@ -279,8 +289,8 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 	const readState = resolveReadState(options);
 	return {
 		read: createReadToolDefinition(cwd, { ...options?.read, readState }),
-		bash: createBashToolDefinition(cwd, options?.bash),
-		powershell: createPowerShellToolDefinition(cwd, options?.powershell),
+		bash: createBashToolDefinition(cwd, { ...options?.bash, readState }),
+		powershell: createPowerShellToolDefinition(cwd, { ...options?.powershell, readState }),
 		edit: createEditToolDefinition(cwd, { ...options?.edit, readState }),
 		write: createWriteToolDefinition(cwd, { ...options?.write, readState }),
 		grep: createGrepToolDefinition(cwd, options?.grep),
@@ -295,7 +305,7 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 	const readState = resolveReadState(options);
 	return [
 		createReadTool(cwd, { ...options?.read, readState }),
-		createBashTool(cwd, options?.bash),
+		createBashTool(cwd, { ...options?.bash, readState }),
 		createEditTool(cwd, { ...options?.edit, readState }),
 		createWriteTool(cwd, { ...options?.write, readState }),
 		createWebSearchTool(options?.web_search),
@@ -318,8 +328,8 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 	const readState = resolveReadState(options);
 	return {
 		read: createReadTool(cwd, { ...options?.read, readState }),
-		bash: createBashTool(cwd, options?.bash),
-		powershell: createPowerShellTool(cwd, options?.powershell),
+		bash: createBashTool(cwd, { ...options?.bash, readState }),
+		powershell: createPowerShellTool(cwd, { ...options?.powershell, readState }),
 		edit: createEditTool(cwd, { ...options?.edit, readState }),
 		write: createWriteTool(cwd, { ...options?.write, readState }),
 		grep: createGrepTool(cwd, options?.grep),

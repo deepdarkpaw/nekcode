@@ -131,6 +131,22 @@ describe("discoverAgentTypes", () => {
 		expect(explorer?.tools).toEqual(["read", "web_search"]);
 	});
 
+	it("only explore and presets that opt in with autonomous: true are autonomous", () => {
+		writeAgent(
+			join(agentDir, "agents"),
+			"explorer.md",
+			"---\nname: explorer\ndescription: Fast explorer\nreadonly: true\nautonomous: true\n---\n",
+		);
+		writeAgent(join(agentDir, "agents"), "worker.md", "---\nname: worker\ndescription: Writes code\n---\n");
+		const types = discoverAgentTypes(agentDir, cwd, false).types;
+		const autonomous = types.filter((type) => type.autonomous).map((type) => type.name);
+		expect(autonomous).toEqual(["explore", "explorer"]);
+		const text = describeAgentTypes(types);
+		expect(text).toContain("- explore [autonomous]: ");
+		expect(text).toContain("- explorer [autonomous]: ");
+		expect(text).toContain("- worker: ");
+	});
+
 	it("reports invalid thinking and context values", () => {
 		writeAgent(
 			join(agentDir, "agents"),
@@ -171,7 +187,10 @@ describe("discoverAgentTypes", () => {
 		expect(text.startsWith("Available subagent_type values\n\n- generalPurpose: ")).toBe(true);
 		expect(text).toContain("- gpt-6.1-sol-worker: ");
 		expect(text).toContain("- kimi-3-ui-worker: ");
-		expect(text).toContain("- explore: ");
+		expect(text).toContain("- explore [autonomous]: ");
 		expect(text).toContain("- shell: ");
+		expect(text).toContain("model: CPA/gpt-6.1-sol (fixed)");
+		expect(text).toContain("model: CPA/kimi-k3 (fixed)");
+		expect(text).toContain("model: inherit; thinking: inherit");
 	});
 });

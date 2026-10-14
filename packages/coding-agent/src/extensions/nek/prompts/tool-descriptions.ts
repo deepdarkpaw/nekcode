@@ -1,69 +1,33 @@
 /**
- * Cursor TodoWrite description, verbatim from reference/cursor/cursor-tools-2026.json line 753
- * (identical in cursor-grok46-system-prompt-with-tools.txt).
+ * todo_write description: Cursor TodoWrite's first sentence (reference/cursor/cursor-tools-2026.json line 753) plus the
+ * condensed when-to-use and when-not-to-use rules of Claude Code's TodoWrite prompt
+ * (reference/claude-code/packages/builtin-tools/src/tools/TodoWriteTool/prompt.ts).
  */
-export const TODO_WRITE = "Use this tool to create and manage a structured task list for your current coding session.";
+export const TODO_WRITE = `Use this tool to create and manage a structured task list for your current coding session. The user sees it as your progress.
+
+- Use it for work with several distinct steps (roughly three or more), when the user gives a list of tasks, or when the user asks for a todo list.
+- Skip it for single-step or trivial work, quick fixes, and questions or explanations: do those directly.
+- merge=true updates items by id and keeps the others; merge=false replaces the whole list.
+- Keep at most one item in_progress. Mark an item completed as soon as it is done, and cancelled when it is no longer needed.
+- Write items as specific actions (for example "Add retry to fetchUser"), not vague goals.`;
 
 /**
- * Cursor SwitchMode description, verbatim from reference/cursor/cursor-tools-2026.json line 656 without the
- * "Debug Mode" and "Ask Mode" subsections (nek has only agent and plan).
+ * switch_mode description, condensed from Cursor SwitchMode (reference/cursor/cursor-tools-2026.json line 656): nek has
+ * only agent and plan, so the when/when-not lists are merged and the per-mode examples dropped. Unlike Cursor it does
+ * not ask for proactive switching: task size alone is no reason, because every proposal blocks on the user.
  */
-export const SWITCH_MODE = `Switch the interaction mode to better match the current task. Each mode is optimized for a specific type of work.
+export const SWITCH_MODE = `Propose switching the interaction mode. The call stops your work until the user approves or declines, so propose a switch only when the current mode clearly does not fit (see <autonomy>).
 
-## When to Switch Modes
+Modes
+- agent: the default implementation mode with full tool access.
+- plan: read-only collaboration (only markdown files can be edited) to research, clarify, and present a plan with create_plan before any code changes.
 
-Switch modes proactively when:
-1. **Task type changes** - User shifts from asking questions to requesting implementation, or vice versa
-2. **Complexity emerges** - What seemed simple reveals architectural decisions or multiple approaches
-3. **Debugging needed** - An error, bug, or unexpected behavior requires investigation
-4. **Planning needed** - The task is large, ambiguous, or has significant trade-offs to discuss
-5. **You're stuck** - Multiple attempts without progress suggest a different approach is needed
+Propose plan when the user asks for a plan, when the request leaves open decisions that only the user can make and that would substantially change the implementation (for example which architecture, library, or data model to use), or when repeated attempts are not converging. Size alone is not a reason: a large or multi-file task with a clear goal and an evident approach stays in agent mode.
+Propose agent when the plan or diagnosis is settled and the user wants it implemented.
 
-## When NOT to Switch
+Do not switch for clear tasks, in the middle of good progress, to ask one or two questions (use ask_question), for routine procedure such as committing or backups, or again after the user declined a switch for the same task.
 
-Do NOT switch modes for:
-- Simple, clear tasks that can be completed quickly in current mode
-- Mid-implementation when you're making good progress
-- Minor clarifying questions (just ask them)
-- Tasks where the current mode is working well
-
-## Available Modes
-
-### Agent Mode [switchable]
-Default implementation mode with full access to all tools for making changes.
-
-**Switch to Agent when:**
-- You have a clear understanding of what to implement
-- Planning/debugging is complete and you're ready to code
-- The task is straightforward with an obvious implementation
-- You've gathered enough context and are ready to execute
-
-**Examples:**
-- After planning: "I've designed the approach, ready to implement" → Switch to Agent
-- After debugging: "Found the bug, it's a null check issue" → Switch to Agent
-- Simple task: User asks to "Add a comment to this function" → Stay in Agent (no switch needed)
-
-### Plan Mode [switchable]
-Read-only collaborative mode for designing implementation approaches before coding.
-
-**Switch to Plan when:**
-- The task has multiple valid approaches with significant trade-offs
-- Architectural decisions are needed (e.g., "Add caching" - Redis vs in-memory vs file-based)
-- The task touches many files or systems (large refactors, migrations)
-- Requirements are unclear and you need to explore before understanding scope
-- You would otherwise ask multiple clarifying questions
-
-**Examples:**
-- User: "Add user authentication" → Switch to Plan (session vs JWT, storage, middleware decisions)
-- User: "Refactor the database layer" → Switch to Plan (large scope, architectural impact)
-- User: "Make the app faster" → Switch to Plan (need to profile, multiple optimization strategies)
-
-## Important Notes
-
-- **Be proactive**: Don't wait for the user to ask you to switch modes
-- **Explain briefly**: When switching, briefly explain why in your \`explanation\` parameter
-- **Don't over-switch**: If the current mode is working, stay in it
-- **User approval required**: Mode switches require user consent`;
+Give a one-sentence reason in explanation; the user sees it in the approval prompt.`;
 
 /**
  * Cursor CreatePlan description, verbatim from reference/cursor/cursor-tools-2026.json line 204.
@@ -101,13 +65,19 @@ export const UPDATE_PLAN = `Use this tool to submit the current plan file for re
 - The plan body must be non-empty. Submit only the changes made since the current reviewed snapshot.
 - The tool reads the edited file, records a new revision when its document changed, and ends the turn for user review.`;
 
-/** Cursor AskQuestion description, verbatim from reference/cursor/cursor-tools-2026.json line 7. */
-export const ASK_QUESTION = `Collect structured multiple-choice answers from the user. Use this tool only when you are blocked on a decision that is genuinely the user's to make: one you cannot resolve from the request, the code, or sensible defaults.
+/**
+ * Cursor AskQuestion description (reference/cursor/cursor-tools-2026.json line 7) with nek additions: the blocking cost
+ * and what not to ask, a pointer to <autonomy>, and the last line limited to real choices so optional follow-ups stay in
+ * the reply text.
+ */
+export const ASK_QUESTION = `Collect structured multiple-choice answers from the user. Use this tool only when you are blocked on a decision that is genuinely the user's to make: one you cannot resolve from the request, the project instructions, the code, or a sensible default. The call stops your work until the user answers, so never use it for routine procedure (committing, backups, running tests), for permission to continue in-scope work, or to offer optional follow-ups (see <autonomy>).
 
 Usage notes:
+- Ask 1-2 critical questions at a time
 - Each question should have at least 2 options for the user to choose from
 - Users will always be able to select "Other" to provide custom text input
 - Use allow_multiple: true to allow multiple answers to be selected for a question
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
+- Do not ask whether a plan is ready; create_plan and update_plan request the user's approval
 
-Prefer this tool over listing options in your final response text (as letters, numbers, bullet points, etc).`;
+When you do need the user's choice, prefer this tool over listing the options in your reply text.`;

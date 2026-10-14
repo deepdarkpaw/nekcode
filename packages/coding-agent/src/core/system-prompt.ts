@@ -1,5 +1,5 @@
 /**
- * System prompt construction and project context loading
+ * System prompt construction and the project instructions message.
  */
 
 import { getSystemMessageText } from "@earendil-works/pi-ai";
@@ -18,13 +18,16 @@ export interface BuildSystemPromptOptions {
 	toolGuidelines?: Record<string, string[]>;
 	/** Additional guideline bullets appended to the default system prompt rules. */
 	promptGuidelines?: string[];
-	/** Text appended from user configuration before project context, skills, and cwd. */
+	/** Text appended from user configuration after the rules and before skills and cwd. */
 	appendSystemPrompt?: string;
 	/** Additional XML-wrapped prompt sections keyed by tag name. */
 	sections?: Record<string, string>;
 	/** Working directory. */
 	cwd: string;
-	/** Pre-loaded context files. */
+	/**
+	 * Pre-loaded AGENTS.md / CLAUDE.md files. They are not part of the system prompt: every request carries them as the
+	 * `<project_instructions>` message right after the system prompt (see `renderProjectInstructions()`).
+	 */
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
@@ -68,12 +71,25 @@ export function normalizeBuildSystemPromptOptions(input: BuildSystemPromptOption
 	};
 }
 
-function renderProjectContext(contextFiles: Array<{ path: string; content: string }>): string {
+/** Tag of the request-time message that carries the context files. */
+export const PROJECT_INSTRUCTIONS_TAG = "project_instructions";
+
+/**
+ * Body of the `<project_instructions>` message that follows the system prompt in every request, as Claude Code's
+ * prependUserContext does for CLAUDE.md (reference/claude-code/src/utils/api.ts). Keeping the files out of the system
+ * prompt leaves the system prompt identical across projects; the message is never stored in the transcript, so a
+ * changed file applies from the next request without rewriting history. Undefined when there are no files.
+ */
+export function renderProjectInstructions(
+	contextFiles: ReadonlyArray<{ path: string; content: string }>,
+): string | undefined {
+	if (contextFiles.length === 0) return undefined;
+	const files = contextFiles.map(({ path, content }) => `<file path="${path}">\n${content.trim()}\n</file>`);
 	return [
-		"Project-specific instructions and guidelines:",
-		...contextFiles.map(
-			({ path, content }) => `<project_instructions path="${path}">\n${content}\n</project_instructions>`,
-		),
+		`<${PROJECT_INSTRUCTIONS_TAG}>`,
+		"Standing instructions from AGENTS.md files: the global file first, then from the repository root down to the working directory. A later file takes precedence over an earlier one, and the user's latest message takes precedence over all of them.",
+		...files,
+		`</${PROJECT_INSTRUCTIONS_TAG}>`,
 	].join("\n\n");
 }
 
@@ -81,6 +97,7 @@ function buildRules(
 	selectedTools: string[],
 	toolGuidelines: Record<string, string[]>,
 	promptGuidelines: string[],
+	hasProjectInstructions: boolean,
 ): string {
 	const rules: string[] = [];
 	const seen = new Set<string>();
@@ -111,6 +128,11 @@ function buildRules(
 		for (const rule of toolGuidelines[name] ?? []) addRule(rule);
 	}
 	for (const rule of promptGuidelines) addRule(rule);
+	if (hasProjectInstructions) {
+		addRule(
+			`Follow the <${PROJECT_INSTRUCTIONS_TAG}> message as standing user instructions; the user's latest message takes precedence over it`,
+		);
+	}
 	addRule("Be concise in your responses");
 	addRule("Show file paths clearly when working with files");
 	return rules.map((rule) => `- ${rule}`).join("\n");
@@ -119,7 +141,11 @@ function buildRules(
 /** One-sentence identity that opens every structured prompt, including custom prompts (SYSTEM.md, `--system-prompt`). */
 export const NEKCODE_IDENTITY = "You are working inside nekcode, a terminal coding agent.";
 
-/** Build the ordered, independently replaceable sections of the structured system prompt. */
+/**
+ * Build the ordered, independently replaceable sections of the structured system prompt: preamble, tools, rules,
+ * addendum, skills, cwd, then extension sections in the order handlers set them. Extension sections come last so a
+ * section added mid-session is an append-only patch. One that reuses a built-in name replaces it in place.
+ */
 export function buildSystemPromptSections(input: BuildSystemPromptOptions): SystemPromptSections {
 	const options = normalizeBuildSystemPromptOptions(input);
 	const {
@@ -150,11 +176,10 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		const tools =
 			visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets[name]}`).join("\n") : "(none)";
 		promptSections.tools = `${tools}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.`;
-		promptSections.rules = buildRules(selectedTools, toolGuidelines, promptGuidelines);
+		promptSections.rules = buildRules(selectedTools, toolGuidelines, promptGuidelines, contextFiles.length > 0);
 	}
 
 	if (appendSystemPrompt) promptSections.addendum = appendSystemPrompt;
-	if (contextFiles.length > 0) promptSections.project_context = renderProjectContext(contextFiles);
 	const skillFileReadTool = (["read", "bash"] as const).find((tool) => selectedTools.includes(tool));
 	if (skillFileReadTool && skills.length > 0) {
 		const skillsPrompt = formatSkillsForPrompt(skills, skillFileReadTool).trim();

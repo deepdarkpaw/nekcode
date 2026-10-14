@@ -653,6 +653,8 @@ describe("AgentSession actionable boundaries", () => {
 		let handled = false;
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 10_000, maxTokens: 100 }],
+			// The estimate counts tool declarations; a fixed set keeps the bound about the omitted usage.
+			initialActiveToolNames: ["read"],
 			settings: { compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 300 } },
 			extensionFactories: [
 				(pi) => {
@@ -688,6 +690,8 @@ describe("AgentSession actionable boundaries", () => {
 		let handled = false;
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 5_000, maxTokens: 100 }],
+			// The estimate counts tool declarations; a fixed set keeps the bound about the omitted usage.
+			initialActiveToolNames: ["read"],
 			settings: { compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 } },
 			extensionFactories: [
 				(pi) => {

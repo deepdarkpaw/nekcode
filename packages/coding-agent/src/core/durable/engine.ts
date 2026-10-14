@@ -26,6 +26,7 @@ import {
 import type { ToolCallMemo } from "../extensions/types.ts";
 import { convertToLlm } from "../messages.ts";
 import type { SettingsManager } from "../settings-manager.ts";
+import { requireModelAuth } from "./compaction.ts";
 import { agentContext } from "./context.ts";
 import {
 	agentMessageEntry,
@@ -68,6 +69,11 @@ export type DurableEngineOptions = {
 	readonly thinkingLevel?: ThinkingLevel;
 	/** Pi extension callbacks; they may rerun after a crash (see {@link DurableHostHooks}). */
 	readonly hooks?: DurableHostHooks;
+	/**
+	 * Throws when a configured `compaction.model` cannot authenticate; default requires auth from `models`. A host with
+	 * its own request auth rules (an SDK custom stream function) supplies them here.
+	 */
+	readonly compactionAuth?: (model: Model<Api>, signal: AbortSignal) => Promise<void>;
 	/**
 	 * Whether durable compacts automatically (threshold and overflow). `false` when the host runs pi's own automatic
 	 * compaction; default `true`.
@@ -194,6 +200,9 @@ export class DurableEngine {
 				models: options.models,
 				hooks: options.hooks ?? {},
 				settings: () => options.settingsManager.getCompactionSettings(currentModel()),
+				compactionModel: () => options.settingsManager.getCompactionModel(),
+				compactionThinkingLevel: () => options.settingsManager.getCompactionThinkingLevel(),
+				compactionAuth: options.compactionAuth ?? requireModelAuth(options.models),
 				retry: () => options.settingsManager.getRetrySettings(),
 				report,
 				pending,

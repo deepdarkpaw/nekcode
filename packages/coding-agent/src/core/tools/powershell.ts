@@ -16,8 +16,11 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 const UTF8_OUTPUT_PREFIX = "try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n";
 
 export const powershellToolSystemPromptContribution = {
-	snippet: "Execute PowerShell commands",
-	guidelines: ["You can inspect NEK_* environment variables for current model and session details."],
+	snippet: "Run PowerShell commands: builds, tests, git, package managers, scripts",
+	guidelines: [
+		"Use PowerShell for commands that need a shell (builds, tests, git, package managers); use the file tools for reading, searching, and editing files when they are available",
+		"You can inspect NEK_* environment variables for current model and session details.",
+	],
 } as const;
 
 export type PowerShellOperations = BashOperations;
@@ -27,7 +30,7 @@ export type PowerShellToolDetails = BashToolDetails;
 export type PowerShellToolInput = BashToolInput;
 
 export interface PowerShellToolOptions
-	extends Pick<BashToolOptions, "operations" | "exposeSessionEnvironment" | "spawnHook"> {}
+	extends Pick<BashToolOptions, "operations" | "exposeSessionEnvironment" | "spawnHook" | "readState"> {}
 
 export function createLocalPowerShellOperations(): PowerShellOperations {
 	const operations = createLocalShellOperations("PowerShell", getPowerShellConfig);

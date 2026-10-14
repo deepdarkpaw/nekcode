@@ -50,6 +50,7 @@ export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 		source: "builtin",
 		readonly: false,
 		background: false,
+		autonomous: false,
 		tools: [...GENERAL_TOOL_NAMES],
 		disallowedTools: [],
 	},
@@ -59,6 +60,7 @@ export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 		source: "builtin",
 		readonly: false,
 		background: false,
+		autonomous: false,
 		model: "CPA/gpt-6.1-sol",
 		thinking: "xhigh",
 		tools: [...ALL_TOOL_NAMES],
@@ -70,6 +72,7 @@ export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 		source: "builtin",
 		readonly: false,
 		background: false,
+		autonomous: false,
 		model: "CPA/kimi-k3",
 		thinking: "max",
 		instructions:
@@ -84,6 +87,7 @@ export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 		source: "builtin",
 		readonly: true,
 		background: false,
+		autonomous: true,
 		instructions: EXPLORE_INSTRUCTIONS,
 		tools: [...READ_ONLY_TOOL_NAMES],
 		disallowedTools: [],
@@ -95,6 +99,7 @@ export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 		source: "builtin",
 		readonly: false,
 		background: false,
+		autonomous: false,
 		tools: [...SHELL_TOOL_NAMES],
 		disallowedTools: [],
 	},
@@ -180,6 +185,7 @@ function readAgentFile(path: string, source: "user" | "project"): AgentType | st
 		source,
 		readonly,
 		background: fields.is_background === true,
+		autonomous: fields.autonomous === true,
 		model: readString(fields.model),
 		instructions: body.trim() || undefined,
 		tools: tools.filter((tool) => !disallowedTools.includes(tool)),
@@ -221,18 +227,19 @@ export function findAgentType(types: readonly AgentType[], name: string): AgentT
 	return types.find((type) => type.name === name);
 }
 
-/** Render the "Available subagent_type values" block of the task description. */
+/** Render the "Available subagent_type values" block of the `subagents` system prompt section. */
 export function describeAgentTypes(types: readonly AgentType[]): string {
 	const lines = types.map((type) => {
 		const details = [
 			`tools: ${type.tools.join(", ") || "none"}`,
-			type.model ? `model: ${type.model}` : "model: inherit",
+			type.model ? `model: ${type.model} (fixed)` : "model: inherit",
 			type.thinking ? `thinking: ${type.thinking}` : "thinking: inherit",
 			type.contextWindow ? `context: ${type.contextWindow.toLocaleString()} tokens` : undefined,
 		]
 			.filter(Boolean)
 			.join("; ");
-		return `- ${type.name}: ${type.description} (${details})`;
+		const marker = type.autonomous ? " [autonomous]" : "";
+		return `- ${type.name}${marker}: ${type.description} (${details})`;
 	});
 	return `Available subagent_type values\n\n${lines.join("\n")}`;
 }

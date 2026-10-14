@@ -445,6 +445,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
 	});
+	await session.waitForReadState();
 
 	const extensionsResult = resourceLoader.getExtensions();
 

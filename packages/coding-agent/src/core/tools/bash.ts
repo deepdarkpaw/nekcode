@@ -15,7 +15,9 @@ import {
 } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
+import type { ReadStateStore } from "./read-state.ts";
 import { BASH_UPDATE_THROTTLE_MS, createShellRenderers } from "./renderers/bash.ts";
+import { resolveShellRead, type ShellReadEvidence } from "./shell-read-recognition.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.ts";
 
@@ -41,8 +43,11 @@ const bashSchema = Type.Object({
 });
 
 export const bashToolSystemPromptContribution = {
-	snippet: "Execute bash commands (ls, grep, find, etc.)",
-	guidelines: ["You can inspect NEK_* environment variables for current model and session details."],
+	snippet: "Run bash commands: builds, tests, git, package managers, scripts",
+	guidelines: [
+		"Use bash for commands that need a shell (builds, tests, git, package managers); use the file tools for reading, searching, and editing files when they are available",
+		"You can inspect NEK_* environment variables for current model and session details.",
+	],
 } as const;
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -50,6 +55,8 @@ export type BashToolInput = Static<typeof bashSchema>;
 export interface BashToolDetails {
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
+	/** Successful literal file read, resolved against the actual execution cwd, for transcript replay. */
+	readState?: ShellReadEvidence;
 }
 
 /**
@@ -206,6 +213,8 @@ export interface BashToolOptions {
 	exposeSessionEnvironment?: boolean;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
+	/** Per-session read state updated by successful recognized literal shell reads. */
+	readState?: ReadStateStore;
 }
 
 export type BashRenderState = {
@@ -233,10 +242,11 @@ export function createShellToolDefinition(
 	const commandPrefix = options?.commandPrefix;
 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
+	const readState = options?.readState;
 	return {
 		name: config.name,
 		label: config.label,
-		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr; a non-zero exit code is reported as an error with the output. Output is truncated to the last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first); the full output is then saved to a temp file whose path is given. There is no default timeout: set timeout (seconds) for commands that may hang, and do not start long-running servers or watchers in the foreground.`,
 		promptSnippet: config.promptSnippet,
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
 		parameters: bashSchema,
@@ -371,7 +381,27 @@ export function createShellToolDefinition(
 				if (exitCode !== 0) {
 					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
 				}
-				return { content: [{ type: "text", text: outputText }], details };
+				let shellRead =
+					readState && !signal?.aborted
+						? await resolveShellRead(
+								spawnContext.command,
+								config.name === "powershell" ? "powershell" : "bash",
+								spawnContext.cwd,
+							)
+						: undefined;
+				if (signal?.aborted) shellRead = undefined;
+				if (shellRead && readState) {
+					readState.set(shellRead.path, {
+						content: "",
+						timestamp: Date.now(),
+						offset: shellRead.offset,
+						limit: shellRead.limit,
+					});
+				}
+				return {
+					content: [{ type: "text", text: outputText }],
+					details: shellRead ? { ...(details ?? {}), readState: shellRead } : details,
+				};
 			} finally {
 				clearUpdateTimer();
 			}

@@ -61,6 +61,7 @@ export function createAskQuestionToolDefinition(): ToolDefinition<typeof askQues
 	return {
 		name: ASK_QUESTION_TOOL_NAME,
 		label: "Question",
+		promptSnippet: "Ask the user structured multiple-choice questions",
 		description: ASK_QUESTION,
 		parameters: askQuestionSchema,
 		// Asking again after a crash is the recovery: the dialog reopens.

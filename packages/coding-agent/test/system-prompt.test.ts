@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
-import { buildSystemPrompt } from "../src/core/system-prompt.ts";
+import { buildSystemPrompt, buildSystemPromptSections, renderProjectInstructions } from "../src/core/system-prompt.ts";
 
 const testSkill: Skill = {
 	name: "test-skill",
@@ -62,7 +62,7 @@ describe("buildSystemPrompt", () => {
 			expect(buildSystemPrompt({ forceSystemPrompt: "exact", cwd: "/tmp" })).toBe("exact");
 		});
 
-		test("maps appended instructions and project context to stable sections", () => {
+		test("maps appended instructions to a section and keeps context files out of the system prompt", () => {
 			const prompt = buildSystemPrompt({
 				customPrompt: "You are Exact.",
 				appendSystemPrompt: "Additional instructions.",
@@ -73,10 +73,55 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(prompt).toContain("<addendum>\nAdditional instructions.\n</addendum>");
-			expect(prompt).toContain(
-				'<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path="/tmp/AGENTS.md">',
-			);
+			expect(prompt).not.toContain("Project instructions.");
+			expect(prompt).not.toContain("project_context");
 			expect(prompt).toContain("<cwd>\n/tmp\n</cwd>");
+		});
+
+		test("states the precedence of project instructions in the rules only when context files exist", () => {
+			const base = { selectedTools: [], skills: [], cwd: "/tmp" };
+			const rule = "Follow the <project_instructions> message as standing user instructions";
+			expect(buildSystemPrompt({ ...base, contextFiles: [{ path: "/tmp/AGENTS.md", content: "x" }] })).toContain(
+				rule,
+			);
+			expect(buildSystemPrompt({ ...base, contextFiles: [] })).not.toContain(rule);
+		});
+
+		test("appends extension sections after cwd so a later-added section is an append-only patch", () => {
+			const sections = buildSystemPromptSections({
+				selectedTools: ["read"],
+				skills: [testSkill],
+				contextFiles: [],
+				cwd: "/tmp",
+				sections: { task_management: "Track work.", mode_selection: "Pick a mode." },
+			});
+			expect(Object.keys(sections)).toEqual([
+				"preamble",
+				"tools",
+				"rules",
+				"skills",
+				"cwd",
+				"task_management",
+				"mode_selection",
+			]);
+		});
+	});
+
+	describe("project instructions message", () => {
+		test("is undefined without context files", () => {
+			expect(renderProjectInstructions([])).toBeUndefined();
+		});
+
+		test("wraps each file with its path in order", () => {
+			const text = renderProjectInstructions([
+				{ path: "/home/u/.nek/agent/AGENTS.md", content: "Global rules.\n" },
+				{ path: "/repo/AGENTS.md", content: "Repo rules." },
+			]);
+			expect(text?.startsWith("<project_instructions>\n\n")).toBe(true);
+			expect(text?.endsWith("\n\n</project_instructions>")).toBe(true);
+			expect(text).toContain('<file path="/home/u/.nek/agent/AGENTS.md">\nGlobal rules.\n</file>');
+			expect(text?.indexOf("Global rules.")).toBeLessThan(text?.indexOf("Repo rules.") ?? -1);
+			expect(text).toContain("the user's latest message takes precedence");
 		});
 	});
 

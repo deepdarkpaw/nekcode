@@ -16,7 +16,9 @@ const writeSchema = Type.Object({
 
 export const writeToolSystemPromptContribution = {
 	snippet: "Create or overwrite files",
-	guidelines: ["Use write only for new files or complete rewrites."],
+	guidelines: [
+		"Use write only for new files or complete rewrites. Overwriting an existing file requires reading it first with read or a recognized shell read such as cat.",
+	],
 } as const;
 
 export type WriteToolInput = Static<typeof writeSchema>;
@@ -54,7 +56,7 @@ export function createWriteToolDefinition(
 		name: "write",
 		label: "write",
 		description:
-			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Overwriting an existing file requires reading it first with read or a recognized shell read such as cat. Automatically creates parent directories.",
 		promptSnippet: writeToolSystemPromptContribution.snippet,
 		promptGuidelines: [...writeToolSystemPromptContribution.guidelines],
 		parameters: writeSchema,

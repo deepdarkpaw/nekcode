@@ -433,6 +433,7 @@ Configure compaction in `~/.nek/agent/settings.json` or `<project-dir>/.nek/sett
 | `enabled` | `true` | Enable auto-compaction |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `model` | None | Exact `provider/modelId` that writes summaries; see [Compaction model](#compaction-model) |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 
@@ -461,3 +462,42 @@ Keys are exact, case-sensitive `provider/modelId` values, including any slashes 
 These resolved values are used for manual compaction, all automatic threshold checks, overflow recovery, and extension-visible `preparation.settings`. Model switches affect subsequent checks and compactions without changing ordinary settings. Compaction already in progress uses the model and settings captured for that operation. Branch summarization settings are unaffected.
 
 Overrides work in both global and project settings. The files merge recursively before lookup, so a global model-specific value beats a project-wide fallback; a project must override that model entry to change it. See [Settings](settings.md#per-model-compaction-overrides) for details.
+
+### Compaction model
+
+By default, the main model writes compaction summaries. Set `compaction.model` to an exact `provider/modelId` to use a different summarizer, for example a cheaper model or one with a larger context window:
+
+```json
+{
+  "compaction": {
+    "model": "some-provider/cheap-model"
+  }
+}
+```
+
+The configured model writes every built-in compaction summary: `/compact`, threshold compaction, overflow recovery, and a manual compaction resumed after a crash. The main model stays selected for the conversation. Trigger thresholds, `reserveTokens`, and `keepRecentTokens` still resolve against the main model, including its `modelOverrides` entry. The summary output limit is derived from the main model's `reserveTokens` and capped by the compaction model's maximum output tokens.
+
+nekcode does not fall back to the main model. Compaction fails with an error naming `compaction.model` when:
+
+- the value is not an exact `provider/modelId`, or no registered model matches it;
+- the model's provider has no configured auth;
+- a summarization request does not fit the compaction model's context window. nekcode estimates each request it built (summarization prompts plus the serialized messages to summarize, about 4 characters per token), adds the request's output limit, and fails before sending that request. Models with an unknown context window are not checked.
+
+The model and its auth are resolved before `session_before_compact` runs, as the main model's auth is, so an invalid `compaction.model` fails compaction even when a handler would return its own compaction. A handler that does return a compaction replaces the built-in summarizer, so `compaction.model` does not write that summary.
+
+SDK sessions with a custom stream function apply the same auth rule to the compaction model as to the main model: missing registry auth is allowed, because the stream function receives the compaction model and supplies its own auth. The model must still be registered.
+
+Compaction summaries use the session's thinking level by default, clamped by the provider as for any request. Set `compaction.thinkingLevel` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`) to summarize at a fixed level instead:
+
+```json
+{
+  "compaction": {
+    "model": "some-provider/reasoning-model",
+    "thinkingLevel": "max"
+  }
+}
+```
+
+The level must be supported by the summarizing model (the compaction model, or the main model when `compaction.model` is unset). An unsupported level fails compaction with an error naming `compaction.thinkingLevel`; it is not lowered to a supported one.
+
+Branch summaries always use the main model and are not affected by `compaction.thinkingLevel`.

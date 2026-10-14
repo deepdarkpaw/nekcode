@@ -3,9 +3,9 @@ import { resolve } from "node:path";
 
 /** One recorded read of a file. Both range fields are undefined for a whole-file read. */
 export interface ReadStateRecord {
-	/** File content with CRLF normalized to LF. */
+	/** File content normalized to LF; empty for shell or transcript-only evidence. */
 	content: string;
-	/** File modification time in milliseconds when the file was read. */
+	/** File mtime or successful result timestamp in milliseconds. Never checked for live write rejection. */
 	timestamp: number;
 	/** First line read (1-indexed), or undefined when the whole file was read. */
 	offset: number | undefined;
@@ -21,6 +21,7 @@ export interface ReadStateRecord {
 export interface ReadStateStore {
 	get(absolutePath: string): ReadStateRecord | undefined;
 	set(absolutePath: string, record: ReadStateRecord): void;
+	clear(): void;
 }
 
 /** Default entry limit of a store (Claude Code READ_FILE_STATE_CACHE_SIZE). */
@@ -90,6 +91,10 @@ export function createReadStateStore(
 			records.set(key, record);
 			totalBytes += sizeOf(record);
 			evict();
+		},
+		clear() {
+			records.clear();
+			totalBytes = 0;
 		},
 	};
 }

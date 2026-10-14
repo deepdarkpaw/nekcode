@@ -123,7 +123,7 @@ describe("tool exposure provider declarations", () => {
 		}
 	});
 
-	it("preserves direct exposure and mode-controlled activation for all nek tools", async () => {
+	it("preserves direct exposure and keeps every nek tool active across modes", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
 				createNekExtension({ role: "root", config: DEFAULT_NEK_CONFIG }),
@@ -147,17 +147,14 @@ describe("tool exposure provider declarations", () => {
 				.filter((tool) => tool.sourceInfo.path === "<inline:1>");
 			expect(registeredNekTools.map((tool) => tool.name).sort()).toEqual([...nekTools].sort());
 			expect(registeredNekTools.every((tool) => tool.exposure === "direct")).toBe(true);
-			expect(harness.session.getActiveToolNames()).toEqual(
-				expect.arrayContaining(["subagent", "await", "todo_write", "switch_mode", "ask_question"]),
-			);
-			expect(harness.session.getActiveToolNames()).not.toContain("create_plan");
-			expect(harness.session.getActiveToolNames()).not.toContain("update_plan");
-			expect(harness.session.getActiveToolNames()).not.toContain("tool_search");
+			const agentTools = harness.session.getActiveToolNames();
+			expect(agentTools).toEqual(expect.arrayContaining(nekTools));
+			expect(agentTools).not.toContain("tool_search");
+			// Mode changes never change the declarations, so the provider's prompt cache survives them.
 			await harness.session.prompt("/plan");
-			expect(harness.session.getActiveToolNames()).toEqual(expect.arrayContaining(nekTools));
+			expect(harness.session.getActiveToolNames()).toEqual(agentTools);
 			await harness.session.prompt("/agent");
-			expect(harness.session.getActiveToolNames()).not.toContain("create_plan");
-			expect(harness.session.getActiveToolNames()).not.toContain("update_plan");
+			expect(harness.session.getActiveToolNames()).toEqual(agentTools);
 		} finally {
 			harness.cleanup();
 		}

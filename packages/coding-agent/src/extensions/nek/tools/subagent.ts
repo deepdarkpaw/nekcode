@@ -7,7 +7,7 @@ import type {
 	ToolCallMemo,
 	ToolDefinition,
 } from "../../../core/extensions/types.ts";
-import { backgroundSubagentStartText, formatSubagentResult } from "../prompts/subagent.ts";
+import { backgroundSubagentStartText, formatSubagentResult, SUBAGENT_DESCRIPTION } from "../prompts/subagent.ts";
 import { findAgentType } from "../services/agent-types.ts";
 import { resolveChildModel } from "../services/child-session.ts";
 import type { SubagentRegistry } from "../services/subagent-registry.ts";
@@ -20,45 +20,50 @@ export const SUBAGENT_TOOL_NAME = "subagent";
 /** Default subagent_type when the call omits it (plan.md section 7.2). */
 export const DEFAULT_AGENT_TYPE = "generalPurpose";
 
-/** Cursor subagent schema (reference/cursor/cursor-tools-2026.json line 679) without the cloud and attachment fields. */
-function createSubagentSchema(typeNames: readonly string[]) {
-	return Type.Object({
-		description: Type.String({
-			description:
-				"A short, user-friendly title for the subagent. This appears in the UI as the subagent's name. Make it concrete and distinct, consider recent titles to avoid reuse. For resumed subagents which you are prompting to work on a separate task, give an updated description based on the latest work the subagent is performing. (Do not rename if the subagent is continuing work on the same high-level task.)",
+/**
+ * Cursor subagent schema (reference/cursor/cursor-tools-2026.json line 679) without the cloud and attachment fields.
+ * Static, so the tool declaration never changes within a session; the type list lives in the `subagents` section.
+ */
+const subagentSchema = Type.Object({
+	description: Type.String({
+		description:
+			"Short, specific title shown to the user as the subagent's name. When resuming, keep the title unless the subagent now works on a different task.",
+	}),
+	prompt: Type.String({
+		description: "Self-contained task: goal, relevant context, whether files may be edited, and what to return.",
+	}),
+	subagent_type: Type.Optional(
+		Type.String({
+			description: `One of the types listed in the <subagents> section. Default: ${DEFAULT_AGENT_TYPE}.`,
 		}),
-		prompt: Type.String({ description: "The task for the agent to perform" }),
-		subagent_type: Type.Optional(
-			Type.String({ description: `Subagent type to use for this task. Must be one of: ${typeNames.join(", ")}.` }),
-		),
-		model: Type.Optional(
-			Type.String({
-				description:
-					"Optional model for this agent ('inherit' or provider/model). If omitted, the subagent uses the same model as the parent agent. Do not pass if resume is set (prior model will be used). Use \"inherit\" unless the user explicitly requested another listed model.",
-			}),
-		),
-		run_in_background: Type.Optional(
-			Type.Boolean({
-				description:
-					"Run the agent in the background. If this is false, you will be blocked until the agent completes. When true, the background subagent will send a notification when it completes.",
-			}),
-		),
-		resume: Type.Optional(
-			Type.String({
-				description:
-					"Optional agent ID to resume from. If provided, sends a follow-up message to the agent after it has completed. Requests to a currently running agent fail unless `interrupt` is true; set `interrupt` to true only when you intend to interrupt the running agent.",
-			}),
-		),
-		interrupt: Type.Optional(
-			Type.Boolean({
-				description:
-					"If true and `resume` targets a running agent, interrupt the current run and send this prompt immediately. Only use when the user explicitly asks to interrupt or change what the running agent is doing.",
-			}),
-		),
-	});
-}
+	),
+	model: Type.Optional(
+		Type.String({
+			description:
+				"Types with a preset model always use it; omit model (a different value is rejected). Only types without a preset accept an override: provider/model, or 'inherit' for your model (also the default). Set it only when the user explicitly asks for a model. Ignored with resume.",
+		}),
+	),
+	run_in_background: Type.Optional(
+		Type.Boolean({
+			description:
+				"Return immediately and get a notification when the subagent completes. If false, this call blocks until it completes.",
+		}),
+	),
+	resume: Type.Optional(
+		Type.String({
+			description:
+				"Subagent id to continue with its context preserved; the prompt is sent as a follow-up. Fails for a running subagent unless interrupt is true.",
+		}),
+	),
+	interrupt: Type.Optional(
+		Type.Boolean({
+			description:
+				"With resume on a running subagent: interrupt its current run and send this prompt now. Only when the user asks to redirect it.",
+		}),
+	),
+});
 
-type SubagentSchema = ReturnType<typeof createSubagentSchema>;
+type SubagentSchema = typeof subagentSchema;
 
 /** Validated subagent arguments. */
 export type SubagentToolInput = Static<SubagentSchema>;
@@ -66,7 +71,7 @@ export type SubagentToolInput = Static<SubagentSchema>;
 /** A child session request resolved by the subagent tool; the wiring turns it into createChildSession(). */
 export interface ChildSessionRequest {
 	type: AgentType;
-	/** Undefined when resuming from a session file: the child keeps its previous model. */
+	/** Undefined when reopening a type without a preset; otherwise the type's current preset applies. */
 	model: Model<Api> | undefined;
 	forceReadonly: boolean;
 	resumeFile?: string;
@@ -81,8 +86,6 @@ export interface BranchSubagent {
 
 /** Access to the registry, the agent types, and the mode owned by the extension. */
 export interface SubagentToolOptions {
-	/** Full description (SUBAGENT_DESCRIPTION plus the generated type and model sections). */
-	description: string;
 	agentTypes: readonly AgentType[];
 	getRegistry(): SubagentRegistry;
 	getMode(): Mode;
@@ -133,8 +136,9 @@ export function createSubagentToolDefinition(
 	return {
 		name: SUBAGENT_TOOL_NAME,
 		label: "Subagent",
-		description: options.description,
-		parameters: createSubagentSchema(options.agentTypes.map((type) => type.name)),
+		description: SUBAGENT_DESCRIPTION,
+		promptSnippet: "Delegate one bounded task to a subagent with its own context (types in <subagents>)",
+		parameters: subagentSchema,
 		replay: "safe",
 		async execute(toolCallId, params: SubagentToolInput, signal, onUpdate, ctx) {
 			const record = await startOrReattach(options, params, signal, ctx, ctx.getToolCallMemo?.(toolCallId));
@@ -202,7 +206,15 @@ async function reattachSubagent(
 		background: previous.background,
 		signal: previous.background ? undefined : signal,
 		createSession: () =>
-			options.createSession({ type, model: undefined, forceReadonly, resumeFile: previous.sessionFile }, ctx),
+			options.createSession(
+				{
+					type,
+					model: type.model !== undefined ? resolveChildModel(type.model, ctx) : undefined,
+					forceReadonly,
+					resumeFile: previous.sessionFile,
+				},
+				ctx,
+			),
 	});
 }
 
@@ -222,7 +234,10 @@ async function startSubagent(
 	remember: Remember,
 ): Promise<SubagentRecord> {
 	const type = resolveAgentType(options, params.subagent_type);
-	const model = resolveChildModel(params.model ?? type.model, ctx);
+	if (type.model !== undefined && params.model !== undefined && params.model !== type.model) {
+		throw new Error(`Subagent type "${type.name}" always uses its preset model ${type.model}; omit model.`);
+	}
+	const model = resolveChildModel(type.model ?? params.model, ctx);
 	const forceReadonly = type.readonly || options.getMode() === "plan";
 	const background = params.run_in_background ?? type.background;
 	return options.getRegistry().start({
@@ -265,7 +280,12 @@ async function resumeSubagent(
 			type: branchSubagent.type,
 			createSession: () =>
 				options.createSession(
-					{ type, model: undefined, forceReadonly, resumeFile: branchSubagent.sessionFile },
+					{
+						type,
+						model: type.model !== undefined ? resolveChildModel(type.model, ctx) : undefined,
+						forceReadonly,
+						resumeFile: branchSubagent.sessionFile,
+					},
 					ctx,
 				),
 		},

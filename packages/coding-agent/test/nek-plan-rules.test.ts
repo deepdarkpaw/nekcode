@@ -14,7 +14,7 @@ import {
 	slugify,
 	writePlanFile,
 } from "../src/extensions/nek/services/plan-store.ts";
-import { checkModeToolCall, isMarkdownPath, modeToolNames } from "../src/extensions/nek/state/mode-rules.ts";
+import { checkModeToolCall, isMarkdownPath, withModeTools } from "../src/extensions/nek/state/mode-rules.ts";
 import { activePlan, findPlan, replayBranch, todosAreActive } from "../src/extensions/nek/state/session-state.ts";
 import type { PlanRecord, Todo } from "../src/extensions/nek/types.ts";
 
@@ -92,9 +92,9 @@ describe("checkModeToolCall", () => {
 	});
 });
 
-describe("modeToolNames", () => {
-	it("adds plan authoring tools and keeps switch_mode in plan mode, keeping the rest", () => {
-		expect(modeToolNames(["read", "switch_mode", "write"], "plan")).toEqual([
+describe("withModeTools", () => {
+	it("adds switch_mode and the plan authoring tools, keeping the rest in order", () => {
+		expect(withModeTools(["read", "switch_mode", "write"])).toEqual([
 			"read",
 			"switch_mode",
 			"write",
@@ -103,9 +103,9 @@ describe("modeToolNames", () => {
 		]);
 	});
 
-	it("adds switch_mode and drops plan authoring tools in agent mode", () => {
-		expect(modeToolNames(["read", "create_plan", "update_plan"], "agent")).toEqual(["read", "switch_mode"]);
-		expect(modeToolNames(["switch_mode"], "agent")).toEqual(["switch_mode"]);
+	it("is idempotent, so a mode change never changes the tool declarations", () => {
+		const tools = withModeTools(["read"]);
+		expect(withModeTools(tools)).toEqual(tools);
 	});
 });
 

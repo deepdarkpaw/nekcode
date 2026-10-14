@@ -77,6 +77,11 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"stream ended before message_stop",
 	"stream ended before a terminal response event",
 	"http2 request did not get a response",
+	// Codex-backed proxies (for example CLIProxyAPI) relay Codex's own mid-stream drop after HTTP 200 as
+	// "stream error: stream disconnected before completion: stream closed before response.completed";
+	// the Codex WebSocket transport throws "WebSocket stream closed before response.completed".
+	"stream disconnected",
+	"closed before response\\.completed",
 
 	// Provider-requested retry delay cap failures should flow through the outer
 	// retry policy so callers can surface/abort the backoff (#1123).

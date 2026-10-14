@@ -130,7 +130,7 @@ describe("SubagentRegistry", () => {
 		}
 	});
 
-	it("sums input (with cache) and output tokens and stamps activity changes", async () => {
+	it("sums input and cache writes, excludes cache reads, and stamps activity changes", async () => {
 		const usageMessage = (input: number, output: number, cacheRead: number, cacheWrite: number) => {
 			const message = fauxAssistantMessage("partial");
 			message.usage = { ...message.usage, input, output, cacheRead, cacheWrite };
@@ -158,11 +158,57 @@ describe("SubagentRegistry", () => {
 		});
 		await registry.wait(record.id);
 
-		expect(registry.get(record.id)?.usage).toEqual({ input: 3_160, output: 25 });
+		expect(registry.get(record.id)?.usage).toEqual({ input: 160, output: 25 });
 		const first = snapshots.find((snapshot) => snapshot.activity?.startsWith("read"));
 		expect(first?.lastActivityAt).toBeGreaterThanOrEqual(before);
 		// Usage is replaced, not mutated, so earlier snapshots keep their totals.
-		expect(snapshots.map((snapshot) => snapshot.usage?.input)).toContain(1_150);
+		expect(snapshots.map((snapshot) => snapshot.usage)).toContainEqual({ input: 150, output: 20 });
+	});
+
+	it("counts failed-request usage once across resume without mutating snapshots", async () => {
+		const gate = createGate();
+		const harness = await child([
+			fauxAssistantMessage("partial answer", { stopReason: "error", errorMessage: "invalid_api_key" }),
+			gatedReply(gate, "recovered"),
+		]);
+		const registry = new SubagentRegistry(config({}), () => {});
+		const record = await registry.start(startInput(harness, "usage recovery", false));
+		const failedSnapshot = { ...(await registry.wait(record.id)) };
+		const failedMessages = harness
+			.eventsOfType("message_end")
+			.flatMap((event) => (event.message.role === "assistant" ? [event.message] : []));
+		expect(failedMessages).toHaveLength(1);
+		const failedUsage = failedMessages[0].usage;
+		const failedTotals = { input: failedUsage.input + failedUsage.cacheWrite, output: failedUsage.output };
+		expect(failedTotals.input).toBeGreaterThan(0);
+		expect(failedTotals.output).toBeGreaterThan(0);
+		expect(failedUsage.cacheWrite).toBeGreaterThan(0);
+		expect(failedSnapshot).toMatchObject({ status: "errored", error: "invalid_api_key", usage: failedTotals });
+
+		await registry.resume({ id: record.id, prompt: "recover", interrupt: false, background: false });
+		// Starting another run neither clears the failed request's usage nor counts it again.
+		expect(record.usage).toBe(failedSnapshot.usage);
+		expect(record.usage).toEqual(failedTotals);
+		gate.open();
+		const completed = await registry.wait(record.id);
+
+		const messages = harness
+			.eventsOfType("message_end")
+			.flatMap((event) => (event.message.role === "assistant" ? [event.message] : []));
+		expect(messages).toHaveLength(2);
+		expect(harness.faux.state.callCount).toBe(2);
+		const resumedUsage = messages[1].usage;
+		expect(resumedUsage.cacheRead).toBeGreaterThan(0);
+		expect(completed).toMatchObject({
+			status: "completed",
+			finalText: "recovered",
+			usage: {
+				input: failedTotals.input + resumedUsage.input + resumedUsage.cacheWrite,
+				output: failedTotals.output + resumedUsage.output,
+			},
+		});
+		expect(completed.usage).not.toBe(failedSnapshot.usage);
+		expect(failedSnapshot).toMatchObject({ status: "errored", error: "invalid_api_key", usage: failedTotals });
 	});
 
 	it("clamps await timeouts to [1000, awaitMaxMs] and treats <= 0 as non-blocking", () => {

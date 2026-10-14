@@ -1,6 +1,12 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall, type JsonObject } from "@earendil-works/pi-ai";
+import {
+	type FauxResponseStep,
+	fauxAssistantMessage,
+	fauxToolCall,
+	getCurrentSystemPrompt,
+	type JsonObject,
+} from "@earendil-works/pi-ai";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { CONFIG_DIR_NAME } from "../../src/config.ts";
 import type {
@@ -11,6 +17,7 @@ import type {
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/config.ts";
 import { createNekExtension } from "../../src/extensions/nek/index.ts";
+import { AUTONOMY } from "../../src/extensions/nek/prompts/autonomy.ts";
 import { IMPLEMENT_FRESH_PREFIX } from "../../src/extensions/nek/prompts/implement.ts";
 import { planId } from "../../src/extensions/nek/services/plan-store.ts";
 import { activePlan, replayBranch } from "../../src/extensions/nek/state/session-state.ts";
@@ -137,17 +144,39 @@ describe("nek plan mode", () => {
 		return harness;
 	}
 
-	it("/plan activates create_plan, sends the plan reminder, and blocks non-markdown writes", async () => {
+	it("the system prompt states when to stop for the user, identically in both modes", async () => {
+		const harness = await createNekHarness(createRecord());
+		const prompts: string[] = [];
+		const capture: FauxResponseStep = (context) => {
+			prompts.push(getCurrentSystemPrompt(context.messages));
+			return fauxAssistantMessage("done");
+		};
+		harness.setResponses([capture, capture]);
+
+		await harness.session.prompt("hello");
+		await harness.session.prompt("/plan design it");
+		await vi.waitFor(() => expect(harness.eventsOfType("agent_settled")).toHaveLength(2));
+
+		expect(currentState(harness).mode).toBe("plan");
+		expect(prompts).toHaveLength(2);
+		const [agentPrompt, planPrompt] = prompts;
+		expect(agentPrompt).toContain(`<autonomy>\n${AUTONOMY}\n</autonomy>`);
+		expect(agentPrompt.indexOf("<autonomy>")).toBeLessThan(agentPrompt.indexOf("<mode_selection>"));
+		expect(planPrompt).toBe(agentPrompt);
+	});
+
+	it("/plan keeps the tool set, sends the plan reminder, and blocks non-markdown writes", async () => {
 		const record = createRecord();
 		const harness = await createNekHarness(record);
-		expect(harness.session.getActiveToolNames()).not.toContain("create_plan");
-		expect(harness.session.getActiveToolNames()).toContain("switch_mode");
+		const agentTools = harness.session.getActiveToolNames();
+		expect(agentTools).toContain("create_plan");
+		expect(agentTools).toContain("switch_mode");
 
 		await harness.session.prompt("/plan");
 		expect(currentState(harness).mode).toBe("plan");
 		expect(record.modeStatus).toBe("plan");
-		expect(harness.session.getActiveToolNames()).toContain("create_plan");
-		expect(harness.session.getActiveToolNames()).toContain("switch_mode");
+		// Same declarations in both modes, so switching never invalidates the provider's prompt cache.
+		expect(harness.session.getActiveToolNames()).toEqual(agentTools);
 
 		const requests: string[] = [];
 		harness.setResponses([
@@ -163,6 +192,9 @@ describe("nek plan mode", () => {
 		expect(requests[0]).toContain("You are now in Plan mode. You have EXITED your previous mode.");
 		expect(requests[0]).toContain("Plan mode is active.");
 		expect(requests[0]).toContain("<plan_mode_guardrails>");
+		// Plan workflow state travels in the hidden reminder, not in a system prompt section.
+		expect(requests[0]).toContain("Current mode: Plan.");
+		expect(requests[0]).not.toContain("<plan_workflow>");
 		const writes = toolResults(harness, "write");
 		expect(writes[0].isError).toBe(true);
 		expect(JSON.stringify(writes[0].content)).toContain("Plan mode: only markdown files can be edited.");
@@ -352,7 +384,7 @@ describe("nek plan mode", () => {
 		expect(result.isError).toBe(true);
 		expect(JSON.stringify(result.content)).toContain("Mode switch requires user approval");
 		expect(currentState(harness).mode).toBe("agent");
-		expect(harness.session.getActiveToolNames()).not.toContain("create_plan");
+		expect(harness.session.getActiveToolNames()).toContain("create_plan");
 	});
 
 	it("switch_mode switches after the user confirms and returns the enter notice with the plan reminder", async () => {
@@ -402,7 +434,7 @@ describe("nek plan mode", () => {
 		expect(JSON.stringify(harness.sessionManager.getBranch())).not.toContain('"execution"');
 		expect(record.modeStatus).toBeUndefined();
 		expect(record.planWidget).toBe(false);
-		expect(harness.session.getActiveToolNames()).not.toContain("create_plan");
+		expect(harness.session.getActiveToolNames()).toContain("create_plan");
 		expect(requests[0]).toContain("You are now in Agent mode. You have EXITED your previous mode.");
 		expect(requests[0]).toContain("Implement the plan.");
 		expect(requests[0]).toContain("Approved plan: ");
@@ -750,7 +782,7 @@ describe("nek plan mode", () => {
 		if (!agentLeaf || !planLeaf) throw new Error("expected leaves");
 
 		await harness.session.navigateTree(agentLeaf);
-		expect(harness.session.getActiveToolNames()).not.toContain("create_plan");
+		expect(harness.session.getActiveToolNames()).toContain("create_plan");
 		expect(record.modeStatus).toBeUndefined();
 
 		await harness.session.navigateTree(planLeaf);

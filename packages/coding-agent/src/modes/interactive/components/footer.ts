@@ -37,6 +37,48 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
 	return relativeToHome === "" ? "~" : `~${sep}${relativeToHome}`;
 }
 
+/** Eighth-block glyphs of Claude Code's ProgressBar (reference/claude-code/packages/@ant/ink/src/theme/ProgressBar.tsx). */
+const PROGRESS_BLOCKS = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
+/** Cells of the context bar between its frame glyphs. */
+export const CONTEXT_BAR_WIDTH = 10;
+/** Narrower footers show the context usage as text only. */
+export const CONTEXT_BAR_MIN_FOOTER_WIDTH = 70;
+
+/** Claude Code's ProgressBar: whole cells are full blocks, the next cell an eighth block, the rest blank. */
+export function renderProgressBar(ratio: number, width: number): string {
+	const clamped = Math.min(1, Math.max(0, ratio));
+	const whole = Math.floor(clamped * width);
+	if (whole >= width) return PROGRESS_BLOCKS[PROGRESS_BLOCKS.length - 1]!.repeat(width);
+	const partial = PROGRESS_BLOCKS[Math.floor((clamped * width - whole) * PROGRESS_BLOCKS.length)]!;
+	return `${PROGRESS_BLOCKS[PROGRESS_BLOCKS.length - 1]!.repeat(whole)}${partial}${" ".repeat(width - whole - 1)}`;
+}
+
+/**
+ * Context usage segment of the stats line, e.g. `▕████▌     ▏ 45.2% 90.4k/200k (auto)`. Every piece carries its own
+ * color because `theme.fg` resets the foreground, which would end the dim wrapper around the stats line.
+ */
+export function formatContextUsage(
+	usage: Pick<ContextUsage, "tokens" | "percent"> | undefined,
+	contextWindow: number,
+	autoCompact: boolean,
+	showBar: boolean,
+): string {
+	const percent = usage?.percent ?? null;
+	const auto = autoCompact ? " (auto)" : "";
+	const windowText = formatTokens(contextWindow);
+	if (percent === null) return theme.fg("dim", `?/${windowText}${auto}`);
+	const level = percent > 90 ? "error" : percent > 70 ? "warning" : undefined;
+	const tokens = usage?.tokens;
+	const amount =
+		typeof tokens === "number"
+			? `${percent.toFixed(1)}% ${formatTokens(tokens)}/${windowText}`
+			: `${percent.toFixed(1)}%/${windowText}`;
+	const text = theme.fg(level ?? "dim", amount) + theme.fg("dim", auto);
+	if (!showBar) return text;
+	const bar = theme.fg(level ?? "accent", renderProgressBar(percent / 100, CONTEXT_BAR_WIDTH));
+	return `${theme.fg("dim", "▕")}${bar}${theme.fg("dim", "▏")} ${text}`;
+}
+
 interface SessionStats {
 	session: AgentSession;
 	sessionId: string;
@@ -151,8 +193,6 @@ export class FooterComponent implements Component {
 		const state = this.session.state;
 		const { usageTotals, latestCacheHitRate, contextUsage } = this.getSessionStats();
 		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
-		const contextPercentValue = contextUsage?.percent ?? 0;
-		const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
 
 		// Replace home directory with ~
 		let pwd = formatCwdForFooter(this.session.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE);
@@ -188,21 +228,14 @@ export class FooterComponent implements Component {
 			statsParts.push(costStr);
 		}
 
-		// Colorize context percentage based on usage
-		let contextPercentStr: string;
-		const autoIndicator = this.autoCompactEnabled ? " (auto)" : "";
-		const contextPercentDisplay =
-			contextPercent === "?"
-				? `?/${formatTokens(contextWindow)}${autoIndicator}`
-				: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
-		if (contextPercentValue > 90) {
-			contextPercentStr = theme.fg("error", contextPercentDisplay);
-		} else if (contextPercentValue > 70) {
-			contextPercentStr = theme.fg("warning", contextPercentDisplay);
-		} else {
-			contextPercentStr = contextPercentDisplay;
-		}
-		statsParts.push(contextPercentStr);
+		statsParts.push(
+			formatContextUsage(
+				contextUsage,
+				contextWindow,
+				this.autoCompactEnabled,
+				width >= CONTEXT_BAR_MIN_FOOTER_WIDTH,
+			),
+		);
 		if (areExperimentalFeaturesEnabled()) {
 			statsParts.push(`${theme.fg("dim", "•")} ${theme.bold(theme.fg("warning", "xp"))}`);
 		}

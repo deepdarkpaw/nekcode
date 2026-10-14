@@ -14,8 +14,8 @@ const lsSchema = Type.Object({
 });
 
 export const lsToolSystemPromptContribution = {
-	snippet: "List directory contents",
-	guidelines: [],
+	snippet: "List one directory (sorted, directories end with /, includes dotfiles)",
+	guidelines: ["Use ls to look inside one directory; search a directory tree with find"],
 } as const;
 
 export type LsToolInput = Static<typeof lsSchema>;
@@ -61,6 +61,7 @@ export function createLsToolDefinition(
 		label: "ls",
 		description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} entries or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
 		promptSnippet: lsToolSystemPromptContribution.snippet,
+		promptGuidelines: [...lsToolSystemPromptContribution.guidelines],
 		parameters: lsSchema,
 		async execute(
 			_toolCallId,

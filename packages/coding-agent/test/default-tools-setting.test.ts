@@ -74,7 +74,7 @@ describe("defaultTools setting", () => {
 		const session = await createSession(["read", "powershell", "edit", "write"]);
 
 		expect(session.getActiveToolNames()).toEqual(["read", "powershell", "edit", "write"]);
-		expect(session.systemPrompt).toContain("- powershell: Execute PowerShell commands");
+		expect(session.systemPrompt).toContain("- powershell: Run PowerShell commands");
 		expect(session.systemPrompt).not.toContain("- bash:");
 		session.dispose();
 	});
@@ -168,12 +168,13 @@ describe("defaultTools setting", () => {
 			sessionManager: SessionManager.inMemory(tempDir),
 		});
 		session.setActiveToolsByName(["read"]);
-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "grep"] }));
+		// powershell is not a built-in default, so adding it to defaultTools makes it newly configured.
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "powershell"] }));
 		await session.reload();
-		expect(session.getActiveToolNames().sort()).toEqual(["grep", "read"]);
+		expect(session.getActiveToolNames().sort()).toEqual(["powershell", "read"]);
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read"] }));
 		await session.reload();
-		expect(session.getActiveToolNames().sort()).toEqual(["grep", "read"]);
+		expect(session.getActiveToolNames().sort()).toEqual(["powershell", "read"]);
 		session.dispose();
 	});
 

@@ -55,6 +55,8 @@ Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `gre
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for the model response. |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens retained without summarization. |
 | `compaction.modelOverrides` | object | None | Per-model token settings keyed by exact `provider/modelId`. |
+| `compaction.model` | string | None (main model) | Exact `provider/modelId` that writes built-in compaction summaries. Token settings still follow the main model. See [Compaction model](compaction.md#compaction-model). |
+| `compaction.thinkingLevel` | string | None (session level) | Thinking level for built-in compaction summaries: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. It must be supported by the summarizing model. See [Compaction model](compaction.md#compaction-model). |
 
 <a id="per-model-compaction-overrides"></a>
 

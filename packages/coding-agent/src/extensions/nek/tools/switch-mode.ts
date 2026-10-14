@@ -41,6 +41,7 @@ export function createSwitchModeToolDefinition(
 	return {
 		name: SWITCH_MODE_TOOL_NAME,
 		label: "Mode",
+		promptSnippet: "Propose switching between agent and plan mode (the user approves)",
 		description: SWITCH_MODE,
 		parameters: switchModeSchema,
 		// The confirmation is asked again after a crash; switching to the same mode twice is harmless.

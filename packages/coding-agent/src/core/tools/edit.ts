@@ -26,8 +26,8 @@ const editSchema = Type.Object({
 });
 
 export const editToolSystemPromptContribution = {
-	snippet: "Make precise file edits with exact string replacement",
-	guidelines: ["Use edit for exact string replacements; old_string must match the current file content."],
+	snippet: "Replace exact text in a file (old_string to new_string, optional replace_all)",
+	guidelines: ["Use edit to change existing files, not sed, awk, or shell redirection"],
 } as const;
 
 export type EditToolInput = Static<typeof editSchema>;
@@ -79,8 +79,17 @@ function restoreContent(content: string, bom: string, lineEnding: "\r\n" | "\n")
 	return lineEnding === "\r\n" ? withBom.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n") : withBom;
 }
 
+/** edit description: matching rules, uniqueness, multiple changes, and what is and is not required. */
 function getEditDescription(): string {
-	return `Performs exact string replacements in files.\n\nUsage:\n- When editing text from read output, preserve exact indentation after the line number prefix. The line number prefix format is: line number + |. Everything after that is the actual file content to match. Never include any part of the line number prefix in old_string or new_string.\n- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n- The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.\n- Use \`replace_all\` for replacing and renaming strings across the file.\n- The file_path must be a file path, not a directory path. If the path resolves to an existing directory, the tool will reject it.`;
+	return `Replace exact text in a file.
+
+- old_string must match the current file exactly, including indentation; line endings are normalized, so LF text matches a CRLF file. When copying from read output, drop the line-number prefix (the number and the \`|\` after it).
+- old_string must occur exactly once; include more surrounding lines to make it unique, or set replace_all to change every occurrence (for example to rename a symbol within the file).
+- For several separate changes in one file, make several edit calls. Calls on the same file run in order, each against the result of the previous one, so they can go in one response.
+- Reading the file first is not required, but old_string must reflect its current content; read it if you have not seen it recently.
+- Trailing whitespace on new_string lines is removed, except in Markdown files.
+- An empty old_string creates the file when it does not exist yet.
+- Prefer editing existing files; create new files only when needed. Directories and Jupyter notebooks (.ipynb) cannot be edited.`;
 }
 
 export function createEditToolDefinition(

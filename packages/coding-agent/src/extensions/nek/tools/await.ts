@@ -62,6 +62,7 @@ export function createAwaitToolDefinition(
 	return {
 		name: AWAIT_TOOL_NAME,
 		label: "Waiting",
+		promptSnippet: "Wait for or check background subagents",
 		description: AWAIT_DESCRIPTION,
 		parameters: awaitSchema,
 		// Waiting has no effect of its own; it waits again after a crash.

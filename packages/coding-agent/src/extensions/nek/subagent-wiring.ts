@@ -8,7 +8,7 @@ import type {
 	ExtensionContext,
 } from "../../core/extensions/types.ts";
 import { createNekExtension, type NekRuntime } from "./index.ts";
-import { completionNotice, subagentDescription } from "./prompts/subagent.ts";
+import { completionNotice, SUBAGENTS_SECTION, subagentsSection } from "./prompts/subagent.ts";
 import { BUILTIN_AGENT_TYPES, describeAgentTypes, discoverAgentTypes } from "./services/agent-types.ts";
 import { childToolNames, createChildSession, modelRef } from "./services/child-session.ts";
 import { SubagentRegistry } from "./services/subagent-registry.ts";
@@ -29,6 +29,8 @@ export interface SubagentWiring {
 	nek: NekRuntime;
 	/** Built-in, user, and project types; rediscovered on every session_start. */
 	agentTypes: readonly AgentType[];
+	/** Scoped models (`provider/id`) listed as model overrides in the `subagents` section; set on session_start. */
+	models: readonly string[];
 	/** Created on first use with the loaded config; process-scoped, disposed on session_shutdown. */
 	registry: SubagentRegistry | undefined;
 	/** Latest context, used by background completions that arrive outside any event. */
@@ -42,8 +44,15 @@ export interface SubagentWiring {
  * notices are appended before the open-todos reminder.
  */
 export function registerSubagents(pi: ExtensionAPI, nek: NekRuntime): void {
-	const wiring: SubagentWiring = { pi, nek, agentTypes: BUILTIN_AGENT_TYPES, registry: undefined, ctx: undefined };
-	registerSubagentTools(wiring, []);
+	const wiring: SubagentWiring = {
+		pi,
+		nek,
+		agentTypes: BUILTIN_AGENT_TYPES,
+		models: [],
+		registry: undefined,
+		ctx: undefined,
+	};
+	registerSubagentTools(wiring);
 	pi.registerMessageRenderer<SubagentNoticeData>(SUBAGENT_NOTICE_TYPE, renderSubagentNotice);
 	pi.registerCommand("subagents", {
 		description: "List subagents; cancel one or show its result",
@@ -56,6 +65,13 @@ export function registerSubagents(pi: ExtensionAPI, nek: NekRuntime): void {
 		},
 	});
 	pi.on("session_start", (_event, ctx) => onSessionStart(wiring, ctx));
+	// Types and models change only on session_start, so the section stays byte-identical for the whole session.
+	pi.on("before_agent_start", (event) => {
+		event.systemPromptOptions.sections[SUBAGENTS_SECTION] = subagentsSection(
+			describeAgentTypes(wiring.agentTypes),
+			wiring.models,
+		);
+	});
 	pi.on("input_queued", (event) => {
 		if (event.behavior === "steer" && event.source !== "extension") wiring.registry?.interruptWaits();
 	});
@@ -82,18 +98,15 @@ function onSessionStart(wiring: SubagentWiring, ctx: ExtensionContext): void {
 	if (discovery.errors.length > 0 && ctx.hasUI) {
 		ctx.ui.notify(`Some subagent definitions could not be loaded:\n${discovery.errors.join("\n")}`, "warning");
 	}
-	registerSubagentTools(
-		wiring,
-		ctx.scopedModels.map((scoped) => modelRef(scoped.model)),
-	);
+	wiring.models = ctx.scopedModels.map((scoped) => modelRef(scoped.model));
+	registerSubagentTools(wiring);
 }
 
-/** (Re)register subagent and await; re-registering subagent refreshes its description with current types and models. */
-function registerSubagentTools(wiring: SubagentWiring, models: readonly string[]): void {
+/** (Re)register subagent and await; re-registering subagent validates against the current types. */
+function registerSubagentTools(wiring: SubagentWiring): void {
 	const { pi, nek } = wiring;
 	pi.registerTool(
 		createSubagentToolDefinition({
-			description: subagentDescription(describeAgentTypes(wiring.agentTypes), models),
 			agentTypes: wiring.agentTypes,
 			getRegistry: () => getRegistry(wiring),
 			getMode: () => nek.session.mode,

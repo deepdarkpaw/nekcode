@@ -1,61 +1,28 @@
 import type { Mode } from "../types.ts";
 
 /**
- * Cursor plan mode runtime reminder body, verbatim from reference/cursor/cursor-plan-mode-runtime-reminder.md
- * lines 13-64 (the third `<system_reminder>` block). `CreatePlan` and `AskQuestion` are renamed to `create_plan`
- * and `ask_question`.
+ * Plan mode runtime reminder, condensed from reference/cursor/cursor-plan-mode-runtime-reminder.md lines 13-64 (the
+ * third `<system_reminder>` block): the opening paragraph is verbatim, the twelve rules are merged into five, and
+ * `<mermaid_syntax>` keeps only the rules the renderer needs. `CreatePlan` and `AskQuestion` become `create_plan` and
+ * `ask_question`.
  */
 export const PLAN_MODE_REMINDER = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received (for example, to make edits). Instead, you should:
 
-1. Answer the user's query comprehensively by searching to gather information
+1. Answer the user's query comprehensively by researching with read-only tools. To speed up broad research, run parallel explore subagents on different parts of the codebase or different angles.
 
-2. If you do not have enough information to create an accurate plan, you MUST ask the user for more information. If any of the user instructions are ambiguous, you MUST ask the user to clarify.
+2. If information you cannot find in the code or instructions is missing, instructions are ambiguous, the scope is too broad, or several valid implementations would change the plan significantly, you MUST ask the user with the ask_question tool before planning. Ask 1-2 critical questions at a time, immediately at the start; do a small pre-read first only if ≤5 files (~20s) will likely answer them. Ask only about decisions that change the plan, never about routine procedure such as committing or backups.
 
-3. If the user's request is too broad, you MUST ask the user questions that narrow down the scope of the plan. ONLY ask 1-2 critical questions at a time.
+3. When you're done researching, present your plan by calling the create_plan tool, which will prompt the user to confirm the plan. To revise an existing plan, read the plan file, use edit for incremental changes, then call update_plan. Do NOT make any other changes until the user has confirmed the plan.
 
-4. If there are multiple valid implementations, each changing the plan significantly, you MUST ask the user to clarify which implementation they want you to use.
+4. Keep the plan concise, specific, actionable, and proportional to the request; don't over-engineer simple tasks. Cite specific file paths as markdown links with the full path (for example, \`[backend/src/foo.ts](backend/src/foo.ts)\`) and include essential code snippets. Do NOT use emojis.
 
-5. If you have determined that you will need to ask questions, you should ask them IMMEDIATELY at the start of the conversation. Prefer a small pre-read beforehand only if ≤5 files (~20s) will likely answer them.
-
-6. When you're done researching, present your plan by calling the create_plan tool, which will prompt the user to confirm the plan. When revising an existing plan, first use read to load the plan file, use edit for incremental changes, then call update_plan to submit it for review. Do NOT make any file changes or run any tools that modify the system state in any way until the user has confirmed the plan.
-
-7. The plan should be concise, specific and actionable. Cite specific file paths and essential snippets of code. When mentioning files, use markdown links with the full file path (for example, \`[backend/src/foo.ts
-](backend/src/foo.ts)\`).
-
-8. Keep plans proportional to the request complexity - don't over-engineer simple tasks.
-
-9. Do NOT use emojis in the plan.
-
-10. To speed up initial research, use parallel explore subagents via the subagent tool to explore different parts of the codebase or investigate different angles simultaneously.
-
-11. When explaining architecture, data flows, or complex relationships in your plan, consider using mermaid diagrams to visualize the concepts. Diagrams can make plans clearer and easier to understand.
-
-12. All questions to the user should be asked using the ask_question tool.
+5. Use mermaid diagrams when they make architecture, data flows, or complex relationships clearer.
 
 <mermaid_syntax>
-When writing mermaid diagrams:
-- Do NOT use spaces in node names/IDs. Use camelCase, PascalCase, or underscores instead.
-  - Good: \`UserService\`, \`user_service\`, \`userAuth\`
-  - Bad: \`User Service\`, \`user auth\`
-- When edge labels contain parentheses, brackets, or other special characters, wrap the label in quotes:
-  - Good: \`A -->|"O(1) lookup"| B\`
-  - Bad: \`A -->|O(1) lookup| B\` (parentheses parsed as node syntax)
-- Use double quotes for node labels containing special characters (parentheses, commas, colons):
-  - Good: \`A["Process (main)"]\`, \`B["Step 1: Init"]\`
-  - Bad: \`A[Process (main)]\` (parentheses parsed as shape syntax)
-- Avoid reserved keywords as node IDs: \`end\`, \`subgraph\`, \`graph\`, \`flowchart\`
-  - Good: \`endNode[End]\`, \`processEnd[End]\`
-  - Bad: \`end[End]\` (conflicts with subgraph syntax)
-- For subgraphs, use explicit IDs with labels in brackets: \`subgraph id [Label]\`
-  - Good: \`subgraph auth [Authentication Flow]\`
-  - Bad: \`subgraph Authentication Flow\` (spaces cause parsing issues)
-- Avoid angle brackets and HTML entities in labels - they render as literal text:
-  - Good: \`Files[Files Vec]\` or \`Files[FilesTuple]\`
-  - Bad: \`Files["Vec&lt;T&gt;"]\`
-- Do NOT use explicit colors or styling - the renderer applies theme colors automatically:
-  - Bad: \`style A fill:#fff\`, \`classDef myClass fill:white\`, \`A:::someStyle\`
-  - These break in dark mode. Let the default theme handle colors.
-- Click events are disabled for security - don't use \`click\` syntax
+- Node IDs without spaces (\`userService\`, \`user_service\`); never \`end\`, \`subgraph\`, \`graph\`, or \`flowchart\` as IDs.
+- Quote labels with special characters: \`A["Process (main)"]\`, \`A -->|"O(1) lookup"| B\`.
+- Subgraphs need an ID and a bracketed label: \`subgraph auth [Authentication Flow]\`.
+- No angle brackets or HTML entities in labels, no colors or styling (\`style\`, \`classDef\`, \`:::\`), no \`click\`.
 </mermaid_syntax>`;
 
 /**

@@ -9,6 +9,8 @@ import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-a
 import {
 	contentText,
 	getCurrentSystemMessage,
+	getSupportedThinkingLevels,
+	type Models,
 	normalizeContext,
 	type RetryCallbacks,
 	type RetryPolicy,
@@ -661,6 +663,12 @@ export async function completeSummarization(
 }
 
 /**
+ * Inspects one built compaction summarization request before it is sent; throws to reject it. `maxTokens` is the
+ * request's output budget.
+ */
+export type SummarizationRequestCheck = (model: Model<any>, context: TranscriptContext, maxTokens: number) => void;
+
+/**
  * Generate a summary of the conversation using the LLM.
  * If previousSummary is provided, uses the update prompt to merge.
  */
@@ -730,6 +738,7 @@ export async function generateSummaryWithUsage(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	checkRequest?: SummarizationRequestCheck,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
@@ -765,14 +774,9 @@ export async function generateSummaryWithUsage(
 		sessionId,
 	);
 
-	const response = await completeSummarization(
-		model,
-		buildSummarizationContext(promptText),
-		completionOptions,
-		streamFn,
-		retry,
-		callbacks,
-	);
+	const context = buildSummarizationContext(promptText);
+	checkRequest?.(model, context, maxTokens);
+	const response = await completeSummarization(model, context, completionOptions, streamFn, retry, callbacks);
 
 	const failure = getSummarizationFailure(response, "Summarization");
 	if (failure) {
@@ -983,6 +987,7 @@ Only summarize information explicitly present above. Do not infer or recreate la
  * @param preparation - Pre-calculated preparation from prepareCompaction()
  * @param customInstructions - Optional custom focus for the summary
  * @param sessionId - Optional routing session ID forwarded without enabling prompt caching
+ * @param checkRequest - Optional check of each built summarization request before it is sent
  */
 export async function compact(
 	preparation: CompactionPreparation,
@@ -997,6 +1002,7 @@ export async function compact(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	checkRequest?: SummarizationRequestCheck,
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -1032,6 +1038,7 @@ export async function compact(
 				retry,
 				callbacks,
 				sessionId,
+				checkRequest,
 			);
 			historyText = historyResult.text;
 			historyUsage = historyResult.usage;
@@ -1049,6 +1056,7 @@ export async function compact(
 			retry,
 			callbacks,
 			sessionId,
+			checkRequest,
 		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -1070,6 +1078,7 @@ export async function compact(
 			retry,
 			callbacks,
 			sessionId,
+			checkRequest,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;
@@ -1108,6 +1117,7 @@ async function generateTurnPrefixSummary(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	checkRequest?: SummarizationRequestCheck,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
@@ -1117,9 +1127,11 @@ async function generateTurnPrefixSummary(
 	const conversationText = serializeConversation(llmMessages);
 	const promptText = `# Conversation\n${conversationText}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
 
+	const context = buildSummarizationContext(promptText);
+	checkRequest?.(model, context, maxTokens);
 	const response = await completeSummarization(
 		model,
-		buildSummarizationContext(promptText),
+		context,
 		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId),
 		streamFn,
 		retry,
@@ -1137,5 +1149,86 @@ async function generateTurnPrefixSummary(
 	return {
 		text: contentText(response.content),
 		usage: response.usage,
+	};
+}
+
+// ============================================================================
+// Compaction model
+// ============================================================================
+
+/** Model and request auth for built-in compaction summaries. */
+export interface CompactionSummarizer {
+	model: Model<any>;
+	apiKey?: string;
+	headers?: Record<string, string>;
+	env?: Record<string, string>;
+	/** Set for a `compaction.model` summarizer: rejects requests that do not fit its context window. */
+	checkRequest?: SummarizationRequestCheck;
+}
+
+/**
+ * Resolve the `compaction.model` setting (exact `provider/modelId`) to the summarizer for built-in compaction; every
+ * compaction path that summarizes goes through here. Returns `undefined` when the setting is unset, so the main model
+ * summarizes as before. A configured model never falls back to the main model: an unknown model, a failing `auth`,
+ * or (when a request is built) summarization input beyond its context window throws an error naming
+ * `compaction.model`.
+ *
+ * @param auth - Request auth for the configured model under the host's rules; throws when it cannot authenticate
+ */
+export async function resolveCompactionModel(
+	setting: string | undefined,
+	models: Pick<Models, "getModel">,
+	auth: (model: Model<any>) => Promise<Omit<CompactionSummarizer, "checkRequest">>,
+	signal?: AbortSignal,
+): Promise<CompactionSummarizer | undefined> {
+	if (setting === undefined) return undefined;
+	const separator = setting.indexOf("/");
+	const model = separator > 0 ? models.getModel(setting.slice(0, separator), setting.slice(separator + 1)) : undefined;
+	if (model === undefined) {
+		throw new Error(
+			`compaction.model "${setting}" is not a known model. Set an exact provider/modelId from --list-models, or remove compaction.model to summarize with the main model.`,
+		);
+	}
+	let resolved: Omit<CompactionSummarizer, "checkRequest">;
+	try {
+		resolved = await auth(model);
+	} catch (error) {
+		if (signal?.aborted) throw error;
+		const reason = error instanceof Error ? error.message : String(error);
+		throw new Error(`compaction.model "${setting}" cannot authenticate: ${reason}`, { cause: error });
+	}
+	return { ...resolved, checkRequest: createContextWindowCheck(setting) };
+}
+
+/**
+ * Thinking level for one built-in compaction summary. The `compaction.thinkingLevel` setting must be supported by the
+ * summarizer model and never falls back to a lower level; when unset, the session's level is used and the provider
+ * clamps it to the model as for any request.
+ */
+export function resolveCompactionThinkingLevel(
+	setting: ThinkingLevel | undefined,
+	model: Model<any>,
+	sessionLevel: ThinkingLevel,
+): ThinkingLevel {
+	if (setting === undefined) return sessionLevel;
+	const supported = getSupportedThinkingLevels(model);
+	if (supported.includes(setting)) return setting;
+	throw new Error(
+		`compaction.thinkingLevel "${setting}" is not supported by ${model.provider}/${model.id} (supported: ${supported.join(", ")}). Set a supported level, or remove compaction.thinkingLevel to use the session's level.`,
+	);
+}
+
+/**
+ * Rejects a request whose estimated input (the built system prompt and summarization prompt, chars/4) plus its output
+ * budget exceeds the model's context window. Models without a known window (`contextWindow <= 0`) are not checked.
+ */
+function createContextWindowCheck(setting: string): SummarizationRequestCheck {
+	return (model, context, maxTokens) => {
+		if (model.contextWindow <= 0) return;
+		const inputTokens = context.messages.reduce((total, message) => total + estimateTokens(message), 0);
+		if (inputTokens + maxTokens <= model.contextWindow) return;
+		throw new Error(
+			`compaction.model "${setting}" cannot fit the summarization request: about ${inputTokens} input tokens plus ${maxTokens} output tokens exceed its ${model.contextWindow}-token context window. Choose a compaction.model with a larger context window, or remove compaction.model to summarize with the main model.`,
+		);
 	};
 }

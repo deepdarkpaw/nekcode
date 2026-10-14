@@ -46,8 +46,10 @@ const astGrepSchema = Type.Object({
  * Source: plan.md section 4.2; Cursor and Codex have no equivalent tool, so there is no Cursor original.
  */
 export const astGrepToolSystemPromptContribution = {
-	snippet: "Structural code search by AST pattern (ast-grep); prefer over grep for code constructs",
-	guidelines: ["Use ast_grep for syntax-aware code search (calls, definitions, imports); use grep for plain text"],
+	snippet: "Search code by syntax-tree pattern: definitions, calls, imports (ast-grep)",
+	guidelines: [
+		"Use ast_grep to find code constructs (definitions, calls, imports); write the pattern as code, with $X for one node and $$$X for any number",
+	],
 } as const;
 
 /** Parameters accepted by the ast_grep tool. */

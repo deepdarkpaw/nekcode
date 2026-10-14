@@ -175,6 +175,66 @@ describe("compaction model overrides", () => {
 		);
 	});
 
+	describe("compaction.model", () => {
+		it("is unset by default", () => {
+			expect(SettingsManager.inMemory().getCompactionModel()).toBeUndefined();
+		});
+
+		it("reads an exact provider/modelId, including model IDs containing slashes", () => {
+			const storage = new InMemorySettingsStorage();
+			storage.withLock("global", () => JSON.stringify({ compaction: { model: modelKey } }));
+			const manager = SettingsManager.fromStorage(storage);
+			expect(manager.getCompactionModel()).toBe(modelKey);
+			manager.applyOverrides({ compaction: { model: "other/summarizer" } });
+			expect(manager.getCompactionModel()).toBe("other/summarizer");
+		});
+
+		it("does not change the main model's token budgets", () => {
+			const manager = SettingsManager.inMemory({
+				compaction: {
+					model: "provider/summarizer",
+					modelOverrides: {
+						[modelKey]: { reserveTokens: 4000 },
+						"provider/summarizer": { reserveTokens: 1, keepRecentTokens: 1 },
+					},
+				},
+			});
+			expect(manager.getCompactionSettings(model)).toEqual({ ...defaults, reserveTokens: 4000 });
+		});
+
+		it.each([null, "", "model", "provider/", "/model", "provider /model", "provider/model id", 42, true, {}, []])(
+			"reports invalid values: %j",
+			(value) => {
+				const storage = new InMemorySettingsStorage();
+				storage.withLock("global", () => JSON.stringify({ compaction: { model: value } }));
+				const manager = SettingsManager.fromStorage(storage);
+				expect(() => manager.getCompactionModel()).toThrow(
+					`Invalid compaction.model setting: ${String(value)}. Expected exact provider/modelId.`,
+				);
+				expect(manager.getCompactionSettings(model)).toEqual(defaults);
+			},
+		);
+	});
+
+	describe("compaction.thinkingLevel", () => {
+		it("is unset by default and reads a level", () => {
+			expect(SettingsManager.inMemory().getCompactionThinkingLevel()).toBeUndefined();
+			const manager = SettingsManager.inMemory({ compaction: { thinkingLevel: "max" } });
+			expect(manager.getCompactionThinkingLevel()).toBe("max");
+			manager.applyOverrides({ compaction: { thinkingLevel: "off" } });
+			expect(manager.getCompactionThinkingLevel()).toBe("off");
+		});
+
+		it.each([null, "", "maximum", 3, true])("reports invalid values: %j", (value) => {
+			const storage = new InMemorySettingsStorage();
+			storage.withLock("global", () => JSON.stringify({ compaction: { thinkingLevel: value } }));
+			const manager = SettingsManager.fromStorage(storage);
+			expect(() => manager.getCompactionThinkingLevel()).toThrow(
+				`Invalid compaction.thinkingLevel setting: ${String(value)}. Expected one of off, minimal, low, medium, high, xhigh, max.`,
+			);
+		});
+	});
+
 	it("accepts zero in ordinary settings and model overrides", () => {
 		const manager = SettingsManager.inMemory({
 			compaction: { reserveTokens: 0, keepRecentTokens: 0 },

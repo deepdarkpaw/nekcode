@@ -85,8 +85,8 @@ export interface SubagentRecord {
 	/** Actual model used by the child, in `provider/id` form. */
 	model?: string;
 	/**
-	 * Tokens used by the child session so far, summed over its assistant messages. `input` includes cache reads and
-	 * writes. Records stored by older versions lack this field.
+	 * Tokens used by the child session so far, summed over its assistant messages, including failed requests and
+	 * resumed runs. `input` includes cache writes but excludes cache reads. Records stored by older versions lack this field.
 	 */
 	usage?: SubagentUsage;
 }
@@ -122,6 +122,11 @@ export interface AgentType {
 	source: "builtin" | "user" | "project";
 	readonly: boolean;
 	background: boolean;
+	/**
+	 * The parent may start this type on its own initiative (broad exploration). Every other type needs an explicit
+	 * user request; the subagent tool description states the rule and the `subagents` section marks these types.
+	 */
+	autonomous: boolean;
 	model?: string;
 	instructions?: string;
 	/** Tool allowlist of the child session. */

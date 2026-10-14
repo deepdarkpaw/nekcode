@@ -86,6 +86,7 @@ export function createUpdatePlanToolDefinition(
 	return {
 		name: UPDATE_PLAN_TOOL_NAME,
 		label: "Plan update",
+		promptSnippet: "Plan mode: submit an edited plan file for user review",
 		description: UPDATE_PLAN,
 		parameters: updatePlanSchema,
 		executionMode: "sequential",

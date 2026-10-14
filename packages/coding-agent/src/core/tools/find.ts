@@ -32,8 +32,8 @@ const findSchema = Type.Object({
 });
 
 export const findToolSystemPromptContribution = {
-	snippet: "Find files by glob pattern (respects .gitignore)",
-	guidelines: [],
+	snippet: "Find files by glob pattern (respects .gitignore, includes dotfiles)",
+	guidelines: ["Use find to locate files by name or path pattern, not find or ls -R in the shell"],
 } as const;
 
 export type FindToolInput = Static<typeof findSchema>;
@@ -75,8 +75,9 @@ export function createFindToolDefinition(
 	return {
 		name: "find",
 		label: "find",
-		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
+		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. A pattern without '/' matches file names anywhere below the path ('*.ts', '*config*'); a pattern with '/' matches the relative path ('src/**/*.test.ts'). Respects .gitignore and includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
 		promptSnippet: findToolSystemPromptContribution.snippet,
+		promptGuidelines: [...findToolSystemPromptContribution.guidelines],
 		parameters: findSchema,
 		async execute(
 			_toolCallId,

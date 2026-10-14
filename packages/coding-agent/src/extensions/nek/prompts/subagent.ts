@@ -15,87 +15,45 @@ export const SUBAGENT_INSTRUCTIONS_SECTION = "subagent_instructions";
  */
 export const EXPLORE_INSTRUCTIONS = `Explore the codebase to answer the question in the task prompt. You cannot edit files: report findings, file paths, and code structure instead of changing anything. State the desired depth in your answer: quick, medium, or very thorough.`;
 
+/** System prompt section that lists the subagent types and the model overrides (see `subagentsSection()`). */
+export const SUBAGENTS_SECTION = "subagents";
+
 /**
- * SUBAGENT_DESCRIPTION: Cursor subagent description, from reference/cursor/cursor-tools-2026.json line 679 (2026). Tool names
- * are mapped to pi (Read/Glob/Grep/Shell -> read/find/grep/bash); cloud links, `resume="self"`, and the fixed type and model lists
- * are removed. The type list and the model section are generated per session (plan.md sections 7.3 and 7.5).
+ * SUBAGENT_DESCRIPTION: condensed from the Cursor Task description (reference/cursor/cursor-tools-2026.json line 679).
+ * The type and model lists live in the `subagents` system prompt section, so this description is static. Spawning
+ * authorization follows Codex spawn_agent (codex-rs/core/src/tools/handlers/multi_agents_spec.rs): only types marked
+ * autonomous may be started without an explicit user request.
  */
-export const SUBAGENT_DESCRIPTION = `Launch a new agent to autonomously handle a clearly bounded task that is suitable for delegation.
+export const SUBAGENT_DESCRIPTION = `Launch a subagent: a separate agent with its own context window that completes one clearly bounded task and returns its final answer to you. The available types and model overrides are listed in the <subagents> section of the system prompt.
 
-The subagent tool starts a dedicated subagent. Each subagent_type has specific capabilities and available tools. When using subagent, select the agent type through subagent_type.
+When to delegate
+- By default, do the work yourself with your own tools. A task being broad, multi-step, exploratory, or uncertain is not by itself a reason to delegate.
+- Types marked [autonomous] may be started on your own initiative when a task clearly needs broad codebase exploration that would take many searches or flood your context with raw output.
+- Every other type, including custom types, needs an explicit user request: the user asks for a subagent, delegation, or parallel work, or names the agent. Requests for depth, thoroughness, investigation, or research do not count as permission.
+- Never delegate what one or a few direct tool calls can do, and never hand the whole request to a subagent and relay its answer. You remain responsible for understanding the request, integrating results, and the final response.
 
-Default behavior
+How to call
+- prompt must be self-contained: the subagent cannot see this conversation. State the goal, the relevant context (file paths, findings, constraints), whether it may edit files, and what it should return.
+- description is a short, specific title the user sees.
+- Omit model unless the user explicitly asks for a model (see <subagents>).
+- Treat the result as working material and verify it in proportion to the risk before relying on it.
+- When two or three independent tasks qualify, start them in the same response. Do not split one investigation just to run it in parallel.
+- run_in_background returns immediately; you are notified when the subagent finishes, so do not poll.
+- resume continues an existing subagent with its context; set interrupt only when the user asks to redirect a running one. Without resume, every call starts a fresh subagent.
+- When mentioning a subagent to the user, link it as [Name](id).`;
 
-Handle the user's request directly by default, preferring direct tools such as read, find, grep, bash, and MCP. A task being broad, multi-step, requiring codebase exploration, having an uncertain answer, or theoretically parallelizable is not by itself a reason to use subagent.
-
-Use subagent only when at least one of the following applies:
-- The user explicitly asks to start an agent, subagent, or worker, or explicitly asks for parallel delegation.
-- There is a substantial, clearly bounded workflow that can be completed independently and delegating it would materially help the current task.
-- The task genuinely requires capabilities provided by a specialized subagent_type.
-
-If the current agent can complete the work with one or a few direct tool calls, do not use subagent. Do not hand the entire user request to a subagent and simply return its result; the current agent remains responsible for understanding the user's intent, integrating results, and producing the final response.
-
-Concurrency rules
-
-- Launch one to three subagents by default, matching the number of independent workflows that genuinely need delegation.
-- Launch multiple subagents at the same time only when the user explicitly requests parallel agents or when there are two or three independent, substantial workflows.
-- When the user does not specify a number, launch at most three subagents in a single response. If the user explicitly requests more, you may launch the requested number.
-- Do not artificially split one investigation, one execution chain, or work that one agent can complete sequentially merely to create parallelism.
-- When multiple subagents should start together, issue multiple subagent calls in the same message.
-
-Examples
-
-- The user asks, "Where is the ClientError class defined?": use grep or find directly; do not use subagent.
-- The user asks to read a known file: use read directly; do not use subagent.
-- The user asks to search two or three specified files: use read, grep, or find directly; do not use subagent.
-- The user asks to run a query through a database API: call the relevant MCP directly; do not use subagent.
-- The user broadly asks about the repository structure: investigate with direct tools first; broad scope alone does not require delegation.
-- The user explicitly asks to "start two agents to investigate the client and server separately": start two clearly bounded tasks in parallel.
-
-Usage requirements
-
-- description must be a short, specific title that users can easily recognize.
-- prompt must clearly state the work the subagent should complete, its scope, constraints, and the information it should return.
-- Subagents cannot see the user's original message or the parent's previous steps, so prompt must include the context required to complete the task without copying unrelated context.
-- A subagent's response is working material for the parent. Verify it as appropriate for the task's risk instead of accepting it unconditionally.
-- Descriptions of subagent types explain their capabilities but do not override the rule that the current agent handles work directly by default. Do not call a type proactively merely because its description says it can be used proactively.
-- If the user explicitly requests parallel subagents, follow the number requested by the user.
-
-Resume and interruption
-
-- Use resume with an existing agent ID to continue that agent while preserving its context.
-- If the target agent is still running, a resume request fails unless interrupt=true.
-- Set interrupt=true only when the user explicitly asks to interrupt or change a running agent.
-- Without resume, each subagent call starts a new agent, so prompt must be self-contained.
-
-Display rules
-
-If you mention an agent or subagent in a user-facing response, link it as \`[Name](id)\`. Do not use generic labels such as \`[agent]\`, \`[worker]\`, or \`[subagent]\`.`;
-
-const SUBAGENT_DESCRIPTION_TAIL = `Background agents
-
-Background agents automatically send a completion notification after the current response ends.`;
-
-/** Cursor model section header and rules (same source), with the model list supplied by the session. */
+/** Model override rules for the scoped models (`provider/id`); without a model scope only the rule is stated. */
 function subagentModelSection(models: readonly string[]): string {
-	if (models.length === 0) {
-		return "Subagent model\n\nUse inherit unless the user explicitly requests another model (provider/model).";
-	}
+	const rule =
+		"Types with a preset model always use it; omit model (a different value is rejected). Only types without a preset accept model overrides; omitted model or inherit uses your model. Set model only when the user explicitly asks for a specific model. Ignored with resume.";
+	if (models.length === 0) return `Model overrides\n\n${rule}`;
 	const list = ["inherit", ...models].map((model) => `- ${model}`).join("\n");
-	return `Subagent model
-
-Choose from the following list only when the user explicitly requests a subagent model:
-${list}
-
-When the user does not explicitly specify a model, use inherit. If the requested model is not in the list, do not substitute or guess. Skip that subagent call and tell the user that the model is unavailable and which models are available.`;
+	return `Model overrides\n\n${rule} Allowed values:\n${list}\n\nIf the requested model is not listed, do not substitute or guess: skip the call and tell the user which models are available.`;
 }
 
-/**
- * Full subagent tool description: SUBAGENT_DESCRIPTION, the agent type list (`describeAgentTypes()` output), the model section
- * for the scoped models (`provider/id`; empty when the session has no model scope), and the background note.
- */
-export function subagentDescription(agentTypes: string, models: readonly string[]): string {
-	return [SUBAGENT_DESCRIPTION, agentTypes, subagentModelSection(models), SUBAGENT_DESCRIPTION_TAIL].join("\n\n");
+/** Body of the `subagents` system prompt section: the agent type list (`describeAgentTypes()` output) and model overrides. */
+export function subagentsSection(agentTypes: string, models: readonly string[]): string {
+	return [agentTypes, subagentModelSection(models)].join("\n\n");
 }
 
 /**

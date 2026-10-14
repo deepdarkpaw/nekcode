@@ -8,6 +8,7 @@ import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
+import { THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 
 export interface CompactionModelOverride {
@@ -21,6 +22,10 @@ const DEFAULT_COMPACTION_TOKEN_SETTINGS: Required<CompactionModelOverride> = {
 };
 
 export interface CompactionSettings {
+	/** Exact provider/modelId for built-in summarization; omitted uses the main model. */
+	model?: string;
+	/** Thinking level for built-in summarization; omitted uses the session's level. */
+	thinkingLevel?: ThinkingLevel;
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
@@ -842,6 +847,28 @@ export class SettingsManager {
 		this.globalSettings.transport = transport;
 		this.markModified("transport");
 		this.save();
+	}
+
+	/** The independent summarizer selection; token budgets still resolve against the main model. */
+	getCompactionModel(): string | undefined {
+		const model = this.settings.compaction?.model;
+		if (model === undefined) return undefined;
+		if (typeof model !== "string" || !/^[^/\s]+\/\S+$/.test(model)) {
+			throw new Error(`Invalid compaction.model setting: ${String(model)}. Expected exact provider/modelId.`);
+		}
+		return model;
+	}
+
+	/** The summarizer's thinking level; undefined summarizes at the session's level. */
+	getCompactionThinkingLevel(): ThinkingLevel | undefined {
+		const level = this.settings.compaction?.thinkingLevel;
+		if (level === undefined) return undefined;
+		if (!THINKING_LEVEL_OPTIONS.includes(level)) {
+			throw new Error(
+				`Invalid compaction.thinkingLevel setting: ${String(level)}. Expected one of ${THINKING_LEVEL_OPTIONS.join(", ")}.`,
+			);
+		}
+		return level;
 	}
 
 	getCompactionEnabled(): boolean {
