@@ -1,0 +1,14 @@
+{
+	"name": "nekcode-docs",
+	"private": true,
+	"type": "module",
+	"description": "nekcode user manual, built with VitePress and published to GitHub Pages",
+	"scripts": {
+		"dev": "vitepress dev docs",
+		"build": "vitepress build docs",
+		"preview": "vitepress preview docs"
+	},
+	"devDependencies": {
+		"vitepress": "1.6.4"
+	}
+}

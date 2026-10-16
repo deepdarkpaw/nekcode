@@ -1,6 +1,6 @@
 # nekcode
 
-[中文](README.md) | **English**
+[中文](README.md) | **English** | [User manual (Chinese)](https://deepdarkpaw.github.io/nekcode/)
 
 nekcode (command: `nek`) is a terminal coding agent built on [pi](https://github.com/earendil-works/pi). It reads code, runs commands, and edits files, and adds:
 

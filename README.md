@@ -1,6 +1,6 @@
 # nekcode
 
-**中文** | [English](README.en.md)
+**中文** | [English](README.en.md) | [用户手册](https://deepdarkpaw.github.io/nekcode/)
 
 nekcode（命令名 `nek`）是一个运行在终端里的编程助手，基于 [pi](https://github.com/earendil-works/pi) 二次开发。它可以读代码、跑命令、改文件，并在此基础上增加了：
 
