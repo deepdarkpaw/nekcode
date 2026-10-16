@@ -1,0 +1,1 @@
+import{_ as a,o,c as d,a2 as r}from"./chunks/framework.Ch4PdLd_.js";const p=JSON.parse('{"title":"常见问题与排错","description":"","frontmatter":{},"headers":[],"relativePath":"faq.md","filePath":"faq.md"}'),t={name:"faq.md"};function c(n,e,l,i,h,s){return o(),d("div",null,[...e[0]||(e[0]=[r("",62)])])}const m=a(t,[["render",c]]);export{p as __pageData,m as default};
