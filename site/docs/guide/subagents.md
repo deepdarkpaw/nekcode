@@ -7,7 +7,7 @@
 子代理由模型通过 `subagent` 工具派出。为了避免滥用，nek 的提示词约定：
 
 - 默认由模型自己用工具完成工作；任务“大”、“多步”、“需要探索”本身不是派子代理的理由；
-- 标记为 **`[autonomous]`** 的类型（内置的 `explore`，以及 frontmatter 写了 `autonomous: true` 的自定义类型），模型可以在任务明显需要大范围代码探索时自主使用；
+- 标记为 **`[autonomous]`** 的类型（内置的 `explorer`，以及 frontmatter 写了 `autonomous: true` 的自定义类型），模型可以在任务明显需要大范围代码探索时自主使用；
 - 其他类型需要**你明确要求**：例如“用子代理”、“并行处理”、“派给 xxx”，或直接点名某个类型。“深入一点”、“仔细调研”不算授权；
 - 一两次工具调用就能完成的事不派子代理，也不会把整个请求原样转交再转述结果。
 
@@ -19,17 +19,13 @@
 
 ## 内置类型 {#builtin-types}
 
+公共默认配置只提供一个内置类型，不绑定任何私人服务商或固定模型：
+
 | 类型 | 工具 | 说明 |
 |---|---|---|
-| `generalPurpose`（默认） | `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`、`ast_grep`、`todo_write`、`web_search` | 通用的可写子代理 |
-| `explore` `[autonomous]` | `read`、`grep`、`find`、`ls`、`ast_grep`、`web_search`（只读） | 代码探索。派出时应说明范围和深度：quick、medium、very thorough |
-| `shell` | `bash`、`read` | 执行命令、Git 操作等终端工作，只在这类工作本身构成独立流程时使用 |
-| `gpt-6.1-sol-worker` | 全部内置工具（含 `powershell`） | 固定模型 `CPA/gpt-6.1-sol`，思考等级 `xhigh` |
-| `kimi-3-ui-worker` | 全部内置工具（含 `powershell`） | 固定模型 `CPA/kimi-k3`，思考等级 `max`，用于终端 UI 工作 |
+| `explorer`（默认，`[autonomous]`） | `read`、`grep`、`find`、`ls`、`ast_grep`、`web_search`（只读） | 代码探索和资料检索。派出时应说明范围和深度：quick、medium、very thorough |
 
-::: info 关于两个 worker 预设
-`gpt-6.1-sol-worker` 和 `kimi-3-ui-worker` 指向名为 `CPA` 的服务商。你的 `models.json` 里没有这个服务商和模型时，调用它们会直接报错（不会退回父会话的模型）。可以在 `~/.nek/agent/agents/` 里用同名文件覆盖它们，见 [自定义类型](#custom-types)。
-:::
+`explorer` 默认继承父会话的模型和思考等级，不会修改文件或执行 shell 命令。可写任务由主会话处理；如有需要，可以自行添加[自定义类型](#custom-types)。自定义文件属于本机配置，不随 nek 发布。
 
 `/agents` 列出当前可用的全部类型（内置、用户、项目）及其工具、模型和思考等级。
 
@@ -60,7 +56,7 @@
 |---|---|
 | `description` | 简短标题，显示在卡片上 |
 | `prompt` | 完整的任务说明。子代理看不到父会话的对话，所以需要写清目标、相关文件和发现、能否修改文件、要返回什么 |
-| `subagent_type` | 类型，默认 `generalPurpose` |
+| `subagent_type` | 类型，默认 `explorer` |
 | `model` | 只有没有预设模型的类型才接受 |
 | `run_in_background` | `true` 时立即返回，子代理在后台运行；默认取类型的 `is_background` |
 | `resume` | 子代理 ID。在保留上下文的前提下给已有子代理发送后续任务 |
@@ -94,7 +90,7 @@
 子代理在对话记录里以卡片形式显示：
 
 ```text
-✓ Map the cache layer  claude-sonnet-4 · explore · ↑12k ↓3.4k · 1m 5s
+✓ Map the cache layer  claude-sonnet-4 · explorer · ↑12k ↓3.4k · 1m 5s
 ```
 
 - 状态图标、标题；
@@ -146,7 +142,7 @@ frontmatter 之后的正文就是子代理的指令。
 | `description` | 是 | 一句话说明它做什么。会出现在给模型的类型列表里，决定模型何时选用它 |
 | `model` | 否 | 固定模型（`服务商/模型ID`）。设置后不能在调用时更换 |
 | `readonly` | 否 | `true` 时总是使用只读工具集（`read`、`grep`、`find`、`ls`、`ast_grep`、`web_search`），忽略 `tools` |
-| `tools` | 否 | 工具列表，`[a, b]` 或 `a, b` 均可。省略时使用 `generalPurpose` 的工具集 |
+| `tools` | 否 | 工具列表，`[a, b]` 或 `a, b` 均可。可写类型省略时使用 `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`、`ast_grep`、`todo_write`、`web_search` |
 | `disallowed_tools` | 否 | 从工具列表中移除的工具 |
 | `thinking` | 否 | 思考等级：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
 | `context_window` | 否 | 正整数，限制子会话自动压缩所用的上下文窗口 |
@@ -155,37 +151,20 @@ frontmatter 之后的正文就是子代理的指令。
 
 文件读取失败、YAML 无效、缺少 `name` 或 `description` 时，该文件被跳过并报告错误，不影响其他类型。
 
-### 示例：只读的调研员
+### 示例：自定义只读审查员
 
-`~/.nek/agent/agents/explorer.md`：
+以下只是可选示例，不是随 nek 安装的预设。保存为 `~/.nek/agent/agents/reviewer.md` 后才会加载：
 
 ```markdown
 ---
-name: explorer
-description: Read-only codebase explorer for broad searches across a large repository.
-model: my-proxy/deepseek-v4-flash
+name: reviewer
+description: Reviews code and reports correctness issues.
 readonly: true
-thinking: high
-autonomous: true
 ---
-Search broadly, then report file paths, symbols, and line numbers that answer the question. Do not propose code changes.
+Review the requested files and report concrete issues with file paths and line numbers. Do not modify files.
 ```
 
-### 示例：覆盖内置的 worker
-
-不使用 `CPA` 服务商时，用同名文件把 worker 指向你自己的模型：
-
-`~/.nek/agent/agents/gpt-6.1-sol-worker.md`：
-
-```markdown
----
-name: gpt-6.1-sol-worker
-description: handles coding tasks with a strong coding model.
-model: my-proxy/my-coding-model
-thinking: high
-tools: [read, bash, edit, write, grep, find, ls, ast_grep, web_search, todo_write]
----
-```
+没有设置 `model` 或 `thinking`，因此沿用父会话的模型和思考等级。若要覆盖内置 `explorer`，可将文件名和 `name` 都设为 `explorer`。
 
 ## 崩溃与续接
 
@@ -197,7 +176,7 @@ tools: [read, bash, edit, write, grep, find, ls, ast_grep, web_search, todo_writ
 ## 已知限制
 
 - 以只读方式创建的子代理（Plan 模式下或只读类型），之后在 Agent 模式下 `resume` 也无法恢复写工具。
-- 子代理里也有 `todo_write`，它的列表属于子会话，不显示在父会话的输入框上方。
+- 只有启用了 `todo_write` 的自定义类型才有子会话 Todo；其列表不显示在父会话的输入框上方。内置 `explorer` 不提供该工具。
 
 ## 配置
 

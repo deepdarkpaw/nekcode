@@ -165,7 +165,7 @@ describe("nek subagents", () => {
 		config: NekConfig = DEFAULT_NEK_CONFIG,
 	): Promise<{ harness: Harness; router: Router }> {
 		const agentFiles = Object.fromEntries(
-			["gpt-6.1-sol-worker", "explorer"].map((name) => [
+			["preset-worker", "preset-explorer"].map((name) => [
 				`${name}.md`,
 				`---\nname: ${name}\ndescription: Preset worker\nmodel: ${presetModel}\nthinking: high\n---\nReport findings.\n`,
 			]),
@@ -205,7 +205,10 @@ describe("nek subagents", () => {
 	it("foreground subagent returns the child's final text without the child's tool output", async () => {
 		const { harness, router } = await createNekHarness();
 		writeFileSync(join(harness.tempDir, "secret-marker.txt"), "x");
-		router.parent.push(reply(subagentCall({ subagent_type: "explore" })), reply(fauxAssistantMessage("parent done")));
+		router.parent.push(
+			reply(subagentCall({ subagent_type: "explorer" })),
+			reply(fauxAssistantMessage("parent done")),
+		);
 		router.child.push(reply(toolCall("ls", {})), reply(fauxAssistantMessage("Found 1 file: the marker.")));
 
 		await harness.session.prompt("map the files");
@@ -226,9 +229,30 @@ describe("nek subagents", () => {
 		expect(subagentNotices(harness)).toHaveLength(0);
 	});
 
-	it("child sessions have no subagent or await tool and plan mode forces the read-only set", async () => {
-		const { harness, router } = await createNekHarness();
+	it("defaults to a read-only explorer inheriting the parent's model and thinking", async () => {
+		const { harness, router } = await createNekHarness({ models: [{ id: "parent", reasoning: true }] });
+		harness.session.setThinkingLevel("low");
 		router.parent.push(reply(subagentCall({})), reply(fauxAssistantMessage("ok")));
+		router.child.push(reply(fauxAssistantMessage("findings")));
+
+		await harness.session.prompt("explore the code");
+
+		const [result] = toolResults(harness, "subagent");
+		expect(result.isError).toBe(false);
+		expect(subagentDetails(result)).toMatchObject({ type: "explorer", model: "faux/parent", status: "completed" });
+		expect(router.childModels).toEqual(["faux/parent"]);
+		expect(router.childThinking).toEqual(["low"]);
+		expect(requestToolNames(router.childRequests[0])).toEqual([...READ_ONLY_TOOL_NAMES].sort());
+	});
+
+	it("custom child sessions have no subagent or await tool and plan mode forces the read-only set", async () => {
+		const { harness, router } = await createNekHarness(
+			{},
+			{
+				"worker.md": "---\nname: worker\ndescription: Writes code\n---\n",
+			},
+		);
+		router.parent.push(reply(subagentCall({ subagent_type: "worker" })), reply(fauxAssistantMessage("ok")));
 		router.child.push(reply(fauxAssistantMessage("general done")));
 		await harness.session.prompt("delegate");
 
@@ -244,7 +268,7 @@ describe("nek subagents", () => {
 		expect(requestToolNames(JSON.parse(router.parentRequests[0]) as Message[])).toContain("subagent");
 
 		await harness.session.prompt("/plan");
-		router.parent.push(reply(subagentCall({ subagent_type: "generalPurpose" })), reply(fauxAssistantMessage("ok")));
+		router.parent.push(reply(subagentCall({ subagent_type: "worker" })), reply(fauxAssistantMessage("ok")));
 		router.child.push(reply(fauxAssistantMessage("plan child done")));
 		await harness.session.prompt("plan something");
 
@@ -325,11 +349,16 @@ describe("nek subagents", () => {
 	});
 
 	it("a child does not inherit the parent's read records", async () => {
-		const { harness, router } = await createNekHarness();
+		const { harness, router } = await createNekHarness(
+			{},
+			{
+				"worker.md": "---\nname: worker\ndescription: Writes code\n---\n",
+			},
+		);
 		writeFileSync(join(harness.tempDir, "notes.txt"), "alpha\n");
 		router.parent.push(
 			reply(toolCall("read", { path: "notes.txt" })),
-			reply(subagentCall({ prompt: "Replace alpha with beta in notes.txt." })),
+			reply(subagentCall({ subagent_type: "worker", prompt: "Replace alpha with beta in notes.txt." })),
 			reply(fauxAssistantMessage("ok")),
 		);
 		router.child.push(
@@ -356,7 +385,7 @@ describe("nek subagents", () => {
 		const gate = createGate();
 		await harness.session.prompt("/plan");
 		router.parent.push(
-			reply(subagentCall({ subagent_type: "explore", run_in_background: true })),
+			reply(subagentCall({ subagent_type: "explorer", run_in_background: true })),
 			reply(fauxAssistantMessage("waiting")),
 		);
 		router.child.push(async () => {
@@ -398,7 +427,7 @@ describe("nek subagents", () => {
 		expect(JSON.stringify(second.content)).toContain("PELICAN");
 	});
 
-	it.each(["gpt-6.1-sol-worker", "explorer"])(
+	it.each(["preset-worker", "preset-explorer"])(
 		"%s without model runs on its preset model and thinking level",
 		async (subagentType) => {
 			const { harness, router } = await createModelHarness();
@@ -421,7 +450,7 @@ describe("nek subagents", () => {
 		const start = vi.spyOn(SubagentRegistry.prototype, "start");
 		const create = vi.spyOn(childSession, "createChildSession");
 		router.parent.push(
-			reply(subagentCall({ subagent_type: "gpt-6.1-sol-worker", model, run_in_background: true })),
+			reply(subagentCall({ subagent_type: "preset-worker", model, run_in_background: true })),
 			reply(fauxAssistantMessage("ok")),
 		);
 
@@ -430,7 +459,7 @@ describe("nek subagents", () => {
 		const [result] = toolResults(harness, "subagent");
 		expect(result.isError).toBe(true);
 		expect(getMessageText(result)).toBe(
-			'Subagent type "gpt-6.1-sol-worker" always uses its preset model faux/preset; omit model.',
+			'Subagent type "preset-worker" always uses its preset model faux/preset; omit model.',
 		);
 		expect(start).not.toHaveBeenCalled();
 		expect(create).not.toHaveBeenCalled();
@@ -441,7 +470,7 @@ describe("nek subagents", () => {
 	it("a preset type accepts exactly its preset model", async () => {
 		const { harness, router } = await createModelHarness();
 		router.parent.push(
-			reply(subagentCall({ subagent_type: "explorer", model: "faux/preset" })),
+			reply(subagentCall({ subagent_type: "preset-explorer", model: "faux/preset" })),
 			reply(fauxAssistantMessage("ok")),
 		);
 		router.child.push(reply(fauxAssistantMessage("preset done")));
@@ -455,7 +484,7 @@ describe("nek subagents", () => {
 	it.each([undefined, "inherit", "faux/preset"])("a non-preset type keeps model behavior for %s", async (model) => {
 		const { harness, router } = await createModelHarness();
 		router.parent.push(
-			reply(subagentCall({ subagent_type: "generalPurpose", ...(model === undefined ? {} : { model }) })),
+			reply(subagentCall({ subagent_type: "explorer", ...(model === undefined ? {} : { model }) })),
 			reply(fauxAssistantMessage("ok")),
 		);
 		router.child.push(reply(fauxAssistantMessage("done")));
@@ -483,7 +512,10 @@ describe("nek subagents", () => {
 				});
 			}
 			const start = vi.spyOn(SubagentRegistry.prototype, "start");
-			router.parent.push(reply(subagentCall({ subagent_type: "explorer" })), reply(fauxAssistantMessage("ok")));
+			router.parent.push(
+				reply(subagentCall({ subagent_type: "preset-explorer" })),
+				reply(fauxAssistantMessage("ok")),
+			);
 
 			await harness.session.prompt("delegate to the preset");
 
@@ -508,7 +540,7 @@ describe("nek subagents", () => {
 		});
 		harness.session.setThinkingLevel("low");
 		router.parent.push(
-			reply(subagentCall({ subagent_type: "explorer", prompt: "Remember PELICAN." })),
+			reply(subagentCall({ subagent_type: "preset-explorer", prompt: "Remember PELICAN." })),
 			reply(fauxAssistantMessage("ok")),
 		);
 		router.child.push(reply(fauxAssistantMessage("Noted.")));
@@ -642,7 +674,7 @@ describe("nek subagents", () => {
 			],
 		});
 		harness.session.setThinkingLevel("low");
-		router.parent.push(reply(subagentCall({ subagent_type: "explorer" })), reply(fauxAssistantMessage("ok")));
+		router.parent.push(reply(subagentCall({ subagent_type: "preset-explorer" })), reply(fauxAssistantMessage("ok")));
 		router.child.push(reply(fauxAssistantMessage("original preset done")));
 		await harness.session.prompt("first");
 		const registry = start.mock.contexts[0] as SubagentRegistry;
@@ -654,10 +686,13 @@ describe("nek subagents", () => {
 		await harness.session.prompt("evict the preset child");
 		expect(registry.get(first.id)).toBeUndefined();
 
-		const fields = ["name: explorer", "description: Updated preset"];
+		const fields = ["name: preset-explorer", "description: Updated preset"];
 		if (model) fields.push(`model: ${model}`);
 		if (thinking) fields.push(`thinking: ${thinking}`);
-		writeFileSync(join(harness.tempDir, "agent-home", "agents", "explorer.md"), `---\n${fields.join("\n")}\n---\n`);
+		writeFileSync(
+			join(harness.tempDir, "agent-home", "agents", "preset-explorer.md"),
+			`---\n${fields.join("\n")}\n---\n`,
+		);
 		await harness.session.bindExtensions({ mode: "print" });
 		router.parent.push(
 			reply(subagentCall({ resume: first.id, model: "inherit" })),
@@ -690,7 +725,10 @@ describe("nek subagents", () => {
 			const providerConfig = { baseUrl: preset.baseUrl, api: harness.faux.api, models: [preset] };
 			const runtime = harness.session.modelRuntime;
 			runtime.registerProvider("preset-provider", { ...providerConfig, apiKey: "faux-key" });
-			router.parent.push(reply(subagentCall({ subagent_type: "explorer" })), reply(fauxAssistantMessage("ok")));
+			router.parent.push(
+				reply(subagentCall({ subagent_type: "preset-explorer" })),
+				reply(fauxAssistantMessage("ok")),
+			);
 			router.child.push(reply(fauxAssistantMessage("preset done")));
 			await harness.session.prompt("first");
 			const registry = start.mock.contexts[0] as SubagentRegistry;

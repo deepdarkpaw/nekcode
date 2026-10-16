@@ -9,8 +9,9 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/config.ts";
 import { createNekExtension } from "../../src/extensions/nek/index.ts";
-import { BUILTIN_AGENT_TYPES } from "../../src/extensions/nek/services/agent-types.ts";
+import { DEFAULT_CUSTOM_TOOL_NAMES } from "../../src/extensions/nek/services/agent-types.ts";
 import { childToolNames } from "../../src/extensions/nek/services/child-session.ts";
+import type { AgentType } from "../../src/extensions/nek/types.ts";
 import { createToolSearchExtension } from "../../src/extensions/tool-search/index.ts";
 import type { ExtensionAPI, ExtensionFactory, ToolDefinition, ToolResultEventResult } from "../../src/index.ts";
 import { createHarness } from "./harness.ts";
@@ -169,10 +170,18 @@ describe("tool exposure provider declarations", () => {
 		});
 		try {
 			await harness.session.bindExtensions({ mode: "print" });
-			const general = BUILTIN_AGENT_TYPES.find((type) => type.name === "generalPurpose");
-			if (!general) throw new Error("Missing generalPurpose type");
+			const worker: AgentType = {
+				name: "worker",
+				description: "Writable test worker",
+				source: "user",
+				readonly: false,
+				background: false,
+				autonomous: false,
+				tools: [...DEFAULT_CUSTOM_TOOL_NAMES],
+				disallowedTools: [],
+			};
 			for (const readonly of [false, true]) {
-				const names = childToolNames(general, readonly);
+				const names = childToolNames(worker, readonly);
 				harness.session.setActiveToolsByName(names);
 				expect(harness.session.getActiveToolNames()).toEqual(names);
 				harness.setResponses([

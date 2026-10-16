@@ -9,27 +9,23 @@
 
 nek 独有功能（Plan、Todo、子代理）的配置不在这里，而在 [nek.yaml](/reference/nek-yaml)。
 
-## 示例
+## 默认配置
+
+默认不需要创建这个文件；文件不存在或内容为以下空对象时，使用本页列出的内置默认值：
+
+```json
+{}
+```
+
+公共版本不附带个人 settings、固定服务商、代理地址或独立的压缩模型设置。登录后用 `/model` 选择自己的模型；只需把想覆盖的设置写入本机文件，例如：
 
 ```json
 {
-  "defaultProvider": "anthropic",
-  "defaultModel": "claude-sonnet-4-5",
-  "defaultThinkingLevel": "high",
-  "theme": "light/dark",
-  "tuiMode": "fullscreen",
-  "steeringMode": "one-at-a-time",
-  "compaction": {
-    "enabled": true,
-    "reserveTokens": 16384,
-    "keepRecentTokens": 20000,
-    "model": "my-proxy/deepseek-v4-flash"
-  },
-  "retry": { "enabled": true, "maxRetries": 3 },
-  "shellCommandPrefix": "export CI=1",
-  "updateChannel": "stable"
+  "tuiMode": "regular"
 }
 ```
+
+上面的普通终端模式只是可选示例，实际默认值仍是 `"fullscreen"`。
 
 ## 模型与思考 {#model}
 

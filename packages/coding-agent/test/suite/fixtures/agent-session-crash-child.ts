@@ -122,7 +122,7 @@ if (scenario === "stream") {
 	await harness.session.bindExtensions({ mode: "print" });
 	// The parent starts a foreground subagent; the child's request never answers.
 	const subagentCall = fauxAssistantMessage(
-		fauxToolCall("subagent", { description: "Map files", prompt: "List the files.", subagent_type: "explore" }),
+		fauxToolCall("subagent", { description: "Map files", prompt: "List the files.", subagent_type: "explorer" }),
 		{ stopReason: "toolUse" },
 	);
 	harness.setResponses(

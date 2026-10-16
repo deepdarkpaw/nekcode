@@ -36,6 +36,8 @@ nek 在每个目录里按以下优先级查找**一个**指令文件，找到第
 
 `AGENTS.override.md` 只在**同一个目录里**替代 `AGENTS.md` / `CLAUDE.md`，不影响 agent 目录或其他目录的指令文件。适合在不改动团队共享的 `AGENTS.md` 的前提下，放一份个人版本（记得把它加进 `.gitignore`）。
 
+nekcode 仓库的 `AGENTS.md` 只包含通用开发说明；本仓库已忽略 `AGENTS.override.md` 和 `.nek/`。全局个人指令放在 `~/.nek/agent/AGENTS.md`，不要把个人指令复制到公开仓库的默认文件里。
+
 ### git worktree
 
 在嵌套于主仓库内的 git worktree 中工作时，worktree 自己的指令文件会屏蔽主仓库根目录的同名文件，避免同一份仓库指令被加载两次。

@@ -10,7 +10,7 @@ export const SUBAGENT_REMINDER = `You are currently working inside a subagent. Y
 export const SUBAGENT_INSTRUCTIONS_SECTION = "subagent_instructions";
 
 /**
- * Instructions of the built-in explore type, derived from the explore entry of the Cursor subagent description
+ * Instructions of the built-in explorer type, derived from the explore entry of the Cursor subagent description
  * (reference/cursor/cursor-tools-2026.json line 679): read-only, and the answer states its depth.
  */
 export const EXPLORE_INSTRUCTIONS = `Explore the codebase to answer the question in the task prompt. You cannot edit files: report findings, file paths, and code structure instead of changing anything. State the desired depth in your answer: quick, medium, or very thorough.`;

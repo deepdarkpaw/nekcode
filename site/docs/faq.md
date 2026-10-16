@@ -98,9 +98,9 @@ nek 的提示词已要求模型只在真正需要你决定时才提问。如果�
 
 ## 子代理
 
-### 调用 `gpt-6.1-sol-worker` / `kimi-3-ui-worker` 报错
+### 为什么 `/agents` 默认只有 `explorer`？
 
-这两个内置预设固定使用名为 `CPA` 的服务商的模型。你的环境里没有时会直接报错。用同名文件在 `~/.nek/agent/agents/` 中覆盖它们，见 [自定义类型](/guide/subagents#custom-types)。
+公共版本只内置只读 `explorer`，默认继承父会话的模型和思考等级，不附带个人子代理配置。其他类型需自行定义，见 [自定义类型](/guide/subagents#custom-types)。如果列表里还有其他类型，检查本机 `~/.nek/agent/agents/` 和项目 `.nek/agents/` 中的文件。
 
 ### 提示 `Subagent limit reached`
 
@@ -125,7 +125,7 @@ nek 的提示词已要求模型只在真正需要你决定时才提问。如果�
 - 状态栏的进度条显示当前用量；
 - `/compact` 手动压缩，可以附加说明保留重点；
 - 长任务可以在 Plan 模式审阅时选 **Fresh context** 在新会话里实施；
-- 大范围的代码探索交给 `explore` 子代理，避免搜索输出塞满主会话；
+- 大范围的代码探索交给 `explorer` 子代理，避免搜索输出塞满主会话；
 - 用 `compaction.model` 指定一个上下文更长或更便宜的模型写摘要。
 
 ## 获取帮助

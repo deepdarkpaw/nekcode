@@ -14,6 +14,22 @@ packages/ai/src/providers/.model-generation-*/
 
 # Environment
 .env
+.env.*
+!.env.example
+
+# Private agent configuration; shared defaults belong in source or documented examples.
+.nek/
+AGENTS.override.md
+AGENTS.local.md
+/settings.json
+/models.json
+/auth.json
+/mcp.json
+/mcp-auth.json
+/keybindings.json
+/nek.yaml
+/SYSTEM.md
+/APPEND_SYSTEM.md
 
 # Editor files
 .vscode/

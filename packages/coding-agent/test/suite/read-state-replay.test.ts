@@ -5,7 +5,7 @@ import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@ear
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSession } from "../../src/core/agent-session.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
-import { BUILTIN_AGENT_TYPES } from "../../src/extensions/nek/services/agent-types.ts";
+import { DEFAULT_CUSTOM_TOOL_NAMES } from "../../src/extensions/nek/services/agent-types.ts";
 import { type ChildSessionSpec, createChildSession } from "../../src/extensions/nek/services/child-session.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -91,7 +91,16 @@ describe("read state replay in sessions", () => {
 		await parent.session.prompt("read the parent file");
 		const spec: ChildSessionSpec = {
 			parentCtx: parent.session.extensionRunner.createContext(),
-			type: BUILTIN_AGENT_TYPES.find((type) => type.name === "generalPurpose")!,
+			type: {
+				name: "worker",
+				description: "Writable test worker",
+				source: "user",
+				readonly: false,
+				background: false,
+				autonomous: false,
+				tools: [...DEFAULT_CUSTOM_TOOL_NAMES],
+				disallowedTools: [],
+			},
 			model: parent.getModel(),
 			thinkingLevel: "off",
 			forceReadonly: false,

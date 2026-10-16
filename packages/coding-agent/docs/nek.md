@@ -40,21 +40,19 @@ Plan mode only plans; Agent mode implements. Approving a reviewed revision switc
 
 Re-entering Plan treats the previous plan as reference, following Claude Code's reentry rule: compare the latest request with the existing plan, replace it for a different task, or revise it for the same task. Ask new questions when a decision is genuinely unresolved, then save and review the revised plan. A pending approval never applies to a draft or to a plan file changed after review.
 
-Subagent rows render like Cursor: a status icon, the title, and muted `model · type · ↑input ↓output · elapsed` metadata, for example `✓ Map the cache layer  claude-sonnet-4 · explore · ↑12k ↓3.4k · 1m 5s`. Input tokens include cache reads and writes; the total time runs from start to finish. While the subagent runs, the second line shows its current activity and how long ago it changed, for example `bash npm test · 5s ago`. Tool cards, `await` results, completion notices, and the background list above the editor use the same format. Rows update live while the subagent runs, and expand to the full Markdown result with `ctrl+o`.
+Subagent rows render like Cursor: a status icon, the title, and muted `model · type · ↑input ↓output · elapsed` metadata, for example `✓ Map the cache layer  claude-sonnet-4 · explorer · ↑12k ↓3.4k · 1m 5s`. Input tokens include cache reads and writes; the total time runs from start to finish. While the subagent runs, the second line shows its current activity and how long ago it changed, for example `bash npm test · 5s ago`. Tool cards, `await` results, completion notices, and the background list above the editor use the same format. Rows update live while the subagent runs, and expand to the full Markdown result with `ctrl+o`.
 
 ## Subagents
 
 `subagent` runs a child session in the same process. The child shares the parent's model credentials, but it has its own tools, its own read history, and read-only settings, and it cannot start further subagents. Background subagents notify the parent once they finish, unless the parent already collected the result with `await`. After a parent interruption, completion notices wait for the next explicit user request instead of restarting the old subagent. Background child cancellation itself remains controlled by `/subagents`.
 
-Built-in subagent types:
+The only built-in subagent type is `explorer`, also the default when `subagent_type` is omitted:
 
 | Type | Tools |
 |---|---|
-| `generalPurpose` (default) | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ast_grep`, `todo_write` |
-| `gpt-6.1-sol-worker` | all built-in tools, including `powershell`, `edit`, and `write`; model `CPA/gpt-6.1-sol`, thinking `xhigh` |
-| `kimi-3-ui-worker` | all built-in tools, including `powershell`, `edit`, and `write`; model `CPA/kimi-k3`, thinking `max` |
-| `explore` | `read`, `grep`, `find`, `ls`, `ast_grep`, `web_search` (read-only) |
-| `shell` | `bash`, `read` |
+| `explorer` (default, autonomous) | `read`, `grep`, `find`, `ls`, `ast_grep`, `web_search` (read-only) |
+
+It inherits the parent's model and thinking level. No private providers, fixed model presets, or personal agent files ship with nek. Writable work stays in the parent session unless the user defines a custom type.
 
 Define custom types as Markdown files in `~/.nek/agent/agents/` or, for trusted projects, `.nek/agents/`. Project types override user types, which override built-in types. The body becomes the subagent's instructions.
 
@@ -73,7 +71,7 @@ disallowed_tools: bash
 Review the changes and report concrete issues with file and line references.
 ```
 
-`readonly: true` always selects the read-only tool set. `model` is used when the `subagent` call does not name one. `thinking` overrides the parent's thinking level, `context_window` caps the child's automatic-compaction window, and `disallowed_tools` removes tools from the allowlist. The available preset list includes these fields in the `subagent` description and `/agents` shows it to the user.
+`readonly: true` always selects the read-only tool set. A custom `model` preset is fixed: calls cannot override it. Without a preset, the child inherits the parent's model unless the call explicitly selects another configured model. `thinking` overrides the parent's thinking level, `context_window` caps the child's automatic-compaction window, and `disallowed_tools` removes tools from the allowlist. The available preset list includes these fields in the `subagent` description and `/agents` shows it to the user.
 
 Use `/subagents` to list subagents, show a result, or cancel a running subagent. A normal user steer while `await` or a foreground child is waiting ends that wait; a foreground child continues in the background and later sends a completion notice.
 

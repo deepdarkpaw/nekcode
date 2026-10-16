@@ -6,11 +6,11 @@ import { parseFrontmatter } from "../../../utils/frontmatter.ts";
 import { EXPLORE_INSTRUCTIONS } from "../prompts/subagent.ts";
 import type { AgentType } from "../types.ts";
 
-/** Read-only tool allowlist of the built-in explore type (plan.md section 7.3). */
+/** Read-only tool allowlist of the built-in explorer type. */
 export const READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls", "ast_grep", "web_search"] as const;
 
-/** Tool allowlist of the built-in generalPurpose type (plan.md section 7.3). */
-export const GENERAL_TOOL_NAMES = [
+/** Default tool allowlist for writable custom subagent types. */
+export const DEFAULT_CUSTOM_TOOL_NAMES = [
 	"read",
 	"bash",
 	"edit",
@@ -23,65 +23,10 @@ export const GENERAL_TOOL_NAMES = [
 	"web_search",
 ] as const;
 
-/** All tools available to a writable child session, including extension tools. */
-export const ALL_TOOL_NAMES = [
-	"read",
-	"bash",
-	"powershell",
-	"edit",
-	"write",
-	"grep",
-	"find",
-	"ls",
-	"ast_grep",
-	"web_search",
-	"todo_write",
-] as const;
-
-/** Tool allowlist of the built-in shell type (plan.md section 7.3). */
-export const SHELL_TOOL_NAMES = ["bash", "read"] as const;
-
-/** Built-in subagent types, in Cursor's order (reference/cursor/cursor-tools-2026.json line 679). */
+/** Public defaults contain only a read-only explorer; model and thinking level inherit from the parent. */
 export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 	{
-		name: "generalPurpose",
-		description:
-			"handles substantial, clearly bounded general work that has already been determined suitable for delegation. Uncertain search results alone are not enough reason to use it.",
-		source: "builtin",
-		readonly: false,
-		background: false,
-		autonomous: false,
-		tools: [...GENERAL_TOOL_NAMES],
-		disallowedTools: [],
-	},
-	{
-		name: "gpt-6.1-sol-worker",
-		description: "handles coding tasks with GPT-6.1 Sol and access to every writable Nek tool.",
-		source: "builtin",
-		readonly: false,
-		background: false,
-		autonomous: false,
-		model: "CPA/gpt-6.1-sol",
-		thinking: "xhigh",
-		tools: [...ALL_TOOL_NAMES],
-		disallowedTools: [],
-	},
-	{
-		name: "kimi-3-ui-worker",
-		description: "handles terminal UI work with Kimi K3.",
-		source: "builtin",
-		readonly: false,
-		background: false,
-		autonomous: false,
-		model: "CPA/kimi-k3",
-		thinking: "max",
-		instructions:
-			"Work on the terminal UI: components, rendering, layout, key handling, and interaction. Match the surrounding TUI code.",
-		tools: [...ALL_TOOL_NAMES],
-		disallowedTools: [],
-	},
-	{
-		name: "explore",
+		name: "explorer",
 		description:
 			"handles clearly bounded, substantial codebase exploration that has already been determined suitable for delegation. It can find files by patterns, search keywords, or map code structure. State the scope and desired depth: quick, medium, or very thorough.",
 		source: "builtin",
@@ -90,17 +35,6 @@ export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
 		autonomous: true,
 		instructions: EXPLORE_INSTRUCTIONS,
 		tools: [...READ_ONLY_TOOL_NAMES],
-		disallowedTools: [],
-	},
-	{
-		name: "shell",
-		description:
-			"executes commands, Git operations, and other terminal work. Use it only when that work itself forms an independently delegable workflow.",
-		source: "builtin",
-		readonly: false,
-		background: false,
-		autonomous: false,
-		tools: [...SHELL_TOOL_NAMES],
 		disallowedTools: [],
 	},
 ];
@@ -177,7 +111,7 @@ function readAgentFile(path: string, source: "user" | "project"): AgentType | st
 	if (fields.context_window !== undefined && contextWindow === undefined) {
 		return `${path}: "context_window" must be a positive integer`;
 	}
-	const tools = readonly ? [...READ_ONLY_TOOL_NAMES] : (readToolList(fields.tools) ?? [...GENERAL_TOOL_NAMES]);
+	const tools = readonly ? [...READ_ONLY_TOOL_NAMES] : (readToolList(fields.tools) ?? [...DEFAULT_CUSTOM_TOOL_NAMES]);
 	const disallowedTools = readToolList(fields.disallowed_tools) ?? [];
 	return {
 		name,

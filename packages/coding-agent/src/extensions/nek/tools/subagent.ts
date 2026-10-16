@@ -18,7 +18,7 @@ import { createSubagentRenderers } from "../ui/subagent-view.ts";
 export const SUBAGENT_TOOL_NAME = "subagent";
 
 /** Default subagent_type when the call omits it (plan.md section 7.2). */
-export const DEFAULT_AGENT_TYPE = "generalPurpose";
+export const DEFAULT_AGENT_TYPE = "explorer";
 
 /**
  * Cursor subagent schema (reference/cursor/cursor-tools-2026.json line 679) without the cloud and attachment fields.

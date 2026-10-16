@@ -6,7 +6,7 @@ nekcode（命令名 `nek`）是一个运行在终端里的编程助手，基于 
 
 - **Plan 模式**：先调研、写计划，确认后再动手。
 - **Todo 列表**：任务进度固定显示在输入框上方。
-- **子代理（subagent）**：把边界清晰的任务派给独立的子会话，可前台或后台运行。
+- **子代理（subagent）**：内置只读 `explorer`，默认继承当前模型，可前台或后台运行；支持自行添加类型。
 - **结构化搜索 `ast_grep`**、Cursor 风格的分块读文件、Claude Code 风格的精确替换编辑。
 - **MCP 服务器**和按需加载工具的 `tool_search`。
 - **`web_search`** 联网搜索，无需 API key。
@@ -165,6 +165,8 @@ $env:NEK_INSTALL_DIR = 'D:\tools\nekcode'; irm https://raw.githubusercontent.com
 `~/.nek/` 里保存着设置、登录凭据和历史会话，需要彻底清除时再手动删除。
 
 ## 配置文件
+
+公共仓库只提供通用默认值和示例，不附带个人配置或凭据。`settings.json` 不存在或为 `{}` 时使用应用默认值。个人指令、settings 和自定义子代理留在本机 `~/.nek/agent/`；仓库的 `AGENTS.md` 是通用开发说明，本地覆盖可写入被忽略的 `AGENTS.override.md`。
 
 | 位置 | 内容 |
 |---|---|
