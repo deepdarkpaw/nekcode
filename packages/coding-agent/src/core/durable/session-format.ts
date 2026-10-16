@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { CompactionEntry, type EntryRecord, type JsonObject } from "@earendil-works/pi-durable";
+import { compactionToolResultEdits } from "../compaction/tool-result-edits.ts";
 import { createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import {
 	type ContextEditEntry,
@@ -128,6 +129,21 @@ function planCompaction(
 	const edits: PlannedEdit[] = kept
 		.filter((each) => each.type === "message" && each.message.role === "system")
 		.map((each) => ({ target: each.id, action: "omit" }));
+	const keptById = new Map(kept.map((each) => [each.id, each]));
+	for (const edit of compactionToolResultEdits(entry)) {
+		const target = keptById.get(edit.targetId);
+		if (
+			target?.type !== "message" ||
+			target.message.role !== "toolResult" ||
+			target.message.toolCallId !== edit.toolCallId
+		)
+			continue;
+		edits.push({
+			target: edit.targetId,
+			action: "replace",
+			messages: jsonMessages(convert([{ ...target.message, content: [{ type: "text", text: edit.text }] }])),
+		});
+	}
 	const model = convert(sessionEntryToContextMessages(entry));
 	return {
 		source: entry,

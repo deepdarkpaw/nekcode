@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { serializeConversation } from "../src/core/compaction/utils.ts";
 
 describe("serializeConversation", () => {
-	it("should truncate long tool results", () => {
-		const longContent = "x".repeat(5000);
+	it("folds long tool results while preserving the tail", () => {
+		const longContent = Array.from({ length: 300 }, (_, index) => `line-${index}: ${"x".repeat(20)}`).join("\n");
 		const messages: Message[] = [
 			{
 				role: "toolResult",
@@ -18,14 +18,13 @@ describe("serializeConversation", () => {
 
 		const result = serializeConversation(messages);
 
-		expect(result).toContain("[Tool result]:");
-		expect(result).toContain("[... 3000 more characters truncated]");
-		expect(result).not.toContain("x".repeat(3000));
-		// First 2000 chars should be present
-		expect(result).toContain("x".repeat(2000));
+		expect(result).toContain("[Tool result read id=tc1 OK]:");
+		expect(result).toContain("line-299");
+		expect(result).toContain("characters omitted");
+		expect(result).not.toContain("line-100");
 	});
 
-	it("should not truncate short tool results", () => {
+	it("keeps short tool results and records their identity", () => {
 		const shortContent = "x".repeat(1500);
 		const messages: Message[] = [
 			{
@@ -40,21 +39,19 @@ describe("serializeConversation", () => {
 
 		const result = serializeConversation(messages);
 
-		expect(result).toBe(`[Tool result]: ${shortContent}`);
-		expect(result).not.toContain("truncated");
+		expect(result).toBe(`[Tool result read id=tc1 OK]: ${shortContent}`);
+		expect(result).not.toContain("omitted");
 	});
 
-	it("should not truncate assistant or user messages", () => {
-		const longText = "y".repeat(5000);
+	it("keeps the final thinking paragraphs and marks reasoning as unverified", () => {
+		const thinking = ["premise".repeat(200), "middle".repeat(200), "final conclusion: keep this"].join("\n\n");
 		const messages: Message[] = [
 			{
-				role: "user",
-				content: [{ type: "text", text: longText }],
-				timestamp: Date.now(),
-			},
-			{
 				role: "assistant",
-				content: [{ type: "text", text: longText }],
+				content: [
+					{ type: "thinking", thinking },
+					{ type: "text", text: "done" },
+				],
 				api: "anthropic",
 				provider: "anthropic",
 				model: "test",
@@ -71,9 +68,45 @@ describe("serializeConversation", () => {
 			},
 		];
 
+		const result = serializeConversation(messages, { thinkingMaxChars: 120, thinkingTotalMaxChars: 120 });
+
+		expect(result).toContain("unverified reasoning");
+		expect(result).toContain("final conclusion: keep this");
+		expect(result).toContain("thinking characters omitted");
+	});
+
+	it("folds long tool arguments instead of duplicating their full payload", () => {
+		const messages: Message[] = [
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "tc1",
+						name: "write",
+						arguments: { path: "file.ts", content: "z".repeat(5000) },
+					},
+				],
+				api: "anthropic",
+				provider: "anthropic",
+				model: "test",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+			},
+		];
+
 		const result = serializeConversation(messages);
 
-		expect(result).not.toContain("truncated");
-		expect(result).toContain(longText);
+		expect(result).toContain("write(");
+		expect(result).toContain("[... ");
+		expect(result).not.toContain("z".repeat(3000));
 	});
 });

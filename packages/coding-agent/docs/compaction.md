@@ -279,15 +279,13 @@ Before summarization, messages are serialized to text via [`serializeConversatio
 
 ```
 [User]: What they said
-[Assistant thinking]: Internal reasoning
+[Assistant thinking (unverified reasoning)]: final reasoning excerpt
 [Assistant]: Response text
-[Assistant tool calls]: read(path="foo.ts"); edit(path="bar.ts", ...)
-[Tool result]: Output from tool
+[Assistant tool calls]: read(path="foo.ts") [id=call-1]
+[Tool result read id=call-1 OK]: bounded output excerpt
 ```
 
-This prevents the model from treating it as a conversation to continue.
-
-Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
+This prevents the model from treating it as a conversation to continue. Thinking is tail-biased and has a session budget. Tool names, call IDs and status are retained so a folded observation remains identifiable. Tool arguments and results are folded with type-aware budgets; read chunk metadata, shell diagnostics and image omission notes can survive in the text representation. Omission markers mean that the source is incomplete. The complete messages remain in the session transcript.
 
 ## Custom Summarization via Extensions
 
@@ -347,9 +345,10 @@ pi.on("session_before_compact", async (event, ctx) => {
   // Returns:
   // [User]: message text
   // [Assistant thinking]: thinking content
+  // [Assistant thinking (unverified reasoning)]: final excerpt
   // [Assistant]: response text
-  // [Assistant tool calls]: read(path="..."); bash(command="...")
-  // [Tool result]: output text
+  // [Assistant tool calls]: read(path="...") [id=call-1]
+  // [Tool result read id=call-1 OK]: bounded output excerpt
 
   // Now send to your model for summarization
   const { summary, usage } = await myModel.summarize(conversationText);
@@ -434,6 +433,8 @@ Configure compaction in `~/.nek/agent/settings.json` or `<project-dir>/.nek/sett
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
 | `model` | None | Exact `provider/modelId` that writes summaries; see [Compaction model](#compaction-model) |
+| `thinkingLevel` | Session level | Thinking level used by the summary model |
+| `content` | Built-in policy | Summary-input folding and retained tool-result cleanup; see [Compaction content policy](#compaction-content-policy) |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 
@@ -501,3 +502,35 @@ Compaction summaries use the session's thinking level by default, clamped by the
 The level must be supported by the summarizing model (the compaction model, or the main model when `compaction.model` is unset). An unsupported level fails compaction with an error naming `compaction.thinkingLevel`; it is not lowered to a supported one.
 
 Branch summaries always use the main model and are not affected by `compaction.thinkingLevel`.
+
+### Compaction content policy
+
+The summarization request uses a separate, bounded representation of the old conversation. This representation does not rewrite the transcript and does not change provider message signatures:
+
+- **Thinking** is treated as unverified reasoning. For long thinking blocks, nekcode keeps a small opening excerpt and favors the final paragraphs, where conclusions and next actions usually appear. A session-wide budget prevents many old reasoning blocks from filling the summary request.
+- **Tool calls** retain the tool name and call ID. Long arguments are folded so a large `write` or `edit` payload is not copied in full into the summarization prompt.
+- **Tool results** retain the tool name, call ID, status, and bounded excerpts. `read` results can include recorded chunk labels from the original tool details. Shell output preserves selected diagnostic lines. Images are identified but omitted from this text-only representation.
+- **The prompt** asks the summarizer to distinguish observed results, attempts, unverified reasoning, omission markers, and current instructions. It updates a checkpoint instead of accumulating a chronological transcript, so stale progress can be removed.
+
+After a built-in compaction succeeds, old successful text observations in the retained tail may receive a smaller append-only projection. The raw tool-result entry stays in the session database, while the compaction entry stores a verified target ID, tool-call ID, and replacement text. The active model projection replays that replacement on resume, tree navigation, JSONL import, and durable sessions. Recent results, the latest tool batch, errors, images, unknown tools, and extension-owned compactions are protected.
+
+The default content settings are:
+
+```json
+{
+  "compaction": {
+    "content": {
+      "thinkingMaxChars": 3000,
+      "thinkingTotalMaxChars": 24000,
+      "toolResultMaxChars": 2000,
+      "toolErrorMaxChars": 6000,
+      "toolArgumentMaxChars": 2000,
+      "pruneToolResults": true,
+      "protectedRecentTokens": 8000,
+      "protectedToolResults": 6
+    }
+  }
+}
+```
+
+Set `pruneToolResults` to `false` to keep retained tool results unchanged. A cleanup never runs if summarization fails, and it never deletes the original transcript. These defaults apply to built-in compaction and its serialized summary input; branch summaries use the same folding representation but do not write compaction cleanup edits.

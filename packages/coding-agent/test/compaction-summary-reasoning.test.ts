@@ -148,7 +148,7 @@ describe("generateSummary reasoning options", () => {
 		const prompt = JSON.stringify(requestContext.messages);
 		// Regression test for #9652: clear boundaries and continuation wording avoid the reasoning-extraction false positive.
 		expect(prompt).toContain("# Conversation\\n[User]: Summarize this.");
-		expect(prompt).toContain("# Instructions\\nThe messages above are earlier context from an ongoing conversation.");
+		expect(prompt).toContain("# Instructions\\nSummarize only this earlier part of an ongoing user request.");
 	});
 
 	it("rejects tool calls from conversation summaries", async () => {

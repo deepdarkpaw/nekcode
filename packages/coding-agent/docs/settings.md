@@ -57,6 +57,7 @@ Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `gre
 | `compaction.modelOverrides` | object | None | Per-model token settings keyed by exact `provider/modelId`. |
 | `compaction.model` | string | None (main model) | Exact `provider/modelId` that writes built-in compaction summaries. Token settings still follow the main model. See [Compaction model](compaction.md#compaction-model). |
 | `compaction.thinkingLevel` | string | None (session level) | Thinking level for built-in compaction summaries: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. It must be supported by the summarizing model. See [Compaction model](compaction.md#compaction-model). |
+| `compaction.content` | object | Built-in folding policy | Budgets for summary-input folding and append-only cleanup of old tool observations. See [Compaction content policy](compaction.md#compaction-content-policy). |
 
 <a id="per-model-compaction-overrides"></a>
 

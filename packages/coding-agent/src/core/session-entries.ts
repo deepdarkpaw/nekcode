@@ -33,6 +33,7 @@ import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { compactionToolResultEdits } from "./compaction/tool-result-edits.ts";
 import {
 	type CustomMessage,
 	createBranchSummaryMessage,
@@ -498,7 +499,10 @@ export function buildContextEntries(
  * If leafId is provided, walks from that entry to root.
  * Handles compaction and branch summaries along the path.
  */
-export function projectContextEntry(entry: SessionEntry, edit: ContextEditEntry | undefined): AgentMessage[] {
+export function projectContextEntry(
+	entry: SessionEntry,
+	edit: Pick<ContextEditEntry, "replacement"> | undefined,
+): AgentMessage[] {
 	const messages = sessionEntryToContextMessages(entry);
 	if (!edit) return messages;
 	const replacement = edit.replacement;
@@ -530,9 +534,25 @@ export function buildSessionProjection(
 	const path = buildSessionPath(entries, leafId, byId);
 	const { thinkingLevel, model } = getSessionContextSettings(path);
 	const contextEntries = buildContextEntries(entries, leafId, byId);
-	const edits = new Map<string, ContextEditEntry>();
-	for (const entry of contextEntries) {
-		if (entry.type === "context_edit") edits.set(entry.targetId, entry);
+	const edits = new Map<string, Pick<ContextEditEntry, "replacement">>();
+	const activeIds = new Set(contextEntries.map((entry) => entry.id));
+	const pathById = new Map(path.map((entry) => [entry.id, entry]));
+	// Replay in commit order, not projected order (the newest compaction is projected first).
+	// Earlier compaction edits still apply if their targets survive a later compaction.
+	for (const entry of path) {
+		if (entry.type === "context_edit" && activeIds.has(entry.id)) edits.set(entry.targetId, entry);
+		if (entry.type !== "compaction") continue;
+		for (const edit of compactionToolResultEdits(entry)) {
+			const target = pathById.get(edit.targetId);
+			if (
+				!activeIds.has(edit.targetId) ||
+				target?.type !== "message" ||
+				target.message.role !== "toolResult" ||
+				target.message.toolCallId !== edit.toolCallId
+			)
+				continue;
+			edits.set(edit.targetId, { replacement: { content: [{ type: "text", text: edit.text }] } });
+		}
 	}
 	const projectedEntries = contextEntries.map(
 		(sourceEntry, index): ProjectedSessionEntry => ({

@@ -17,6 +17,7 @@ import {
 } from "../messages.ts";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { completeSummarization, estimateTokens, getSummarizationFailure } from "./compaction.ts";
+import { CHECKPOINT_RULES } from "./prompts.ts";
 import {
 	computeFileLists,
 	createFileOps,
@@ -257,32 +258,31 @@ Summary of that exploration:
 
 const BRANCH_SUMMARY_PROMPT = `Create a structured summary of this conversation branch for context when returning later.
 
-Use this EXACT format:
+${CHECKPOINT_RULES}
+
+Use these headings:
 
 ## Goal
-[What was the user trying to accomplish in this branch?]
+What was the user trying to accomplish in this branch?
 
 ## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned]
-- [Or "(none)" if none were mentioned]
+Requirements and boundaries mentioned in this branch; say "(none)" if absent.
 
 ## Progress
 ### Done
-- [x] [Completed tasks/changes]
-
+- [x] Completed work, with evidence where available.
 ### In Progress
-- [ ] [Work that was started but not finished]
-
+- [ ] Work started but unfinished.
 ### Blocked
-- [Issues preventing progress, if any]
+Unresolved failures or missing information.
 
 ## Key Decisions
 - **[Decision]**: [Brief rationale]
 
 ## Next Steps
-1. [What should happen next to continue this work]
+1. The next concrete action when returning to this branch.
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Preserve exact file paths, symbols and error messages. Do not infer work from the later branch.`;
 
 /**
  * Generate a summary of abandoned branch entries.

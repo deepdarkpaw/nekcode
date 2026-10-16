@@ -8,6 +8,7 @@ import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
+import { type CompactionContentSettings, resolveCompactionContentSettings } from "./compaction/content-policy.ts";
 import { THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 
@@ -26,6 +27,8 @@ export interface CompactionSettings {
 	model?: string;
 	/** Thinking level for built-in summarization; omitted uses the session's level. */
 	thinkingLevel?: ThinkingLevel;
+	/** Summary-input folding and compaction-boundary tool-result cleanup. */
+	content?: Partial<CompactionContentSettings>;
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
@@ -925,11 +928,14 @@ export class SettingsManager {
 		enabled: boolean;
 		reserveTokens: number;
 		keepRecentTokens: number;
+		content?: CompactionContentSettings;
 	} {
+		const content = this.settings.compaction?.content;
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(model),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(model),
+			...(content === undefined ? {} : { content: resolveCompactionContentSettings(content) }),
 		};
 	}
 
