@@ -68,6 +68,47 @@ describe("M7 edit tool", () => {
 		expect(readFileSync(path, "utf8")).toBe("y y\n");
 	});
 
+	it.each([1, 2048])("rejects missing %i-line input without echoing it", async (lineCount) => {
+		const dir = tempDir();
+		const path = join(dir, "missing-match.txt");
+		const content = "existing file content\n";
+		writeFileSync(path, content);
+		const tool = createEditToolDefinition(dir);
+		await expect(
+			tool.execute(
+				"missing-match",
+				{ file_path: path, old_string: "unmatched input line\n".repeat(lineCount), new_string: "replacement" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		).rejects.toMatchObject({
+			message: "String to replace not found in file. Read the current content before retrying.",
+		});
+		expect(readFileSync(path, "utf8")).toBe(content);
+	});
+
+	it.each([1, 2048])("rejects ambiguous %i-line input without echoing it", async (lineCount) => {
+		const dir = tempDir();
+		const path = join(dir, "ambiguous-match.txt");
+		const oldString = "repeated input line\n".repeat(lineCount);
+		const content = oldString.repeat(2);
+		writeFileSync(path, content);
+		const tool = createEditToolDefinition(dir);
+		await expect(
+			tool.execute(
+				"ambiguous-match",
+				{ file_path: path, old_string: oldString, new_string: "replacement" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		).rejects.toMatchObject({
+			message: "Found 2 matches. Add more context for a unique match, or set replace_all=true to replace all.",
+		});
+		expect(readFileSync(path, "utf8")).toBe(content);
+	});
+
 	it("preserves literal replacement tokens and removes the following newline", async () => {
 		const dir = tempDir();
 		const path = join(dir, "special.txt");
