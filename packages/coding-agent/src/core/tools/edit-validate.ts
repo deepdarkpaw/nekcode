@@ -68,7 +68,7 @@ export function validateEditText(content: string, input: EditTextInput): Validat
 					? desanitize(normalizedOldString)
 					: "";
 	if (actualOldString === "" && normalizedOldString !== "") {
-		throw new Error(`String to replace not found in file.\nString: ${input.oldString}`);
+		throw new Error("String to replace not found in file. Read the current content before retrying.");
 	}
 	const normalizedNewString = directMatch ? normalizedInputNewString : desanitize(normalizedInputNewString);
 	const newString = isMarkdown ? normalizedNewString : stripTrailingWhitespace(normalizedNewString);
@@ -76,7 +76,7 @@ export function validateEditText(content: string, input: EditTextInput): Validat
 	const matches = countOccurrences(content, actualOldString);
 	if (matches > 1 && !input.replaceAll) {
 		throw new Error(
-			`Found ${matches} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${input.oldString}`,
+			`Found ${matches} matches. Add more context for a unique match, or set replace_all=true to replace all.`,
 		);
 	}
 	return { actualOldString, newString };
