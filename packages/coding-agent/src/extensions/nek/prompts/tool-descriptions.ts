@@ -1,12 +1,11 @@
 /**
- * todo_write description: Cursor TodoWrite's first sentence (reference/cursor/cursor-tools-2026.json line 753) plus the
- * condensed when-to-use and when-not-to-use rules of Claude Code's TodoWrite prompt
- * (reference/claude-code/packages/builtin-tools/src/tools/TodoWriteTool/prompt.ts).
+ * todo_write uses Cursor's short description and complexity-based trigger (reference/cursor/cursor-tools-2026.json
+ * line 753 and cursor-opus5-agent-system-prompt.txt line 253), followed by concise list-management rules.
  */
 export const TODO_WRITE = `Use this tool to create and manage a structured task list for your current coding session. The user sees it as your progress.
 
-- Use it for work with several distinct steps (roughly three or more), when the user gives a list of tasks, or when the user asks for a todo list.
-- Skip it for single-step or trivial work, quick fixes, and questions or explanations: do those directly.
+- Use it only for complex tasks that need progress tracking.
+- Skip simple work, quick fixes, questions, and explanations, even when they involve several routine steps.
 - merge=true updates items by id and keeps the others; merge=false replaces the whole list.
 - Keep at most one item in_progress. Mark an item completed as soon as it is done, and cancelled when it is no longer needed.
 - Write items as specific actions (for example "Add retry to fetchUser"), not vague goals.`;
