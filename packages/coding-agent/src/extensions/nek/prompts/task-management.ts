@@ -1,9 +1,8 @@
 /**
- * `<task_management>` section body: Cursor's opening sentence (reference/cursor/cursor-opus5-agent-system-prompt.txt
- * line 253) with the thresholds of Claude Code's TodoWrite prompt. The section tag is added by the system prompt
- * builder. Ending the turn means closing out the list, not forcing every todo to completion.
+ * `<task_management>` uses Cursor's complexity-based trigger (reference/cursor/cursor-opus5-agent-system-prompt.txt
+ * line 253), not a step-count threshold. Ending the turn means closing out the list, not forcing every todo to completion.
  */
-export const TASK_MANAGEMENT = `You have access to the todo_write tool to help you manage and plan tasks. Use it for work with several distinct steps (roughly three or more) or when the user gives a list of tasks; skip it for single-step or trivial tasks and for questions.
+export const TASK_MANAGEMENT = `You have access to the todo_write tool to help you manage and plan tasks. Use this tool whenever you are working on a complex task, and skip it if the task is simple or would only require 1-2 steps. Skip simple work even if it involves several routine steps.
 
 Before ending your turn, mark finished todos completed and cancel the ones that are no longer needed.`;
 

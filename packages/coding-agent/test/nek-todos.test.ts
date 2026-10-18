@@ -1,8 +1,10 @@
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager.ts";
+import { TASK_MANAGEMENT } from "../src/extensions/nek/prompts/task-management.ts";
 import { replayBranch } from "../src/extensions/nek/state/session-state.ts";
 import { mergeTodos, openTodos, summarizeTodos } from "../src/extensions/nek/state/todos.ts";
+import { createTodoWriteToolDefinition } from "../src/extensions/nek/tools/todo-write.ts";
 import type { Todo } from "../src/extensions/nek/types.ts";
 
 const a = { id: "a", content: "First", status: "completed" } satisfies Todo;
@@ -30,6 +32,21 @@ function toolResultEntry(id: string, toolName: string, details: JsonValue, isErr
 function customEntry(id: string, customType: string, data: unknown): SessionEntry {
 	return { type: "custom", id, parentId: null, timestamp: "2026-09-26T00:00:00.000Z", customType, data };
 }
+
+describe("todo guidance", () => {
+	it("requires complexity rather than a step-count threshold", () => {
+		const tool = createTodoWriteToolDefinition({ getTodos: () => [], setTodos: () => {} });
+		for (const guidance of [TASK_MANAGEMENT, tool.description]) {
+			expect(guidance).toContain("complex task");
+			expect(guidance).toContain("simple");
+			expect(guidance).toContain("several routine steps");
+			expect(guidance).not.toContain("roughly three or more");
+			expect(guidance).not.toContain("when the user gives a list of tasks");
+		}
+		expect(tool.promptSnippet).toBe("Track complex tasks with a todo list");
+		expect(TASK_MANAGEMENT).toContain("mark finished todos completed and cancel the ones that are no longer needed");
+	});
+});
 
 describe("mergeTodos", () => {
 	it("replaces the list when merge is false", () => {

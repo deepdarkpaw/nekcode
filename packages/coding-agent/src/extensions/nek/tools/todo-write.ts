@@ -44,7 +44,7 @@ export function createTodoWriteToolDefinition(
 	return {
 		name: TODO_WRITE_TOOL_NAME,
 		label: "Todos",
-		promptSnippet: "Plan and track multi-step work as a todo list the user sees",
+		promptSnippet: "Track complex tasks with a todo list",
 		description: TODO_WRITE,
 		parameters: todoWriteSchema,
 		// The result is the list from the arguments; rerunning after a crash gives the same list.

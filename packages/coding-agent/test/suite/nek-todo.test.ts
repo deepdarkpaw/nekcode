@@ -238,6 +238,9 @@ describe("nek todo_write", () => {
 		expect(systemPrompt).toContain(
 			"Before ending your turn, mark finished todos completed and cancel the ones that are no longer needed.\n</task_management>",
 		);
+		expect(systemPrompt).toContain("Use this tool whenever you are working on a complex task");
+		expect(systemPrompt).toContain("Skip simple work even if it involves several routine steps.");
+		expect(systemPrompt).not.toContain("roughly three or more");
 		expect(systemPrompt).not.toContain("IMPORTANT: Make sure you don't end your turn");
 	});
 });
