@@ -876,10 +876,10 @@ describe("ExtensionRunner", () => {
 			runner.onError((error) => errors.push(error.error));
 			runner.bindCore(extensionActions, extensionContextActions);
 
-			const chained = await runner.emitBeforeAgentStart("hello", undefined, {
-				cwd: tempDir,
-				customPrompt: "base",
-			});
+			const chained = await runner.emitBeforeAgentStart(
+				{ messageType: "user", prompt: "hello", images: undefined },
+				{ cwd: tempDir, customPrompt: "base" },
+			);
 
 			expect(errors).toEqual([]);
 			expect(chained.messages).toEqual([]);

@@ -108,7 +108,7 @@ import {
 	type TreePreparation,
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
-import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -259,7 +259,10 @@ export interface AgentSessionConfig {
 		Partial<Pick<CacheWarmer, "start">>;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
-	/** Reload activates only new entries in defaultTools when no explicit tool selection was supplied. */
+	/**
+	 * Whether the initial tools come from the `defaultTools` setting. When true, a resumed session replaces them with
+	 * the loadout its transcript records, and reload activates only new entries in defaultTools.
+	 */
 	usesDefaultTools?: boolean;
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
@@ -424,6 +427,11 @@ export class AgentSession {
 	private _followUpMessages: string[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
+	/**
+	 * Custom messages sent with `triggerTurn` while a run is being prepared; they join that run instead of starting
+	 * another. Undefined when no run is being prepared.
+	 */
+	private _startingRunMessages: CustomMessage[] | undefined;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -536,7 +544,9 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
-		if (this._initialActiveToolNames === undefined) this._restoreToolsFromTranscript();
+		// The SDK always passes the default tools, so sessions that use them restore the loadout their transcript
+		// records (tools loaded by tool_search, for example); explicit tool options win over the transcript.
+		if (this._usesDefaultTools || this._initialActiveToolNames === undefined) this._restoreToolsFromTranscript();
 		const sessionFile = this.sessionManager.getSessionFile();
 		// Existing sessions open at once; their interrupted work resumes once extensions are bound (see _engineOrThrow).
 		if (sessionFile === undefined || existsSync(sessionFile)) {
@@ -2046,6 +2056,122 @@ export class AgentSession {
 	}
 
 	/**
+	 * Prepare a run started by a user message or an idle custom message: compact first when needed, then mark the
+	 * session busy (see {@link _beginRunStart}), emit before_agent_start, and apply the run's prompt options and tool
+	 * loadout. Returns the messages that follow the starting message, in pi's order: pending "nextTurn" messages,
+	 * before_agent_start messages, then custom work a cancelled run left queued. The caller submits the run, or calls
+	 * {@link _failRunStart} when it cannot.
+	 */
+	private async _prepareRun(trigger: BeforeAgentStartTrigger): Promise<AgentMessage[]> {
+		// Check if we need to compact before sending (catches aborted responses). The starting message is sent after
+		// this, so a compaction here never continues the previous run.
+		const lastAssistant = this._findLastAssistantMessage();
+		if (lastAssistant) await this._checkCompaction(lastAssistant, false);
+		this._beginRunStart();
+		const selectedToolsBefore = [...this._baseSystemPromptOptions.selectedTools];
+		const before = await this._extensionRunner.emitBeforeAgentStart(trigger, this._baseSystemPromptOptions);
+		const messages: AgentMessage[] = [...this._pendingNextTurnMessages];
+		this._pendingNextTurnMessages = [];
+		for (const message of before.messages) {
+			messages.push({
+				role: "custom",
+				customType: message.customType,
+				// Untyped extensions can pass null/missing content; normalize at ingestion.
+				content: message.content ?? [],
+				display: message.display,
+				details: message.details,
+				timestamp: Date.now(),
+			});
+		}
+		messages.push(...this.agent.peekQueuedMessages());
+		this.agent.clearAllQueues();
+		// Handlers may edit selectedTools or call setActiveTools(), which updates the live loadout instead. An explicit
+		// edit wins; otherwise the live loadout is authoritative, so a setActiveTools() call is not undone here.
+		const handlerEditedTools =
+			before.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
+			before.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
+		if (handlerEditedTools) this.setActiveToolsByName(before.systemPromptOptions.selectedTools);
+		before.systemPromptOptions.selectedTools = this.getActiveToolNames();
+		this._runSystemPromptOptions = before.systemPromptOptions;
+		this._pendingToolNames.clear();
+		return messages;
+	}
+
+	/**
+	 * Mark the session busy while a run is being prepared (upstream earendil-works/pi#10739): custom messages sent with
+	 * `triggerTurn` and queued user input join the starting run instead of starting another, and an abort requested
+	 * meanwhile aborts the run once it starts.
+	 */
+	private _beginRunStart(): void {
+		this._isAgentRunActive = true;
+		this._agentRunAbortRequested = false;
+		this._startingRunMessages = [];
+	}
+
+	/** End preparation right before the run is submitted; returns the triggered messages that join it. */
+	private _takeStartingRunMessages(): CustomMessage[] {
+		const held = this._startingRunMessages ?? [];
+		this._startingRunMessages = undefined;
+		return held;
+	}
+
+	/** A run could not start: release its busy state and place held messages without starting a run. */
+	private async _failRunStart(): Promise<void> {
+		const held = this._takeStartingRunMessages();
+		this._isAgentRunActive = false;
+		for (const resolve of this._settledWaiters.splice(0)) resolve();
+		for (const message of held) await this.sendCustomMessage(message);
+	}
+
+	/** Join held user inputs to the run just submitted; abort it at once when an abort came while it was prepared. */
+	private async _afterRunSubmitted(engine: DurableEngine): Promise<void> {
+		if (this._agentRunAbortRequested) {
+			await engine.abort();
+			return;
+		}
+		// Inputs held while an earlier run settled without continuing, or while this one was prepared, join this run.
+		for (const input of this._heldInputs.splice(0)) {
+			if (input.behavior === "steer") await engine.steer(input.content);
+			else await engine.followUp(input.content);
+		}
+	}
+
+	/**
+	 * Start a run from an idle custom message sent with `triggerTurn`. It is prepared like a prompt, so
+	 * before_agent_start handlers set the run's prompt sections and messages (upstream earendil-works/pi#10739).
+	 */
+	private async _startCustomRun(message: CustomMessage): Promise<void> {
+		this._flushPendingBashMessages();
+		let after: AgentMessage[];
+		try {
+			after = await this._prepareRun({ messageType: "custom", message });
+		} catch (error) {
+			if (this._startingRunMessages !== undefined) await this._failRunStart();
+			throw error;
+		}
+		// Wait for this run's settlement, registered before submitting so it includes the submissions it defers.
+		const settled = this._whenRunSettled();
+		let engine: DurableEngine;
+		let submission: Submission;
+		try {
+			engine = await this._engineOrThrow();
+			await engine.markSettlementPending();
+			// Handlers may change the loadout; the run's first request offers it.
+			await this._emitRunStartEarly();
+			engine.setTools(this._activeAgentTools());
+			await engine.setPrompt(this._promptSections(this._runSystemPromptOptions ?? this._baseSystemPromptOptions));
+			after.push(...this._takeStartingRunMessages());
+			submission = await engine.appendMessage(message, { trigger: true, after });
+		} catch (error) {
+			await this._failRunStart();
+			throw error;
+		}
+		await this._afterRunSubmitted(engine);
+		await submission.wait(BACKGROUND_CONTEXT);
+		await settled;
+	}
+
+	/**
 	 * Send a prompt to the agent.
 	 * - Handles extension commands (registered via pi.registerCommand) immediately, even during streaming
 	 * - Expands file-based prompt templates by default
@@ -2117,70 +2243,42 @@ export class AgentSession {
 		this._flushPendingBashMessages();
 		if (!this.model) throw new Error(formatNoModelSelectedMessage());
 		await this._getRequiredRequestAuth(this.model);
-		// Check if we need to compact before sending (catches aborted responses). The new prompt is sent below, so a
-		// compaction here never continues the previous run.
-		const lastAssistant = this._findLastAssistantMessage();
-		if (lastAssistant) await this._checkCompaction(lastAssistant, false);
-		const selectedToolsBefore = [...this._baseSystemPromptOptions.selectedTools];
-		const before = await this._extensionRunner.emitBeforeAgentStart(
-			expanded,
-			currentImages,
-			this._baseSystemPromptOptions,
-		);
-		const normalized = await this._normalizePromptImages(currentImages);
-		const content: (TextContent | ImageContent)[] = [
-			{
-				type: "text",
-				text: normalized.hints.length === 0 ? expanded : `${expanded}\n\n${normalized.hints.join("\n")}`,
-			},
-			...normalized.images,
-		];
-		// Pi's order after the user message: "nextTurn" messages, then before_agent_start messages, then custom work a
-		// cancelled run left queued.
-		const messages: AgentMessage[] = [...this._pendingNextTurnMessages];
-		this._pendingNextTurnMessages = [];
-		for (const message of before.messages) {
-			messages.push({
-				role: "custom",
-				customType: message.customType,
-				// Untyped extensions can pass null/missing content; normalize at ingestion.
-				content: message.content ?? [],
-				display: message.display,
-				details: message.details,
-				timestamp: Date.now(),
-			});
+		let messages: AgentMessage[];
+		let content: (TextContent | ImageContent)[];
+		try {
+			messages = await this._prepareRun({ messageType: "user", prompt: expanded, images: currentImages });
+			// Normalized after before_agent_start, so a model a handler selected determines the resize profile.
+			const normalized = await this._normalizePromptImages(currentImages);
+			content = [
+				{
+					type: "text",
+					text: normalized.hints.length === 0 ? expanded : `${expanded}\n\n${normalized.hints.join("\n")}`,
+				},
+				...normalized.images,
+			];
+		} catch (error) {
+			if (this._startingRunMessages !== undefined) await this._failRunStart();
+			throw error;
 		}
-		messages.push(...this.agent.peekQueuedMessages());
-		this.agent.clearAllQueues();
-		// Handlers may edit selectedTools or call setActiveTools(), which updates the live loadout instead. An explicit
-		// edit wins; otherwise the live loadout is authoritative, so a setActiveTools() call is not undone here.
-		const handlerEditedTools =
-			before.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
-			before.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
-		if (handlerEditedTools) this.setActiveToolsByName(before.systemPromptOptions.selectedTools);
-		before.systemPromptOptions.selectedTools = this.getActiveToolNames();
-		this._runSystemPromptOptions = before.systemPromptOptions;
-		this._pendingToolNames.clear();
-		preflightResult?.("started");
-		this._isAgentRunActive = true;
-		this._agentRunAbortRequested = false;
 		// Wait for this run's settlement, registered before submitting so it includes the submissions it defers.
 		const settled = this._whenRunSettled();
+		let engine: DurableEngine;
 		let submission: Submission;
 		try {
-			const engine = await this._engineOrThrow();
+			preflightResult?.("started");
+			engine = await this._engineOrThrow();
 			await engine.markSettlementPending();
 			// Handlers may change the loadout; the run's first request offers it.
 			await this._emitRunStartEarly();
+			messages.push(...this._takeStartingRunMessages());
 			submission = await engine.prompt(content, {
-				systemPrompt: this._promptSections(this._runSystemPromptOptions ?? before.systemPromptOptions),
+				systemPrompt: this._promptSections(this._runSystemPromptOptions ?? this._baseSystemPromptOptions),
 				tools: this._activeAgentTools(),
 				messages,
 				whenBusy: "reject",
 			});
 		} catch (error) {
-			this._isAgentRunActive = false;
-			for (const resolve of this._settledWaiters.splice(0)) resolve();
+			await this._failRunStart();
 			if (error instanceof Error && error.message.includes("is busy")) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -2188,12 +2286,7 @@ export class AgentSession {
 			}
 			throw error;
 		}
-		const engine = await this._engineOrThrow();
-		// Inputs held while an earlier run settled without continuing join this run.
-		for (const input of this._heldInputs.splice(0)) {
-			if (input.behavior === "steer") await engine.steer(input.content);
-			else await engine.followUp(input.content);
-		}
+		await this._afterRunSubmitted(engine);
 		await submission.wait(BACKGROUND_CONTEXT);
 		await settled;
 		await this.sessionManager.refresh();
@@ -2206,7 +2299,9 @@ export class AgentSession {
 		this._emitQueueUpdate();
 		await this._extensionRunner.emit({ type: "input_queued", behavior: "steer", source });
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...(images ?? [])];
-		if (this._runEnded) this._heldInputs.push({ behavior: "steer", content });
+		// A settling run, or one still being prepared, cannot take input yet; it joins the next run.
+		if (this._runEnded || this._startingRunMessages !== undefined)
+			this._heldInputs.push({ behavior: "steer", content });
 		else await (await this._engineOrThrow()).steer(content);
 	}
 
@@ -2216,7 +2311,9 @@ export class AgentSession {
 		this._emitQueueUpdate();
 		await this._extensionRunner.emit({ type: "input_queued", behavior: "followUp", source });
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...(images ?? [])];
-		if (this._runEnded) this._heldInputs.push({ behavior: "followUp", content });
+		// A settling run, or one still being prepared, cannot take input yet; it joins the next run.
+		if (this._runEnded || this._startingRunMessages !== undefined)
+			this._heldInputs.push({ behavior: "followUp", content });
 		else await (await this._engineOrThrow()).followUp(content);
 	}
 
@@ -2375,6 +2472,11 @@ export class AgentSession {
 			this._pendingNextTurnMessages.push(appMessage);
 			return;
 		}
+		// A run is being prepared: the message joins it, after its starting message, instead of starting another.
+		if (this._startingRunMessages !== undefined && options?.triggerTurn !== false) {
+			this._startingRunMessages.push(appMessage);
+			return;
+		}
 		if (this.isStreaming && options?.triggerTurn !== false) {
 			if (this._agentRunAbortRequested || this._runEnded) {
 				// The run is being cancelled or settling: keep the work queued for a continuation or the next run.
@@ -2391,20 +2493,7 @@ export class AgentSession {
 		}
 		if (options?.triggerTurn) {
 			if (this._deferUntilAgentSettled(() => this.sendCustomMessage(message, options), "custom")) return;
-			const engine = await this._engineOrThrow();
-			this._isAgentRunActive = true;
-			this._agentRunAbortRequested = false;
-			const settled = this._whenRunSettled();
-			try {
-				await engine.markSettlementPending();
-				const submission = await engine.appendMessage(appMessage, { trigger: true });
-				await submission.wait(BACKGROUND_CONTEXT);
-			} catch (error) {
-				this._isAgentRunActive = false;
-				for (const resolve of this._settledWaiters.splice(0)) resolve();
-				throw error;
-			}
-			await settled;
+			await this._startCustomRun(appMessage);
 			return;
 		}
 		if (this._runEnded && this.isStreaming) {

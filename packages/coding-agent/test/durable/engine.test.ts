@@ -175,11 +175,13 @@ describe("DurableEngine", () => {
 		await engine.prompt("again");
 		await engine.waitForIdle();
 
-		expect(seen[0]).toEqual(["custom", "system", "user"]);
+		// Durable leads the model context with the initial system message (upstream earendil-works/pi#10542); pi's view
+		// follows that order and still restores the custom message.
+		expect(seen[0]).toEqual(["system", "custom", "user"]);
 		expect(sent[0]).toEqual(["system", "user"]);
 		// The stored transcript still holds the custom message.
 		expect((await engine.messages()).map((message) => message.role)).toContain("custom");
-		expect(seen[1]).toEqual(["custom", "system", "user", "assistant", "user"]);
+		expect(seen[1]).toEqual(["system", "custom", "user", "assistant", "user"]);
 	});
 
 	it("blocks a tool call through the tool_call hook with pi's text", async () => {

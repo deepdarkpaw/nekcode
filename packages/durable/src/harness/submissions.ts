@@ -199,17 +199,18 @@ export async function admitSubmission(
 			omitUndefinedProperties: true,
 		});
 		const items = (boundary?.inbox ?? (await tx.doc(InboxDoc, conversationId))).items;
+		// nek: entries that follow the queued input or write.
+		const after =
+			draft.after === undefined || draft.after.length === 0
+				? {}
+				: { after: copyJson(draft.after, { omitUndefinedProperties: true }) as unknown as JsonObject[] };
 		if (draft.type === "write") {
 			// nek: a triggered write keeps its delivery mode.
 			const deliverAs =
 				draft.trigger === true && draft.deliverAs !== undefined ? { deliverAs: draft.deliverAs } : {};
-			items.push({ id, mode: "write", entry: value as JsonObject, ...deliverAs });
+			items.push({ id, mode: "write", entry: value as JsonObject, ...deliverAs, ...after });
 		} else {
 			const mode = draft.whenBusy === "steer" ? "steer" : "followUp";
-			const after =
-				draft.after === undefined || draft.after.length === 0
-					? {}
-					: { after: copyJson(draft.after, { omitUndefinedProperties: true }) as unknown as JsonObject[] };
 			items.push({ id, mode, content: value as JsonRepresentation<UserInput>, ...after });
 		}
 		if (boundary === undefined) return id;
@@ -227,6 +228,8 @@ export async function admitSubmission(
 			return (await tx.createSubmission({ conversationId, ...requestId, type: "write", ...stale })).id;
 		}
 		const entry = await tx.appendEntry(conversationId, draft.entry);
+		// nek: entries that follow the write, before a triggered run's first request.
+		for (const after of draft.after ?? []) await tx.appendEntry(conversationId, after);
 		const write = { conversationId, ...requestId, type: "write", status: "done", entry: entry.id } as const;
 		const { id } = await tx.createSubmission(write);
 		// nek: a triggered write starts a run in its placement commit; the done write identifies the run.

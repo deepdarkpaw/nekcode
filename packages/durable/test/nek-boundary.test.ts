@@ -165,6 +165,52 @@ describe("nek triggered writes", () => {
 		await opened.harness.close(context);
 	});
 
+	it("places the entries after an idle triggered write in its commit, before the run's first request", async () => {
+		const setup = chatSetup();
+		const requests: string[] = [];
+		setup.faux.setResponses([
+			(request) => {
+				requests.push(request.messages.map((message) => textOf(message) ?? "").join(","));
+				return answer("answered");
+			},
+		]);
+		const opened = await openChat(new MemoryStorage(), setup);
+		const commits: string[][] = [];
+		opened.harness.subscribeCommits((publication) => commits.push(publication.changes.map((change) => change.type)));
+		const note: Message = { role: "user", content: "note", timestamp: 2 };
+		await opened.root.submit({ ...write, after: [{ kind: "nek.note", model: [note] }] }, context);
+		expect(commits[0]?.filter((type) => type === "entry")).toHaveLength(2);
+		await opened.harness.waitForIdle(context);
+		expect(await transcript(opened)).toEqual(["nek.message:reminder", "nek.note:note", "pi.assistant:answered"]);
+		expect(requests).toEqual(["reminder,note"]);
+		await opened.harness.close(context);
+	});
+
+	it("places the entries after a queued triggered write with it", async () => {
+		const setup = chatSetup();
+		const gate = deferred();
+		setup.faux.setResponses([
+			async () => {
+				await gate.promise;
+				return answer("first");
+			},
+		]);
+		const opened = await openChat(new MemoryStorage(), setup);
+		const input = await opened.root.submit({ type: "input", content: "go" }, context);
+		const note: Message = { role: "user", content: "note", timestamp: 2 };
+		await opened.root.submit({ ...write, after: [{ kind: "nek.note", model: [note] }] }, context);
+		gate.resolve();
+		await input.wait(context);
+		await opened.harness.waitForIdle(context);
+		expect(await transcript(opened)).toEqual([
+			"pi.user:go",
+			"pi.assistant:first",
+			"nek.message:reminder",
+			"nek.note:note",
+		]);
+		await opened.harness.close(context);
+	});
+
 	it("reports and ignores the trigger of a write that is not model input", async () => {
 		const setup = chatSetup();
 		const opened = await openChat(new MemoryStorage(), setup);

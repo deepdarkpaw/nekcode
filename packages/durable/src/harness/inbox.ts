@@ -17,7 +17,14 @@ export type InboxItem =
 	 * `entry` is an `EntryDraft`, stored as plain JSON. nek: a triggered write with `deliverAs` is selected like user
 	 * input of that mode and continues the run.
 	 */
-	| { id: SubmissionId; mode: "write"; entry: JsonObject; deliverAs?: "steer" | "followUp" };
+	| {
+			id: SubmissionId;
+			mode: "write";
+			entry: JsonObject;
+			deliverAs?: "steer" | "followUp";
+			/** nek: `EntryDraft`s placed right after the written entry, stored as plain JSON. */
+			after?: JsonObject[];
+	  };
 
 /** Built-in queue of one conversation's submissions waiting for a boundary, in ID order. */
 export type InboxState = { items: InboxItem[] };
@@ -108,6 +115,7 @@ export async function applyBoundary(
 		const entry = await tx.appendEntry(conversationId, draft);
 		last = entry.id;
 		if (draft.head !== undefined) boundary.head = draft.head === "self" ? entry.id : draft.head;
+		last = (await appendAfter(tx, conversationId, item.after)) ?? last;
 		tx.placeSubmission(item.id, entry.id);
 	}
 	const placed: SubmissionId[] = [];
@@ -121,7 +129,7 @@ export async function applyBoundary(
 				continue;
 			}
 			const entry = await tx.appendEntry(conversationId, draft);
-			last = entry.id;
+			last = (await appendAfter(tx, conversationId, queued.after)) ?? entry.id;
 			tx.placeSubmission(queued.id, entry.id);
 			placed.push(queued.id);
 			continue;
@@ -129,16 +137,24 @@ export async function applyBoundary(
 		const item = queued as Draft<Extract<InboxItem, { mode: "steer" | "followUp" }>>;
 		const message = { role: "user", content: item.content as UserInput, timestamp: now } as const;
 		const entry = await tx.appendEntry(UserEntry, conversationId, { model: [message] });
-		last = entry.id;
-		// nek: entries that follow the input.
-		for (const after of item.after ?? [])
-			last = (await tx.appendEntry(conversationId, after as unknown as EntryDraft)).id;
+		last = (await appendAfter(tx, conversationId, item.after)) ?? entry.id;
 		tx.placeSubmission(item.id, entry.id);
 		placed.push(item.id);
 	}
 	const removed = [...writes, ...users].sort((a, b) => b - a);
 	for (const index of removed) items.splice(index, 1);
 	return { users: placed, reset, ...(last === undefined ? {} : { last }) };
+}
+
+/** nek: append the entries that follow a queued input or write; returns the last one's ID, if any. */
+async function appendAfter(
+	tx: Tx,
+	conversationId: ConversationId,
+	after: readonly JsonObject[] | undefined,
+): Promise<EntryId | undefined> {
+	let last: EntryId | undefined;
+	for (const draft of after ?? []) last = (await tx.appendEntry(conversationId, draft as unknown as EntryDraft)).id;
+	return last;
 }
 
 /** Whether a head write targets an entry before the active range, so placing it would bring back cut history. */

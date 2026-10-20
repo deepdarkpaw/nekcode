@@ -247,6 +247,13 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const startupWaitMs = options.startupWaitMs ?? DEFAULT_STARTUP_WAIT_MS;
 		/** Bumped on every session start and shutdown so a runtime load that resolves late is dropped. */
 		let generation = 0;
+		/**
+		 * Aborted on session shutdown, and replaced on session start: stops sign-ins still waiting for the browser or
+		 * the authorization server, whose context would be stale (upstream earendil-works/pi#10565).
+		 */
+		let signInSession = new AbortController();
+		/** Sign-ins in progress; shutdown waits for their cleanup after aborting them. */
+		const signIns = new Set<Promise<void>>();
 		/** Working directory of the session, for stdio servers. */
 		let sessionCwd = process.cwd();
 		let credentials = options.credentials;
@@ -539,19 +546,34 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			return undefined;
 		};
 
-		const signIn = async (server: McpServer, prompt: McpSignInPrompt): Promise<string | undefined> => {
+		/** Sign in, then reconnect. Returns an error message on failure. `cancel` or the session's end stops the sign-in. */
+		const signIn = async (
+			server: McpServer,
+			prompt: McpSignInPrompt,
+			cancel?: AbortSignal,
+		): Promise<string | undefined> => {
 			const connection = server.connection;
 			const url = connection?.oauthUrl;
 			if (!connection || !url) return `MCP server "${server.entry.name}" does not use OAuth.`;
 			const runtime = await loadMcpRuntime();
+			const session = signInSession.signal;
+			const signal = cancel ? AbortSignal.any([session, cancel]) : session;
+			const signingIn = runtime.signInMcpServer({
+				serverUrl: url,
+				store: getCredentials(runtime).forServer(server.entry.name, url),
+				settings: connection.oauthSettings(),
+				challenge: connection.challenge,
+				prompt,
+				signal,
+			});
+			const cleanup = signingIn.then(
+				() => undefined,
+				() => undefined,
+			);
+			signIns.add(cleanup);
+			void cleanup.finally(() => signIns.delete(cleanup));
 			try {
-				await runtime.signInMcpServer({
-					serverUrl: url,
-					store: getCredentials(runtime).forServer(server.entry.name, url),
-					settings: connection.oauthSettings(),
-					challenge: connection.challenge,
-					prompt,
-				});
+				await signingIn;
 			} catch (error) {
 				if (error instanceof runtime.McpSignInCancelledError) return "Sign-in cancelled.";
 				return `Sign-in failed: ${errorMessage(error)}`;
@@ -759,26 +781,33 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			return setExposure(server, choice as McpExposure);
 		};
 
-		/** Sign in with the manager view's sign-in screen, which shows the URL with a copy key. */
+		/** Sign in with the manager view's sign-in screen, which shows the URL with a copy key and cancels with Esc. */
 		const signInWithUi = (ui: McpUi, server: McpServer): Promise<string | undefined> => {
 			const title = `Sign in to ${server.entry.name}`;
+			const cancel = new AbortController();
+			const status = (message: string) => ui.status(title, message, () => cancel.abort());
 			let authorizationUrl = "";
-			ui.status(title, "Contacting the authorization server…");
-			return signIn(server, {
-				showAuthorizationUrl: (url) => {
-					authorizationUrl = url.href;
-					openUrl(url.href);
+			status("Contacting the authorization server…");
+			return signIn(
+				server,
+				{
+					showAuthorizationUrl: (url) => {
+						authorizationUrl = url.href;
+						openUrl(url.href);
+					},
+					promptForRedirectUrl: async (signal) => {
+						const value = await ui.redirectUrl(title, authorizationUrl, signal);
+						status("Connecting…");
+						return value;
+					},
 				},
-				promptForRedirectUrl: async (signal) => {
-					const value = await ui.redirectUrl(title, authorizationUrl, signal);
-					ui.status(title, "Connecting…");
-					return value;
-				},
-			});
+				cancel.signal,
+			);
 		};
 
 		const runAction = async (ui: McpUi, ctx: ExtensionContext, server: McpServer, action: string) => {
 			const { name } = server.entry;
+			const { signal } = signInSession;
 			let message: string | undefined;
 			switch (action) {
 				case "signin":
@@ -808,6 +837,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					break;
 				}
 			}
+			// The session ended meanwhile (for example during a sign-in), which made ctx stale.
+			if (signal.aborted) return;
 			server.message = message;
 			ensureDiscoveryActive(ctx);
 			emitChange();
@@ -896,6 +927,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				ctx.ui.notify(`Signing in to MCP server "${name}" requires interactive mode.`, "error");
 				return;
 			}
+			const { signal } = signInSession;
 			let failure: string | undefined;
 			if (ctx.mode === "tui") {
 				await showMcpManager(ctx, async (ui) => {
@@ -915,6 +947,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 						),
 				});
 			}
+			// The session ended meanwhile, which cancelled the sign-in and made ctx stale.
+			if (signal.aborted) return;
 			if (failure) {
 				ctx.ui.notify(failure, failure === "Sign-in cancelled." ? "info" : "error");
 				return;
@@ -932,6 +966,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			sessionCwd = ctx.cwd;
 			const current = ++generation;
 			sessionActive = true;
+			signInSession = new AbortController();
 			configuredEntries = loaded.servers;
 			const registered = registeredServers();
 			overridden = registered.overridden;
@@ -1047,6 +1082,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		pi.events.on("runtime_invalidated", () => {
 			sessionActive = false;
 			generation++;
+			signInSession.abort();
 			for (const server of servers) server.pendingSource?.();
 			void Promise.all(connections().map((connection) => connection.close()));
 		});
@@ -1054,11 +1090,12 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		pi.on("session_shutdown", async () => {
 			sessionActive = false;
 			generation++;
+			signInSession.abort();
 			const closing = connections();
 			for (const server of servers) server.pendingSource?.();
 			servers = [];
 			emitChange();
-			await Promise.all(closing.map((connection) => connection.close()));
+			await Promise.all([...closing.map((connection) => connection.close()), ...signIns]);
 		});
 
 		pi.registerCommand("mcp", {

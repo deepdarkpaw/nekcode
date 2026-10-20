@@ -301,7 +301,8 @@ export class DurableEngine {
 	/**
 	 * Write a pi message with a coding-agent role; placed at once when idle, else at the next boundary. A triggered
 	 * write starts a run when idle; while busy, `deliverAs` delivers it like steering or follow-up input, continuing the
-	 * run, as pi delivers a custom message sent with `triggerTurn` during a run.
+	 * run, as pi delivers a custom message sent with `triggerTurn` during a run. `after` messages are placed right after
+	 * it, in its placement commit, as pi places `before_agent_start` messages after the message that starts a run.
 	 */
 	async appendMessage(
 		message: AgentMessage,
@@ -309,6 +310,7 @@ export class DurableEngine {
 			readonly displayOnly?: boolean;
 			readonly trigger?: true;
 			readonly deliverAs?: "steer" | "followUp";
+			readonly after?: readonly AgentMessage[];
 		} = {},
 	): Promise<Submission> {
 		const convert = this.#options.hooks?.convertToLlm ?? convertToLlm;
@@ -317,7 +319,11 @@ export class DurableEngine {
 			options.trigger === true
 				? { trigger: true as const, ...(options.deliverAs === undefined ? {} : { deliverAs: options.deliverAs }) }
 				: {};
-		return this.#conversation.submit({ type: "write", entry, ...trigger }, BACKGROUND_CONTEXT);
+		const after = (options.after ?? []).map((item) => agentMessageEntry(item, convert));
+		return this.#conversation.submit(
+			{ type: "write", entry, ...trigger, ...(after.length > 0 ? { after } : {}) },
+			BACKGROUND_CONTEXT,
+		);
 	}
 
 	/** Mark that a run the host starts must settle; see `SettlementDoc`. */

@@ -79,7 +79,8 @@ export function registerPlanMode(pi: ExtensionAPI, nek: NekRuntime): void {
 	pi.on("session_tree", (_event, ctx) => restoreMode(wiring, ctx));
 	pi.on("input", (event, ctx) => onPlanInput(wiring, event, ctx));
 	pi.on("before_agent_start", (event) => {
-		nek.automaticWorkAllowed = true;
+		// Only an explicit request lifts the block a user interruption set; automatic runs start from custom messages.
+		if (event.messageType === "user") nek.automaticWorkAllowed = true;
 		event.systemPromptOptions.sections.autonomy = AUTONOMY;
 		event.systemPromptOptions.sections.mode_selection = MODE_SELECTION;
 		return modeReminderMessage(wiring);

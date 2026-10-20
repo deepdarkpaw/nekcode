@@ -85,9 +85,13 @@ export type SubmissionDraft = {
 			 * conversation's context ends in a non-assistant message (pi's `continue()`).
 			 */
 			readonly continueContext?: true;
+			/**
+			 * nek: entries placed right after the written entry, in its placement commit, before a triggered run's first
+			 * request; pi places `before_agent_start` messages after the custom message that starts a run.
+			 */
+			readonly after?: readonly EntryDraft[];
 			readonly content?: never;
 			readonly whenBusy?: never;
-			readonly after?: never;
 	  }
 );
 

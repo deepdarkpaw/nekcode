@@ -28,8 +28,9 @@ const MISSING_RESULT_TEXT = "Tool result unavailable: history ends before this c
  * - A `pi.compaction` head marker stands for a `compactionSummary` message with its recorded `tokensBefore`.
  * - Any other contribution, or an edited one, stands for itself: a model message is a valid pi message.
  *
- * Durable then moves each tool result directly after its assistant and synthesizes missing ones; the same ordering
- * is applied here, so `llm` equals the model context durable derived from the same view.
+ * Durable then moves each tool result directly after its assistant, synthesizes missing ones, and moves a system
+ * message that only user messages precede to the front; the same ordering is applied here, so `llm` equals the model
+ * context durable derived from the same view.
  */
 export function agentContext(view: ContextView, records: readonly CompactionRecord[], cutoff?: EntryId): AgentContext {
 	const items: ContextItem[] = [];
@@ -37,7 +38,7 @@ export function agentContext(view: ContextView, records: readonly CompactionReco
 		if (cutoff !== undefined && entry.id > cutoff) return;
 		items.push(...entryItems(entry, view.contributions[index] ?? [], records));
 	});
-	const ordered = orderToolResults(items);
+	const ordered = leadWithSystem(orderToolResults(items));
 	return {
 		messages: ordered.map((item) => item.agent),
 		llm: ordered.flatMap((item) => (item.llm === undefined ? [] : [item.llm])),
@@ -115,6 +116,17 @@ function orderToolResults(items: readonly ContextItem[]): ContextItem[] {
 		}
 	}
 	return ordered;
+}
+
+/**
+ * Durable's `leadWithSystem()` applied to items keyed by their model message: a system message that only user
+ * messages precede moves to the front (upstream earendil-works/pi#10542). Items without a model message do not count.
+ */
+function leadWithSystem(items: ContextItem[]): ContextItem[] {
+	const index = items.findIndex((item) => item.llm !== undefined && item.llm.role !== "user");
+	if (index < 0 || items[index]!.llm?.role !== "system") return items;
+	if (!items.slice(0, index).some((item) => item.llm !== undefined)) return items;
+	return [items[index]!, ...items.slice(0, index), ...items.slice(index + 1)];
 }
 
 function missingResult(call: ToolCall, timestamp: number): ToolResultMessage {
