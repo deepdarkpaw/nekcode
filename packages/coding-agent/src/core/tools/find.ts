@@ -7,6 +7,7 @@ import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { findRenderers } from "./renderers/find.ts";
+import { formatPathList } from "./search-output.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
@@ -75,7 +76,7 @@ export function createFindToolDefinition(
 	return {
 		name: "find",
 		label: "find",
-		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. A pattern without '/' matches file names anywhere below the path ('*.ts', '*config*'); a pattern with '/' matches the relative path ('src/**/*.test.ts'). Respects .gitignore and includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
+		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Repeated parent directories are shown once as directory/ followed by indented names when shorter; combine the heading and name to recover a path. A pattern without '/' matches file names anywhere below the path ('*.ts', '*config*'); a pattern with '/' matches the relative path ('src/**/*.test.ts'). Respects .gitignore and includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
 		promptSnippet: findToolSystemPromptContribution.snippet,
 		promptGuidelines: [...findToolSystemPromptContribution.guidelines],
 		parameters: findSchema,
@@ -144,7 +145,7 @@ export function createFindToolDefinition(
 							// Relativize paths against the search root for stable output.
 							const relativized = results.map((p) => relativizeFindResultPath(p, searchPath));
 							const resultLimitReached = relativized.length >= effectiveLimit;
-							const rawOutput = relativized.join("\n");
+							const rawOutput = formatPathList(relativized);
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let resultOutput = truncation.content;
 							const details: FindToolDetails = {};
@@ -274,7 +275,7 @@ export function createFindToolDefinition(
 							}
 
 							const resultLimitReached = relativized.length >= effectiveLimit;
-							const rawOutput = relativized.join("\n");
+							const rawOutput = formatPathList(relativized);
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let resultOutput = truncation.content;
 							const details: FindToolDetails = {};

@@ -168,6 +168,6 @@ describe("discoverAgentTypes", () => {
 		expect(text.startsWith("Available subagent_type values\n\n- explorer [autonomous]: ")).toBe(true);
 		expect(text.split("\n- ")).toHaveLength(2);
 		expect(text).toContain("model: inherit; thinking: inherit");
-		expect(text).not.toContain("(fixed)");
+		expect(text).not.toContain("(preset)");
 	});
 });

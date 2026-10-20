@@ -30,12 +30,12 @@ describe.skipIf(!astGrepAvailable)("ast_grep tool", () => {
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
-	it("returns matches in path:line format with multi-line markers", async () => {
+	it("groups repeated paths while preserving multi-line markers", async () => {
 		const tool = createAstGrepTool(testDir);
 		const result = await tool.execute("ast-grep-1", { pattern: "console.log($$$A)", lang: "ts" });
 
 		const lines = textOf(result).split("\n");
-		expect(lines).toEqual(["src/sample.ts:2: console.log(a);", "src/sample.ts:3: console.log( (+3 lines)"]);
+		expect(lines).toEqual(["src/sample.ts:", "  2: console.log(a);", "  3: console.log( (+3 lines)"]);
 		expect(result.details).toBeUndefined();
 	});
 

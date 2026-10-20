@@ -10,14 +10,17 @@ nek does not install, update, or discover extension packages: the `install`, `re
 
 ## Tools
 
-A new session activates `read`, `bash`, `edit`, `write`, `ast_grep`, `web_search`, and the `nek` tools below. A `--tools` allowlist still applies: `nek` tools appear only when listed.
+A new session activates `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ast_grep`, `web_search`, and the `nek` tools below. A `--tools` allowlist still applies: `nek` tools appear only when listed.
 
 | Tool | Purpose |
 |---|---|
 | `read` | Reads a file. Output lines carry a `%6d|` line-number prefix. Files over 10,000 characters are returned as symbol-aligned chunks, with long function bodies folded; languages without an outline use 50-line chunks. `offset` may be negative (`-1` is the last line). |
 | `edit` | Replaces `old_string` with `new_string` in `file_path`. `old_string` must match the current file content and be unique unless `replace_all` is true; no prior read is required. Encoding, BOM, and line endings are preserved, and writes are atomic. |
 | `write` | Creates or overwrites a file. Overwriting an existing file requires a prior read. |
-| `ast_grep` | Structural code search with ast-grep patterns. |
+| `grep` | Regex or literal content search; repeated file paths are grouped when shorter and overlapping context is merged. |
+| `find` | Glob-based file search; repeated parent directories are folded when shorter. |
+| `ls` | Lists one directory, with `/` after directory names. |
+| `ast_grep` | Structural code search with ast-grep patterns; uses the same compact path grouping as `grep`. |
 | `todo_write` | Maintains the todo list shown above the editor. |
 | `switch_mode` | Asks to switch between agent and plan mode. The user must confirm. |
 | `create_plan` | Plan mode only: writes a new plan file and ends planning. |
@@ -26,6 +29,21 @@ A new session activates `read`, `bash`, `edit`, `write`, `ast_grep`, `web_search
 | `subagent` | Delegates a bounded task to a subagent, in the foreground or background. |
 | `await` | Waits for background subagents to finish; a user steer ends the wait without stopping the child. |
 | `web_search` | Searches current public-web information through Exa's keyless hosted MCP endpoint. |
+
+### Compact search output
+
+Paths remain relative to the requested search directory. Repeated `grep` and `ast_grep` paths use a heading with indented line numbers only when this reduces output size; singleton or short paths stay inline:
+
+```text
+src/config.ts:
+  32: const config = {};
+  45: export { config };
+src/main.ts:1: start();
+```
+
+`grep` merges overlapping or adjacent context windows, showing each context line once. Matching lines use `32: text`, context lines use `31- text`, and `--` separates disjoint windows. AST multi-line matches retain their `(+N lines)` marker. Match limits count actual matches, not headings or context rows; byte limits still apply after formatting.
+
+`find` can show a shared `src/core/tools/` heading followed by indented names such as `grep.ts` and `find.ts`. Join the heading and name to recover each path. Directory results keep their trailing `/`. `ls` already returns bare names and is unchanged. These compact formats are used in model-visible results, not just terminal previews.
 
 ## Modes
 
@@ -71,7 +89,7 @@ disallowed_tools: bash
 Review the changes and report concrete issues with file and line references.
 ```
 
-`readonly: true` always selects the read-only tool set. A custom `model` preset is fixed: calls cannot override it. Without a preset, the child inherits the parent's model unless the call explicitly selects another configured model. `thinking` overrides the parent's thinking level, `context_window` caps the child's automatic-compaction window, and `disallowed_tools` removes tools from the allowlist. The available preset list includes these fields in the `subagent` description and `/agents` shows it to the user.
+`readonly: true` always selects the read-only tool set. A type's `model` preset takes precedence: conflicting call arguments are ignored with a warning. Without a preset, the call can select a configured model or inherit the parent's model. An unknown model or missing configured credentials triggers a warning and uses the parent model; only an unusable parent prevents startup. This also applies when reopening or reattaching a preset child. Warnings appear before launch and remain in the tool result, without a confirmation dialog or configuration changes. Actual upstream execution errors are still reported normally. `thinking` overrides the parent's thinking level, `context_window` caps the child's automatic-compaction window, and `disallowed_tools` removes tools from the allowlist. The available preset list includes these fields in the `subagent` description and `/agents` shows it to the user.
 
 Use `/subagents` to list subagents, show a result, or cancel a running subagent. A normal user steer while `await` or a foreground child is waiting ends that wait; a foreground child continues in the background and later sends a completion notice.
 

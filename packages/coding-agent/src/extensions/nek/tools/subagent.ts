@@ -9,7 +9,7 @@ import type {
 } from "../../../core/extensions/types.ts";
 import { backgroundSubagentStartText, formatSubagentResult, SUBAGENT_DESCRIPTION } from "../prompts/subagent.ts";
 import { findAgentType } from "../services/agent-types.ts";
-import { resolveChildModel } from "../services/child-session.ts";
+import { modelRef, resolveChildModel } from "../services/child-session.ts";
 import type { SubagentRegistry } from "../services/subagent-registry.ts";
 import type { AgentType, Mode, SubagentRecord, SubagentToolData } from "../types.ts";
 import { createSubagentRenderers } from "../ui/subagent-view.ts";
@@ -40,7 +40,7 @@ const subagentSchema = Type.Object({
 	model: Type.Optional(
 		Type.String({
 			description:
-				"Types with a preset model always use it; omit model (a different value is rejected). Only types without a preset accept an override: provider/model, or 'inherit' for your model (also the default). Set it only when the user explicitly asks for a model. Ignored with resume.",
+				"A type's preset model takes precedence; conflicting arguments are ignored with a warning. Other types accept provider/model, or 'inherit' (the default). Unavailable models warn and use the parent model. Set model only when the user explicitly asks for one. Ignored with resume.",
 		}),
 	),
 	run_in_background: Type.Optional(
@@ -71,7 +71,7 @@ export type SubagentToolInput = Static<SubagentSchema>;
 /** A child session request resolved by the subagent tool; the wiring turns it into createChildSession(). */
 export interface ChildSessionRequest {
 	type: AgentType;
-	/** Undefined when reopening a type without a preset; otherwise the type's current preset applies. */
+	/** Undefined when reopening without a preset; otherwise the resolved preset, override, or parent model applies. */
 	model: Model<Api> | undefined;
 	forceReadonly: boolean;
 	resumeFile?: string;
@@ -117,8 +117,29 @@ export function snapshotSubagent(record: SubagentRecord): SubagentRecord {
 	return { ...record };
 }
 
-function subagentResult(text: string, record: SubagentRecord) {
-	return { content: [{ type: "text" as const, text }], details: { subagent: snapshotSubagent(record) } };
+function subagentResult(text: string, record: SubagentRecord, warnings: readonly string[] = []) {
+	const notices = warnings.map((warning) => `Warning: ${warning}`).join("\n");
+	return {
+		content: [{ type: "text" as const, text: notices ? `${notices}\n\n${text}` : text }],
+		details: { subagent: snapshotSubagent(record), ...(warnings.length > 0 ? { warnings: [...warnings] } : {}) },
+	};
+}
+
+/** Report model substitutions before launch without changing the type or any persisted configuration. */
+function selectSubagentModel(
+	type: AgentType,
+	requested: string | undefined,
+	ctx: ExtensionContext,
+	warn: (message: string) => void,
+): Model<Api> {
+	const preset = type.model?.trim();
+	const override = requested?.trim();
+	const selection = resolveChildModel(preset ?? override, ctx);
+	const conflict = preset !== undefined && override !== undefined && override !== preset;
+	const ignored = conflict ? `Ignoring model "${override}" for subagent type "${type.name}". ` : "";
+	const notice = selection.warning ?? (conflict ? `Using preset model ${modelRef(selection.model)}.` : undefined);
+	if (notice) warn(`${ignored}${notice}`);
+	return selection.model;
 }
 
 /**
@@ -141,24 +162,33 @@ export function createSubagentToolDefinition(
 		parameters: subagentSchema,
 		replay: "safe",
 		async execute(toolCallId, params: SubagentToolInput, signal, onUpdate, ctx) {
-			const record = await startOrReattach(options, params, signal, ctx, ctx.getToolCallMemo?.(toolCallId));
-			if (record.background) return subagentResult(backgroundSubagentStartText(record), record);
-			const done = await options.getRegistry().wait(record.id, activityReporter(onUpdate));
+			const warnings: string[] = [];
+			const warn = (message: string) => {
+				warnings.push(message);
+				if (ctx.hasUI) ctx.ui.notify(message, "warning");
+			};
+			const record = await startOrReattach(options, params, signal, ctx, ctx.getToolCallMemo?.(toolCallId), warn);
+			if (record.background) return subagentResult(backgroundSubagentStartText(record), record, warnings);
+			const done = await options.getRegistry().wait(record.id, activityReporter(onUpdate, warnings));
 			if (done.background && done.status === "running") {
 				return subagentResult(
 					`Subagent ${done.id} ("${done.description}") moved to the background because the user sent a new message. You will be notified when it completes.`,
 					done,
+					warnings,
 				);
 			}
-			return subagentResult(formatSubagentResult(done), done);
+			return subagentResult(formatSubagentResult(done), done, warnings);
 		},
 		...createSubagentRenderers(options.getRegistry),
 	};
 }
 
-function activityReporter(onUpdate: AgentToolUpdateCallback<SubagentToolData> | undefined) {
+function activityReporter(
+	onUpdate: AgentToolUpdateCallback<SubagentToolData> | undefined,
+	warnings: readonly string[],
+) {
 	if (!onUpdate) return undefined;
-	return (record: SubagentRecord) => onUpdate(subagentResult(record.activity ?? "", record));
+	return (record: SubagentRecord) => onUpdate(subagentResult(record.activity ?? "", record, warnings));
 }
 
 /** Start or resume the requested child, or reattach to the one a crashed run of this call started. */
@@ -168,10 +198,11 @@ async function startOrReattach(
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
 	memo: ToolCallMemo | undefined,
+	warn: (message: string) => void,
 ): Promise<SubagentRecord> {
 	const previous = await memo?.get<SubagentCallMemo>(SUBAGENT_MEMO);
 	if (previous !== undefined) {
-		return options.getRegistry().get(previous.id) ?? reattachSubagent(options, previous, signal, ctx);
+		return options.getRegistry().get(previous.id) ?? reattachSubagent(options, previous, signal, ctx, warn);
 	}
 	const remember: Remember =
 		memo &&
@@ -187,8 +218,8 @@ async function startOrReattach(
 			});
 		});
 	return params.resume
-		? resumeSubagent(options, params, signal, ctx, remember)
-		: startSubagent(options, params, signal, ctx, remember);
+		? resumeSubagent(options, params, signal, ctx, remember, warn)
+		: startSubagent(options, params, signal, ctx, remember, warn);
 }
 
 async function reattachSubagent(
@@ -196,6 +227,7 @@ async function reattachSubagent(
 	previous: SubagentCallMemo,
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
+	warn: (message: string) => void,
 ): Promise<SubagentRecord> {
 	const type = findAgentType(options.agentTypes, previous.type) ?? resolveAgentType(options, undefined);
 	const forceReadonly = type.readonly || options.getMode() === "plan";
@@ -209,7 +241,7 @@ async function reattachSubagent(
 			options.createSession(
 				{
 					type,
-					model: type.model !== undefined ? resolveChildModel(type.model, ctx) : undefined,
+					model: type.model !== undefined ? selectSubagentModel(type, undefined, ctx, warn) : undefined,
 					forceReadonly,
 					resumeFile: previous.sessionFile,
 				},
@@ -232,12 +264,10 @@ async function startSubagent(
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
 	remember: Remember,
+	warn: (message: string) => void,
 ): Promise<SubagentRecord> {
 	const type = resolveAgentType(options, params.subagent_type);
-	if (type.model !== undefined && params.model !== undefined && params.model !== type.model) {
-		throw new Error(`Subagent type "${type.name}" always uses its preset model ${type.model}; omit model.`);
-	}
-	const model = resolveChildModel(type.model ?? params.model, ctx);
+	const model = selectSubagentModel(type, params.model, ctx, warn);
 	const forceReadonly = type.readonly || options.getMode() === "plan";
 	const background = params.run_in_background ?? type.background;
 	return options.getRegistry().start({
@@ -257,6 +287,7 @@ async function resumeSubagent(
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
 	remember: Remember,
+	warn: (message: string) => void,
 ): Promise<SubagentRecord> {
 	const id = params.resume ?? "";
 	const registry = options.getRegistry();
@@ -282,7 +313,7 @@ async function resumeSubagent(
 				options.createSession(
 					{
 						type,
-						model: type.model !== undefined ? resolveChildModel(type.model, ctx) : undefined,
+						model: type.model !== undefined ? selectSubagentModel(type, undefined, ctx, warn) : undefined,
 						forceReadonly,
 						resumeFile: branchSubagent.sessionFile,
 					},

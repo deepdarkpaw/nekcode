@@ -10,6 +10,7 @@ import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { astGrepRenderers } from "./renderers/ast-grep.ts";
+import { formatSearchOutput, type SearchOutputLine } from "./search-output.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import {
 	DEFAULT_MAX_BYTES,
@@ -76,7 +77,7 @@ interface AstGrepMatch {
 
 interface MatchCollector {
 	limit: number;
-	lines: string[];
+	matches: SearchOutputLine[];
 	linesTruncated: boolean;
 	formatPath: (filePath: string) => string;
 }
@@ -128,7 +129,7 @@ function parseMatch(line: string): AstGrepMatch | undefined {
 
 /** Add one JSON stream line to the collector. Returns true when this match reached the limit. */
 function collectMatch(collector: MatchCollector, line: string): boolean {
-	if (collector.lines.length >= collector.limit) return false;
+	if (collector.matches.length >= collector.limit) return false;
 	const match = parseMatch(line);
 	if (!match) return false;
 	const firstLine = match.lines.replace(/\r/g, "").split("\n")[0] ?? "";
@@ -136,8 +137,12 @@ function collectMatch(collector: MatchCollector, line: string): boolean {
 	if (wasTruncated) collector.linesTruncated = true;
 	const extraLines = match.range.end.line - match.range.start.line;
 	const suffix = extraLines > 0 ? ` (+${extraLines} lines)` : "";
-	collector.lines.push(`${collector.formatPath(match.file)}:${match.range.start.line + 1}: ${text}${suffix}`);
-	return collector.lines.length >= collector.limit;
+	collector.matches.push({
+		path: collector.formatPath(match.file),
+		line: match.range.start.line + 1,
+		text: `${text}${suffix}`,
+	});
+	return collector.matches.length >= collector.limit;
 }
 
 function runAstGrep(
@@ -182,11 +187,11 @@ function runAstGrep(
 }
 
 function formatMatchOutput(collector: MatchCollector, details: AstGrepToolDetails): string {
-	if (collector.lines.length === 0) return "No matches found";
+	if (collector.matches.length === 0) return "No matches found";
 	// Byte truncation only: the match limit already capped the number of rows.
-	const truncation = truncateHead(collector.lines.join("\n"), { maxLines: Number.MAX_SAFE_INTEGER });
+	const truncation = truncateHead(formatSearchOutput(collector.matches), { maxLines: Number.MAX_SAFE_INTEGER });
 	const notices: string[] = [];
-	if (collector.lines.length >= collector.limit) {
+	if (collector.matches.length >= collector.limit) {
 		notices.push(
 			`${collector.limit} matches limit reached. Use limit=${collector.limit * 2} for more, or refine pattern`,
 		);
@@ -238,7 +243,7 @@ export function createAstGrepToolDefinition(
 	return {
 		name: "ast_grep",
 		label: "ast_grep",
-		description: `Search code structurally by AST pattern using ast-grep. Returns matches as path:line: first matched line, with (+N lines) for multi-line matches. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
+		description: `Search code structurally by AST pattern using ast-grep. Returns path:line: first matched line, with (+N lines) for multi-line matches. Repeated paths are grouped under a path: heading with indented line: text rows when shorter. Paths are relative to the search directory. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
 		promptSnippet: astGrepToolSystemPromptContribution.snippet,
 		promptGuidelines: [...astGrepToolSystemPromptContribution.guidelines],
 		parameters: astGrepSchema,
@@ -254,7 +259,7 @@ export function createAstGrepToolDefinition(
 			const searchPath = resolveToCwd(input.path || ".", ctx?.cwd || cwd);
 			const collector: MatchCollector = {
 				limit: Math.max(1, input.limit ?? DEFAULT_LIMIT),
-				lines: [],
+				matches: [],
 				linesTruncated: false,
 				formatPath: createPathFormatter(searchPath, await isDirectoryPath(searchPath)),
 			};

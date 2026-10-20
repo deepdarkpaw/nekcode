@@ -11,6 +11,7 @@ import {
 } from "../src/extensions/nek/ui/renderers.ts";
 import {
 	awaitRenderers,
+	createSubagentRenderers,
 	renderSubagentNotice,
 	subagentLine,
 	subagentRenderers,
@@ -194,6 +195,36 @@ describe("subagent card rendering", () => {
 		const completedText = completed.render(120).map(stripAnsi).join("\n");
 		expect(completedText).toContain("  indented code");
 		expect(completedText).toContain("    deeper");
+	});
+
+	it("preserves model warnings when a historical card resolves its live record", () => {
+		initTheme("dark");
+		const live = record({ status: "completed", model: "faux/parent", endedAt: NOW });
+		const registry = { get: () => live } as unknown as SubagentRegistry;
+		const renderers = createSubagentRenderers(() => registry);
+		const context = renderContext({});
+		const component = renderers.renderResult?.(
+			{
+				content: [{ type: "text", text: "done" }],
+				details: { subagent: record(), warnings: ["Requested model unavailable; using parent model faux/parent."] },
+			},
+			collapsed,
+			theme,
+			context,
+		);
+		if (!component) throw new Error("Missing subagent result renderer");
+		const text = assertFits(component, [20, 40, 120], 120);
+		expect(text).toContain("Warning: Requested model unavailable; using parent model faux/parent.");
+		expect(text).toContain("parent · generalPurpose");
+		context.lastComponent = component;
+		const refreshed = renderers.renderResult?.(
+			{ content: [], details: { subagent: live } },
+			collapsed,
+			theme,
+			context,
+		);
+		expect(refreshed).toBe(component);
+		expect(stripAnsi(refreshed?.render(120).join("\n") ?? "")).not.toContain("Warning:");
 	});
 
 	it("shows a short model-less card and omits an empty activity line", () => {

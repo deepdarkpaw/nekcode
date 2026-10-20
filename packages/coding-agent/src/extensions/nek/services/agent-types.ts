@@ -166,7 +166,7 @@ export function describeAgentTypes(types: readonly AgentType[]): string {
 	const lines = types.map((type) => {
 		const details = [
 			`tools: ${type.tools.join(", ") || "none"}`,
-			type.model ? `model: ${type.model} (fixed)` : "model: inherit",
+			type.model ? `model: ${type.model} (preset)` : "model: inherit",
 			type.thinking ? `thinking: ${type.thinking}` : "thinking: inherit",
 			type.contextWindow ? `context: ${type.contextWindow.toLocaleString()} tokens` : undefined,
 		]

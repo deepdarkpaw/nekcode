@@ -45,10 +45,10 @@ How to call
 /** Model override rules for the scoped models (`provider/id`); without a model scope only the rule is stated. */
 function subagentModelSection(models: readonly string[]): string {
 	const rule =
-		"Types with a preset model always use it; omit model (a different value is rejected). Only types without a preset accept model overrides; omitted model or inherit uses your model. Set model only when the user explicitly asks for a specific model. Ignored with resume.";
+		"A type's preset model takes precedence; omit model for these types. Conflicting arguments are ignored with a warning. Other types inherit your model unless an override is provided. Unavailable models warn and use the parent model. Set model only when the user explicitly asks for one. Ignored with resume.";
 	if (models.length === 0) return `Model overrides\n\n${rule}`;
 	const list = ["inherit", ...models].map((model) => `- ${model}`).join("\n");
-	return `Model overrides\n\n${rule} Allowed values:\n${list}\n\nIf the requested model is not listed, do not substitute or guess: skip the call and tell the user which models are available.`;
+	return `Model overrides\n\n${rule} Known model choices:\n${list}\n\nUse exact configured provider/model identifiers; do not invent alternatives. The tool reports the actual model and warns before using the parent model when a requested model is unavailable.`;
 }
 
 /** Body of the `subagents` system prompt section: the agent type list (`describeAgentTypes()` output) and model overrides. */

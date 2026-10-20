@@ -146,24 +146,30 @@ class SubagentCardComponent extends Container {
 	private readonly state: CardState;
 	private record: SubagentRecord;
 	private expanded: boolean;
+	private warnings: readonly string[];
 	private readonly theme: Theme;
 
-	constructor(state: CardState, record: SubagentRecord, expanded: boolean, theme: Theme) {
+	constructor(state: CardState, record: SubagentRecord, expanded: boolean, theme: Theme, warnings: readonly string[]) {
 		super();
 		this.state = state;
 		this.record = record;
 		this.expanded = expanded;
 		this.theme = theme;
+		this.warnings = warnings;
 	}
 
 	/** Refresh the component when a partial result or expansion setting changes. */
-	update(record: SubagentRecord, expanded: boolean): void {
+	update(record: SubagentRecord, expanded: boolean, warnings: readonly string[]): void {
 		this.record = record;
 		this.expanded = expanded;
+		this.warnings = warnings;
 	}
 
 	override render(width: number): string[] {
 		const lines = renderCardLines(this.record, this.theme, width);
+		for (const warning of this.warnings) {
+			lines.push(...new Text(this.theme.fg("warning", `Warning: ${oneLine(warning)}`), 1, 0).render(width));
+		}
 		if (this.expanded && this.record.finalText) {
 			lines.push(...new Markdown(this.record.finalText, 1, 0, getMarkdownTheme()).render(width));
 		}
@@ -207,11 +213,12 @@ export const subagentRenderers: SubagentRenderers = {
 		const state = context.state as CardState;
 		syncCardTimer(state, record.status === "running" && options.isPartial, () => context.invalidate());
 		const existing = context.lastComponent instanceof SubagentCardComponent ? context.lastComponent : undefined;
+		const warnings = result.details?.warnings ?? [];
 		if (existing) {
-			existing.update(record, options.expanded);
+			existing.update(record, options.expanded, warnings);
 			return existing;
 		}
-		return new SubagentCardComponent(state, record, options.expanded, theme);
+		return new SubagentCardComponent(state, record, options.expanded, theme, warnings);
 	},
 };
 
@@ -227,7 +234,7 @@ export function createSubagentRenderers(getRegistry: () => SubagentRegistry): Su
 			if (!renderResult) return new Text("", 0, 0);
 			if (!record) return renderResult(result, options, theme, context);
 			return renderResult(
-				{ ...result, details: { subagent: record } },
+				{ ...result, details: { ...result.details, subagent: record } },
 				{ ...options, isPartial: options.isPartial || record.status === "running" },
 				theme,
 				context,

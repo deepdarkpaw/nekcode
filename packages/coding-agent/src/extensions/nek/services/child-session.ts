@@ -104,20 +104,28 @@ export function modelRef(model: Model<Api>): string {
 	return `${model.provider}/${model.id}`;
 }
 
-/**
- * Cursor model rule (plan.md section 7.5): undefined or "inherit" -> the parent model; "provider/id" -> that model when
- * it exists and has configured auth; anything else throws and lists the available models instead of guessing.
- */
-export function resolveChildModel(spec: string | undefined, ctx: ExtensionContext): Model<Api> {
-	const value = spec?.trim();
-	if (!value || value === "inherit") {
-		if (!ctx.model) throw new Error("The parent session has no model to inherit.");
+/** Selected child model and an explicit notice when an unavailable choice was replaced by the parent model. */
+export interface ChildModelSelection {
+	model: Model<Api>;
+	warning?: string;
+}
+
+/** Resolve a configured model, or inherit the usable parent model with a notice instead of blocking delegation. */
+export function resolveChildModel(spec: string | undefined, ctx: ExtensionContext): ChildModelSelection {
+	const inherit = (): Model<Api> => {
+		if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
+			throw new Error("The parent session has no usable model to inherit.");
+		}
 		return ctx.model;
-	}
+	};
+	const value = spec?.trim();
+	if (!value || value === "inherit") return { model: inherit() };
 	const slash = value.indexOf("/");
 	const model = slash > 0 ? ctx.modelRegistry.find(value.slice(0, slash), value.slice(slash + 1)) : undefined;
-	if (model && ctx.modelRegistry.hasConfiguredAuth(model)) return model;
-	const available = ctx.modelRegistry.getAvailable().map(modelRef);
-	const list = available.length > 0 ? available.join(", ") : "none";
-	throw new Error(`Model "${value}" is not available. Available models: inherit, ${list}.`);
+	if (model && ctx.modelRegistry.hasConfiguredAuth(model)) return { model };
+	const parent = inherit();
+	return {
+		model: parent,
+		warning: `Model "${value}" is not available or has no configured credentials; using parent model ${modelRef(parent)}.`,
+	};
 }

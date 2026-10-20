@@ -630,9 +630,7 @@ describe("Coding Agent Tools", () => {
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("context.txt-1- before");
-			expect(output).toContain("context.txt:2: match one");
-			expect(output).toContain("context.txt-3- after");
+			expect(output).toContain("context.txt:\n  1- before\n  2: match one\n  3- after");
 			expect(output).toContain("[1 matches limit reached. Use limit=2 for more, or refine pattern]");
 			// Ensure second match is not present
 			expect(output).not.toContain("match two");
@@ -648,6 +646,7 @@ describe("Coding Agent Tools", () => {
 
 			const result = await grepTool.execute("test-call-grep-injection", {
 				pattern: `--pre=${payload}`,
+				literal: true,
 				path: testDir,
 			});
 
@@ -825,7 +824,7 @@ describe("tool cwd resolution", () => {
 		const tool = createBashToolDefinition("/", { exposeSessionEnvironment: false });
 		const result = await tool.execute(
 			"test-bash-ctx-cwd",
-			{ command: "pwd" },
+			{ command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log(process.cwd())")}` },
 			undefined,
 			undefined,
 			fakeCtx(testDir),

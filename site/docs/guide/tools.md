@@ -76,10 +76,33 @@ nek --exclude-tools ask_question
 - `context` 显示匹配行前后的行，`ignoreCase` 忽略大小写。
 - 遵守 `.gitignore`，包含点文件。
 - 默认最多 100 条匹配或 50KB，单行超过 500 字符会截断。
+- 路径相对于搜索目录。同一文件有多条结果且分组更短时，路径只显示一次：
+
+```text
+src/config.ts:
+  32: const config = {};
+  45: export { config };
+src/main.ts:1: start();
+```
+
+缩进的行属于上方的文件标题；只有一条结果或分组不节省空间时，仍显示 `路径:行号: 内容`。这也适用于返回给模型的文本，不只是界面折叠。
+
+启用 `context` 时，重叠或相邻的上下文窗口会合并，每行只显示一次。命中行用 `32: 内容`，上下文用 `31- 内容`，不连续的窗口之间用 `--` 分隔。匹配上限仍按实际命中计算，不把标题和上下文行计为额外命中。
 
 ### find {#find}
 
 按 glob 模式查找文件（基于 fd）。不含 `/` 的模式匹配任意层级的文件名（`*.ts`），含 `/` 的模式匹配相对路径（`src/**/*.test.ts`）。遵守 `.gitignore`，包含点文件，默认最多 1000 条结果。
+
+同一父目录有多个结果且这样更短时，会合并公共目录：
+
+```text
+src/core/tools/
+  grep.ts
+  find.ts
+README.md
+```
+
+将目录标题和缩进的文件名拼接即可得到相对于搜索目录的路径，例如 `src/core/tools/grep.ts`。单独的路径保持原样，目录结果仍保留结尾的 `/`。
 
 ### ls {#ls}
 
@@ -93,7 +116,7 @@ nek --exclude-tools ask_question
 - `lang` 指定语言（ts、tsx、js、py、go、rust 等），省略时按文件扩展名推断。
 - `path` 限定文件或目录，`globs` 包含/排除文件。
 - `strictness` 控制匹配严格程度：`cst`、`smart`（默认）、`ast`、`relaxed`、`signature`。
-- 结果格式为 `路径:行号: 首行内容`，多行匹配会标注 `(+N lines)`。默认最多 100 条。
+- 结果显示命中的首行内容，多行匹配标注 `(+N lines)`。与 [grep](#grep) 一样，重复路径在更短时合并为文件标题和缩进行号；单条结果仍为 `路径:行号: 首行内容`。默认最多 100 条匹配，标题不计入匹配数。
 
 ### web_search {#web-search}
 

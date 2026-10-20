@@ -100,6 +100,8 @@ export interface SubagentUsage {
 /** Subagent result details: a snapshot of the record when the call returned. */
 export interface SubagentToolData {
 	subagent: SubagentRecord;
+	/** Model selection notices shown immediately and retained for the parent and tool renderer. */
+	warnings?: string[];
 }
 
 /** Await result details: finished records returned by this call, and whether the wait timed out. */

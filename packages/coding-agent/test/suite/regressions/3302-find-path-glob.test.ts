@@ -41,10 +41,18 @@ describe("issue #3302 find returns no results for path-based glob patterns", () 
 		};
 		const text = result.content[0]?.text ?? "";
 		if (text === "No files found matching pattern") return [];
-		return text
-			.split("\n")
-			.map((l) => l.trim())
-			.filter((l) => l.length > 0 && !l.startsWith("["));
+		const lines = text.split("\n");
+		let directory = "";
+		return lines.flatMap((line, index) => {
+			if (!line || line.startsWith("[")) return [];
+			if (line.startsWith("  ")) return [`${directory}${line.slice(2)}`];
+			if (lines[index + 1]?.startsWith("  ")) {
+				directory = line;
+				return [];
+			}
+			directory = "";
+			return [line];
+		});
 	}
 
 	it("basename pattern still matches (regression-safe)", async () => {

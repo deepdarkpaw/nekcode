@@ -21,7 +21,7 @@ import { BUILTIN_AGENT_TYPES, READ_ONLY_TOOL_NAMES } from "../../src/extensions/
 import * as childSession from "../../src/extensions/nek/services/child-session.ts";
 import { SubagentRegistry } from "../../src/extensions/nek/services/subagent-registry.ts";
 import { createSubagentToolDefinition } from "../../src/extensions/nek/tools/subagent.ts";
-import type { SubagentToolData } from "../../src/extensions/nek/types.ts";
+import type { SubagentRecord, SubagentToolData } from "../../src/extensions/nek/types.ts";
 import { createHarness, getMessageText, type Harness, type HarnessOptions } from "./harness.ts";
 
 type Reply = (context: { messages: Message[] }) => AssistantMessage | Promise<AssistantMessage>;
@@ -445,27 +445,30 @@ describe("nek subagents", () => {
 		},
 	);
 
-	it.each(["inherit", "faux/parent"])("a preset type rejects model %s before starting a child", async (model) => {
-		const { harness, router } = await createModelHarness();
-		const start = vi.spyOn(SubagentRegistry.prototype, "start");
-		const create = vi.spyOn(childSession, "createChildSession");
-		router.parent.push(
-			reply(subagentCall({ subagent_type: "preset-worker", model, run_in_background: true })),
-			reply(fauxAssistantMessage("ok")),
-		);
+	it.each(["inherit", "faux/parent", "missing/model", ""])(
+		"a preset type warns and ignores conflicting model %s",
+		async (model) => {
+			const { harness, router } = await createModelHarness();
+			const start = vi.spyOn(SubagentRegistry.prototype, "start");
+			router.parent.push(
+				reply(subagentCall({ subagent_type: "preset-worker", model })),
+				reply(fauxAssistantMessage("ok")),
+			);
+			router.child.push(reply(fauxAssistantMessage("preset done")));
 
-		await harness.session.prompt("delegate to the preset");
+			await harness.session.prompt("delegate to the preset");
 
-		const [result] = toolResults(harness, "subagent");
-		expect(result.isError).toBe(true);
-		expect(getMessageText(result)).toBe(
-			'Subagent type "preset-worker" always uses its preset model faux/preset; omit model.',
-		);
-		expect(start).not.toHaveBeenCalled();
-		expect(create).not.toHaveBeenCalled();
-		expect(router.childRequests).toHaveLength(0);
-		expect(subagentNotices(harness)).toHaveLength(0);
-	});
+			const [result] = toolResults(harness, "subagent");
+			expect(result.isError).toBe(false);
+			expect(getMessageText(result)).toContain(`Ignoring model "${model}"`);
+			expect(getMessageText(result)).toContain("Using preset model faux/preset.");
+			expect(result.details).toMatchObject({ warnings: [expect.any(String)] });
+			expect(start).toHaveBeenCalledTimes(1);
+			expect(router.childModels).toEqual(["faux/preset"]);
+			expect(router.parentRequests[1]).toContain("Using preset model faux/preset.");
+			expect(subagentNotices(harness)).toHaveLength(0);
+		},
+	);
 
 	it("a preset type accepts exactly its preset model", async () => {
 		const { harness, router } = await createModelHarness();
@@ -498,36 +501,31 @@ describe("nek subagents", () => {
 		expect(router.childModels).toEqual([expectedModel]);
 	});
 
-	it.each(["unknown", "no auth"])(
-		"an unavailable preset (%s) fails without starting or inheriting",
-		async (reason) => {
-			const presetModel = reason === "unknown" ? "nope/missing" : "noauth/preset";
-			const { harness, router } = await createModelHarness(presetModel);
-			if (reason === "no auth") {
-				const preset = harness.getModel("preset")!;
-				harness.session.modelRuntime.registerProvider("noauth", {
-					baseUrl: preset.baseUrl,
-					api: harness.faux.api,
-					models: [preset],
-				});
-			}
-			const start = vi.spyOn(SubagentRegistry.prototype, "start");
-			router.parent.push(
-				reply(subagentCall({ subagent_type: "preset-explorer" })),
-				reply(fauxAssistantMessage("ok")),
-			);
+	it.each(["unknown", "no auth"])("an unavailable preset (%s) warns and uses the parent model", async (reason) => {
+		const presetModel = reason === "unknown" ? "nope/missing" : "noauth/preset";
+		const { harness, router } = await createModelHarness(presetModel);
+		if (reason === "no auth") {
+			const preset = harness.getModel("preset")!;
+			harness.session.modelRuntime.registerProvider("noauth", {
+				baseUrl: preset.baseUrl,
+				api: harness.faux.api,
+				models: [preset],
+			});
+		}
+		const start = vi.spyOn(SubagentRegistry.prototype, "start");
+		router.parent.push(reply(subagentCall({ subagent_type: "preset-explorer" })), reply(fauxAssistantMessage("ok")));
+		router.child.push(reply(fauxAssistantMessage("parent model done")));
 
-			await harness.session.prompt("delegate to the preset");
+		await harness.session.prompt("delegate to the preset");
 
-			const [result] = toolResults(harness, "subagent");
-			expect(result.isError).toBe(true);
-			expect(getMessageText(result)).toContain(
-				`Model "${presetModel}" is not available. Available models: inherit, `,
-			);
-			expect(start).not.toHaveBeenCalled();
-			expect(router.childRequests).toHaveLength(0);
-		},
-	);
+		const [result] = toolResults(harness, "subagent");
+		expect(result.isError).toBe(false);
+		expect(getMessageText(result)).toContain(`Model "${presetModel}" is not available`);
+		expect(getMessageText(result)).toContain("using parent model faux/parent.");
+		expect(start).toHaveBeenCalledTimes(1);
+		expect(subagentDetails(result).model).toBe("faux/parent");
+		expect(router.childModels).toEqual(["faux/parent"]);
+	});
 
 	it.each(["retained", "reopen", "reattach"])("%s ignores the call's model", async (path) => {
 		const reopen = path === "reopen";
@@ -589,17 +587,17 @@ describe("nek subagents", () => {
 				findBranchSubagent: () => undefined,
 				restrictTools: () => {},
 			});
-			await expect(
-				tool.execute(
-					"replayed-call",
-					{ description: first.description, prompt: "Remember PELICAN.", model: "faux/parent" },
-					undefined,
-					undefined,
-					{ ...spec.parentCtx, getToolCallMemo: () => memo },
-				),
-			).rejects.toThrow('Model "nope/missing" is not available.');
-			expect(create).toHaveBeenCalledTimes(1);
-			expect(replayRegistry.list()).toHaveLength(0);
+			const inherited = await tool.execute(
+				"replayed-call",
+				{ description: first.description, prompt: "Remember PELICAN.", model: "faux/parent" },
+				undefined,
+				undefined,
+				{ ...spec.parentCtx, getToolCallMemo: () => memo },
+			);
+			expect(subagentDetails(inherited)).toMatchObject({ id: first.id, model: "faux/parent", status: "completed" });
+			expect(getMessageText(inherited)).toContain("using parent model faux/parent.");
+			expect(create).toHaveBeenCalledTimes(2);
+			await replayRegistry.disposeAll();
 
 			type.model = "faux/new-preset";
 			const result = await tool.execute(
@@ -611,7 +609,7 @@ describe("nek subagents", () => {
 			);
 			expect(subagentDetails(result)).toMatchObject({ id: first.id, model: "faux/new-preset", status: "completed" });
 			expect(getMessageText(result)).toContain("Noted.");
-			expect(create).toHaveBeenCalledTimes(2);
+			expect(create).toHaveBeenCalledTimes(3);
 			expect(create.mock.calls.at(-1)?.[0]).toMatchObject({
 				model: { provider: "faux", id: "new-preset" },
 				resumeFile: first.sessionFile,
@@ -718,7 +716,7 @@ describe("nek subagents", () => {
 	});
 
 	it.each(["unknown", "no auth"])(
-		"reopen rejects an unavailable preset (%s) without starting a child",
+		"reopen warns about an unavailable preset (%s) and continues on the parent model",
 		async (reason) => {
 			const { harness, router, create, start } = await createPersistentModelHarness("preset-provider/preset");
 			const preset = harness.getModel("preset")!;
@@ -749,31 +747,128 @@ describe("nek subagents", () => {
 				reply(subagentCall({ resume: first.id, model: "faux/parent" })),
 				reply(fauxAssistantMessage("ok")),
 			);
+			router.child.push(reply(fauxAssistantMessage("continued on parent model")));
 			await harness.session.prompt("reopen the unavailable preset child");
 
 			const result = toolResults(harness, "subagent").at(-1)!;
-			expect(result.isError).toBe(true);
-			expect(getMessageText(result)).toContain(
-				'Model "preset-provider/preset" is not available. Available models: inherit, ',
-			);
-			expect(create).toHaveBeenCalledTimes(2);
-			expect(registry.get(first.id)).toBeUndefined();
-			expect(router.childModels).toEqual(["preset-provider/preset", "faux/parent"]);
+			expect(result.isError).toBe(false);
+			expect(getMessageText(result)).toContain('Model "preset-provider/preset" is not available');
+			expect(getMessageText(result)).toContain("using parent model faux/parent.");
+			expect(create).toHaveBeenCalledTimes(3);
+			expect(registry.get(first.id)?.model).toBe("faux/parent");
+			expect(router.childModels).toEqual(["preset-provider/preset", "faux/parent", "faux/parent"]);
 		},
 	);
 
-	it("an unavailable model fails and lists the available models", async () => {
+	it("an unavailable override warns and continues using the parent model", async () => {
 		const { harness, router } = await createNekHarness();
 		router.parent.push(reply(subagentCall({ model: "nope/missing" })), reply(fauxAssistantMessage("ok")));
+		router.child.push(reply(fauxAssistantMessage("continued")));
 
 		await harness.session.prompt("use another model");
 
 		const [result] = toolResults(harness, "subagent");
-		expect(result.isError).toBe(true);
-		const text = JSON.stringify(result.content);
-		expect(text).toContain('Model \\"nope/missing\\" is not available. Available models: inherit, ');
-		expect(text).toContain(`${harness.getModel().provider}/${harness.getModel().id}`);
-		expect(router.childRequests).toHaveLength(0);
+		expect(result.isError).toBe(false);
+		expect(getMessageText(result)).toContain('Model "nope/missing" is not available');
+		expect(getMessageText(result)).toContain("using parent model");
+		expect(subagentDetails(result).model).toBe(`${harness.getModel().provider}/${harness.getModel().id}`);
+		expect(router.childRequests).toHaveLength(1);
+	});
+
+	it("notifies the user before launching a child with a conflicting model", async () => {
+		const { harness } = await createModelHarness();
+		const ctx = harness.session.extensionRunner.createContext();
+		const notify = vi.fn();
+		const registry = new SubagentRegistry(DEFAULT_NEK_CONFIG.subagent, () => {});
+		registries.push(registry);
+		const done: SubagentRecord = {
+			id: "warning-child",
+			description: "Inspect",
+			type: "preset",
+			background: false,
+			status: "completed",
+			startedAt: Date.now(),
+			observed: true,
+			model: "faux/preset",
+			finalText: "done",
+		};
+		vi.spyOn(registry, "start").mockImplementation(async () => {
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining("Using preset model faux/preset."), "warning");
+			return done;
+		});
+		vi.spyOn(registry, "wait").mockResolvedValue(done);
+		const tool = createSubagentToolDefinition({
+			agentTypes: [{ ...BUILTIN_AGENT_TYPES[0], name: "preset", model: "faux/preset" }],
+			getRegistry: () => registry,
+			getMode: () => "agent",
+			createSession: async () => {
+				throw new Error("The mocked registry does not create sessions");
+			},
+			findBranchSubagent: () => undefined,
+			restrictTools: () => {},
+		});
+		const result = await tool.execute(
+			"warn",
+			{ description: "Inspect", prompt: "Inspect", subagent_type: "preset", model: "missing" },
+			undefined,
+			undefined,
+			{
+				...ctx,
+				hasUI: true,
+				ui: { ...ctx.ui, notify },
+			},
+		);
+		expect(result.details?.warnings).toHaveLength(1);
+		expect(getMessageText(result)).toContain("Using preset model faux/preset.");
+	});
+
+	it("includes fallback warnings in the immediate background result", async () => {
+		const { harness, router } = await createNekHarness();
+		const gate = createGate();
+		router.parent.push(
+			reply(subagentCall({ model: "unrecognized", run_in_background: true })),
+			reply(fauxAssistantMessage("waiting")),
+			reply(fauxAssistantMessage("integrated")),
+		);
+		router.child.push(async () => {
+			await gate.promise;
+			return fauxAssistantMessage("findings");
+		});
+		await harness.session.prompt("delegate in the background");
+		const [result] = toolResults(harness, "subagent");
+		expect(result.isError).toBe(false);
+		expect(getMessageText(result)).toContain("using parent model");
+		expect(getMessageText(result)).toContain("in the background");
+		expect(result.details).toMatchObject({ warnings: [expect.any(String)] });
+		expect(router.parentRequests[1]).toContain("using parent model");
+		gate.open();
+		await vi.waitFor(() => expect(router.parentRequests).toHaveLength(3));
+		await vi.waitFor(() => expect(harness.session.isIdle).toBe(true));
+	});
+
+	it("still fails when there is no usable parent model to inherit", async () => {
+		const { harness } = await createNekHarness();
+		const ctx = harness.session.extensionRunner.createContext();
+		expect(() => childSession.resolveChildModel("missing", { ...ctx, model: undefined })).toThrow("no usable model");
+		vi.spyOn(ctx.modelRegistry, "hasConfiguredAuth").mockReturnValue(false);
+		expect(() => childSession.resolveChildModel(undefined, ctx)).toThrow("no usable model");
+	});
+
+	it("does not substitute models for actual upstream execution errors", async () => {
+		const { harness, router } = await createModelHarness();
+		router.parent.push(
+			reply(subagentCall({ subagent_type: "preset-explorer" })),
+			reply(fauxAssistantMessage("reported")),
+		);
+		router.child.push(() => {
+			throw new Error("upstream authentication failed");
+		});
+		await harness.session.prompt("delegate");
+		const [result] = toolResults(harness, "subagent");
+		expect(subagentDetails(result).status).toBe("errored");
+		expect(getMessageText(result)).toContain("upstream authentication failed");
+		expect(result.details).not.toHaveProperty("warnings");
+		expect(router.childModels).toEqual(["faux/preset"]);
 	});
 
 	it("an unknown subagent_type fails and lists the available types", async () => {
