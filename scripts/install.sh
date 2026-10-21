@@ -286,14 +286,51 @@ install_bun() {
 	curl -fsSL https://bun.sh/install | bash
 }
 
+configure_path() {
+	local path_configured=0
+
+	# If /usr/local/bin exists and is writable (common for root), link nek there for instant access
+	if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ] && [ "$BIN_DIR" != "/usr/local/bin" ]; then
+		ln -sf "$BIN_DIR/nek" /usr/local/bin/nek 2>/dev/null && path_configured=1
+		if [ -x "$NODE_INSTALL_DIR/bin/node" ] && [ ! -e "/usr/local/bin/node" ]; then
+			ln -sf "$NODE_INSTALL_DIR/bin/node" /usr/local/bin/node 2>/dev/null || true
+			ln -sf "$NODE_INSTALL_DIR/bin/npm" /usr/local/bin/npm 2>/dev/null || true
+			ln -sf "$NODE_INSTALL_DIR/bin/npx" /usr/local/bin/npx 2>/dev/null || true
+		fi
+	fi
+
+	case ":$PATH:" in
+		*":$BIN_DIR:"*) return 0 ;;
+	esac
+
+	local line="export PATH=\"$BIN_DIR:\$PATH\""
+	local rc
+	for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+		if [ -f "$rc" ] && [ -w "$rc" ]; then
+			if ! grep -qsF "$BIN_DIR" "$rc" 2>/dev/null; then
+				printf '\n# Added by nekcode installer\n%s\n' "$line" >> "$rc"
+				echo "Added $BIN_DIR to PATH in $rc"
+				path_configured=1
+			fi
+		fi
+	done
+}
+
 check_prerequisites
 read_state
 sync_source
 install_dependencies
 hydrate_model_data
 write_launcher
+configure_path
 setup_tools
 install_bun
 step "Done: $("$BIN_DIR/nek" --version)"
 echo "Update later with 'nek update'. Channel: $CHANNEL."
-case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "Add $BIN_DIR to PATH, then open a new terminal." ;; esac
+if command -v nek >/dev/null 2>&1; then
+	echo "nek is ready! Run: nek"
+else
+	echo "To run nek in this terminal session:"
+	echo "  export PATH=\"$BIN_DIR:\$PATH\""
+	echo "or start a new terminal / run: source ~/.bashrc"
+fi
