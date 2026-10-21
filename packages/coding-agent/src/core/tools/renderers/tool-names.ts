@@ -14,6 +14,7 @@ export const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 	update_plan: "Plan update",
 	await: "Waiting",
 	subagent: "Subagent",
+	stop_subagent: "Stop Subagent",
 	web_search: "Web Search",
 	tool_search: "Tool Search",
 	ast_grep: "AST Search",

@@ -6,7 +6,7 @@ nekcode（命令名 `nek`）是一个运行在终端里的编程助手，基于 
 
 - **Plan 模式**：先调研、写计划，确认后再动手。
 - **Todo 列表**：任务进度固定显示在输入框上方。
-- **子代理（subagent）**：内置只读 `explorer`，默认继承当前模型，可前台或后台运行；支持自行添加类型。
+- **子代理（subagent）**：内置可写 `generalPurpose` 和只读 `explorer`，默认继承当前模型，可前台或后台运行，可由模型或 Esc 停止；支持自行添加类型。
 - **结构化搜索 `ast_grep`**、Cursor 风格的分块读文件、Claude Code 风格的精确替换编辑。
 - **MCP 服务器**和按需加载工具的 `tool_search`。
 - **`web_search`** 联网搜索，无需 API key。

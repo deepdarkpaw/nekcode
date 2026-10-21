@@ -33,16 +33,21 @@ describe("discoverAgentTypes", () => {
 		writeFileSync(join(dir, file), content);
 	}
 
-	it("ships only a read-only explorer without provider or model presets", () => {
+	it("ships a writable generalPurpose and a read-only explorer without provider or model presets", () => {
 		const { types, errors } = discoverAgentTypes(agentDir, cwd, true);
 		expect(errors).toEqual([]);
-		expect(types.map((type) => type.name)).toEqual(["explorer"]);
+		expect(types.map((type) => type.name)).toEqual(["generalPurpose", "explorer"]);
+		const general = findAgentType(types, "generalPurpose");
+		expect(general).toMatchObject({ source: "builtin", readonly: false, autonomous: false });
+		expect(general?.tools).toEqual([...DEFAULT_CUSTOM_TOOL_NAMES]);
 		const explorer = findAgentType(types, "explorer");
 		expect(explorer).toMatchObject({ source: "builtin", readonly: true, autonomous: true });
 		expect(explorer?.tools).toEqual([...READ_ONLY_TOOL_NAMES]);
-		expect(explorer?.model).toBeUndefined();
-		expect(explorer?.thinking).toBeUndefined();
-		expect(explorer?.contextWindow).toBeUndefined();
+		for (const type of [general, explorer]) {
+			expect(type?.model).toBeUndefined();
+			expect(type?.thinking).toBeUndefined();
+			expect(type?.contextWindow).toBeUndefined();
+		}
 	});
 
 	it("gives writable custom types the default tools without a provider or model preset", () => {
@@ -165,8 +170,9 @@ describe("discoverAgentTypes", () => {
 
 	it("describes the available types for the subagent description", () => {
 		const text = describeAgentTypes(BUILTIN_AGENT_TYPES);
-		expect(text.startsWith("Available subagent_type values\n\n- explorer [autonomous]: ")).toBe(true);
-		expect(text.split("\n- ")).toHaveLength(2);
+		expect(text.startsWith("Available subagent_type values\n\n- generalPurpose: ")).toBe(true);
+		expect(text).toContain("\n- explorer [autonomous]: ");
+		expect(text.split("\n- ")).toHaveLength(3);
 		expect(text).toContain("model: inherit; thinking: inherit");
 		expect(text).not.toContain("(preset)");
 	});

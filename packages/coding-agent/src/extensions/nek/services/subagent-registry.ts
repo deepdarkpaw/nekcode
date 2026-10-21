@@ -68,6 +68,8 @@ interface SubagentEntry {
 	abortRequested: boolean;
 	/** Removes the parent abort listener when a foreground wait is detached. */
 	detachAbort?: () => void;
+	/** When the current run was launched (`Date.now()`), so a parent abort can stop what its run started. */
+	launchedAt: number;
 }
 
 /** Maximum characters retained for the latest streamed activity text. */
@@ -293,6 +295,17 @@ export class SubagentRegistry {
 		await entry.done;
 	}
 
+	/**
+	 * Cancel every running subagent whose current run was launched at or after `since` (the parent run's start), in
+	 * the background or not; the parent's abort stops what that run started.
+	 */
+	async abortLaunchedSince(since: number): Promise<void> {
+		const ids = [...this.entries.values()]
+			.filter((entry) => entry.record.status === "running" && entry.launchedAt >= since)
+			.map((entry) => entry.record.id);
+		await Promise.all(ids.map((id) => this.abort(id)));
+	}
+
 	/** Abort and dispose every child session; called on session shutdown. */
 	async disposeAll(): Promise<void> {
 		for (const id of [...this.entries.keys()]) {
@@ -309,6 +322,7 @@ export class SubagentRegistry {
 			done: Promise.resolve(),
 			unsubscribe: () => {},
 			abortRequested: false,
+			launchedAt: Date.now(),
 		};
 		entry.unsubscribe = session.subscribe((event) => this.trackProgress(entry, event));
 		this.entries.set(record.id, entry);
@@ -348,6 +362,7 @@ export class SubagentRegistry {
 		record.endedAt = undefined;
 		setActivity(record, undefined);
 		entry.abortRequested = false;
+		entry.launchedAt = Date.now();
 		this.onChange(record);
 		entry.done = this.run(entry, signal, work);
 	}

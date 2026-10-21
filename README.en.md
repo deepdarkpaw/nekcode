@@ -6,7 +6,7 @@ nekcode (command: `nek`) is a terminal coding agent built on [pi](https://github
 
 - **Plan mode**: research and write a plan first, implement after approval.
 - **Todo list**: task progress pinned above the editor.
-- **Subagents**: a built-in read-only `explorer` inherits the current model and runs in the foreground or background; custom types are optional.
+- **Subagents**: built-in writable `generalPurpose` and read-only `explorer` types inherit the current model, run in the foreground or background, and stop with Escape or the model's `stop_subagent`; custom types are optional.
 - **Structural search with `ast_grep`**, Cursor-style chunked reading, and Claude Code-style exact-replacement editing.
 - **MCP servers** and `tool_search` for on-demand tool loading.
 - **`web_search`** without an API key.

@@ -11,7 +11,7 @@ nek 的每一轮都运行在 durable 引擎（`@earendil-works/pi-durable`）上
 | 模型流式输出 | 已输出的部分作为“已中止”的回复保留在历史里，请求重新发送 |
 | 只读工具（`read`、`grep`、`find`、`ls`、`ast_grep`、`web_search`） | 工具重新执行 |
 | 其他工具（`bash`、`edit`、`write`、MCP 和扩展工具） | 调用结果保留已有的部分输出并注明“已中断”，这一轮继续；由模型决定是否重新执行。**不会**自动重跑，因为副作用可能已经发生 |
-| nek 的协作工具（`ask_question`、`switch_mode`、`todo_write`、`await`、`subagent`） | 重新执行 |
+| nek 的协作工具（`ask_question`、`switch_mode`、`todo_write`、`await`、`subagent`、`stop_subagent`） | 重新执行 |
 | 前台子代理 | 重新打开**同一个**子会话，让它继续自己中断的那一轮，结果照常返回父会话 |
 | 提问框或模式切换确认框 | 重新弹出 |
 | 排队的插话或追加消息 | 仍在队列中，按顺序送达 |

@@ -14,7 +14,14 @@ import { keyHint } from "../../../modes/interactive/components/keybinding-hints.
 import { getMarkdownTheme, type Theme } from "../../../modes/interactive/theme/theme.ts";
 import { formatTokens } from "../../../utils/format-tokens.ts";
 import type { SubagentRegistry } from "../services/subagent-registry.ts";
-import type { AwaitToolData, SubagentNoticeData, SubagentRecord, SubagentStatus, SubagentToolData } from "../types.ts";
+import type {
+	AwaitToolData,
+	StopSubagentToolData,
+	SubagentNoticeData,
+	SubagentRecord,
+	SubagentStatus,
+	SubagentToolData,
+} from "../types.ts";
 
 /** Widget key of the running background subagent list above the editor. */
 export const SUBAGENT_WIDGET_KEY = "nek.subagents";
@@ -276,6 +283,32 @@ export function awaitRenderers(getRegistry: () => SubagentRegistry): AwaitRender
 			if (result.details?.interrupted)
 				lines.push(theme.fg("muted", " wait ended after a user message; subagents keep running"));
 			return new LinesComponent(lines);
+		},
+	};
+}
+
+type StopSubagentRenderers = Pick<ToolDefinition<TSchema, StopSubagentToolData>, "renderCall" | "renderResult">;
+
+/** Stop rows: the subagent's description as title, then its card line after the stop. */
+export function stopSubagentRenderers(getRegistry: () => SubagentRegistry): StopSubagentRenderers {
+	return {
+		renderCall(args, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const input = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
+			const id = typeof input.subagent_id === "string" ? input.subagent_id : "";
+			const description = oneLine(getRegistry().get(id)?.description ?? id);
+			text.setText(`${theme.fg("toolTitle", theme.bold("Stop Subagent"))} ${theme.fg("accent", description)}`);
+			return text;
+		},
+		renderResult(result, _options, theme, context) {
+			const record = result.details?.subagent;
+			if (context.isError || !record) {
+				const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+				text.setText(`\n${theme.fg("error", oneLine(getTextOutput(result, context.showImages)))}`);
+				return text;
+			}
+			const note = result.details?.stopped ? "" : theme.fg("muted", " · was not running");
+			return new LinesComponent([`${" ".repeat(CARD_PAD)}${subagentLine(record, theme)}${note}`]);
 		},
 	};
 }

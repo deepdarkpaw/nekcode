@@ -112,6 +112,12 @@ export interface AwaitToolData {
 	interrupted?: boolean;
 }
 
+/** stop_subagent result details: the record after the call, and whether the call stopped a running subagent. */
+export interface StopSubagentToolData {
+	subagent: SubagentRecord;
+	stopped: boolean;
+}
+
 /** Details of a `nek.subagent_notice` message: the finished record the notice reports. */
 export interface SubagentNoticeData {
 	subagent: SubagentRecord;

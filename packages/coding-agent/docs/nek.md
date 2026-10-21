@@ -28,6 +28,7 @@ A new session activates `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `
 | `ask_question` | Shows multiple-choice questions to the user. |
 | `subagent` | Delegates a bounded task to a subagent, in the foreground or background. |
 | `await` | Waits for background subagents to finish; a user steer ends the wait without stopping the child. |
+| `stop_subagent` | Stops a running subagent; it is marked aborted and sends no completion notice. |
 | `web_search` | Searches current public-web information through Exa's keyless hosted MCP endpoint. |
 
 ### Compact search output
@@ -62,15 +63,16 @@ Subagent rows render like Cursor: a status icon, the title, and muted `model · 
 
 ## Subagents
 
-`subagent` runs a child session in the same process. The child shares the parent's model credentials, but it has its own tools, its own read history, and read-only settings, and it cannot start further subagents. Background subagents notify the parent once they finish, unless the parent already collected the result with `await`. After a parent interruption, completion notices wait for the next explicit user request instead of restarting the old subagent. Background child cancellation itself remains controlled by `/subagents`.
+`subagent` runs a child session in the same process. The child shares the parent's model credentials, but it has its own tools, its own read history, and read-only settings, and it cannot start further subagents. Background subagents notify the parent once they finish, unless the parent already collected the result with `await`. Interrupting the parent run (Escape, or a mode change while it runs) stops the subagents that run launched, background ones included; subagents launched by earlier runs keep running, and their completion notices wait for the next explicit user request instead of restarting them. The model stops a running subagent with `stop_subagent`, and `/subagents` cancels one by hand.
 
-The only built-in subagent type is `explorer`, also the default when `subagent_type` is omitted:
+The built-in subagent types, in Cursor's order; `explorer` is the default when `subagent_type` is omitted:
 
 | Type | Tools |
 |---|---|
+| `generalPurpose` (explicit request only) | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ast_grep`, `todo_write`, `web_search` (writable) |
 | `explorer` (default, autonomous) | `read`, `grep`, `find`, `ls`, `ast_grep`, `web_search` (read-only) |
 
-It inherits the parent's model and thinking level. No private providers, fixed model presets, or personal agent files ship with nek. Writable work stays in the parent session unless the user defines a custom type.
+Both inherit the parent's model and thinking level, and the call's `model` overrides the model. No private providers, fixed model presets, or personal agent files ship with nek.
 
 Define custom types as Markdown files in `~/.nek/agent/agents/` or, for trusted projects, `.nek/agents/`. Project types override user types, which override built-in types. The body becomes the subagent's instructions.
 

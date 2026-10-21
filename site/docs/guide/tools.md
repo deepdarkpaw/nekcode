@@ -7,7 +7,7 @@
 新会话默认启用：
 
 - 文件与搜索：`read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`、`ast_grep`、`web_search`；
-- nek 扩展提供的：`todo_write`、`switch_mode`、`create_plan`、`update_plan`、`ask_question`、`subagent`、`await`；
+- nek 扩展提供的：`todo_write`、`switch_mode`、`create_plan`、`update_plan`、`ask_question`、`subagent`、`await`、`stop_subagent`；
 - 按需出现的：`tool_search`（存在延迟加载的工具时，例如 MCP 工具）、MCP 资源工具。
 
 `powershell` 默认不启用，需要在 Windows 上手动开启，见 [在 Windows 上运行](/platform/windows#powershell)。
@@ -158,6 +158,7 @@ README.md
 | `ask_question` | 向你提出多选题 | 见下文 |
 | `subagent` | 把一个边界清晰的任务派给子代理，前台或后台运行 | [子代理](/guide/subagents) |
 | `await` | 等待后台子代理完成 | [子代理](/guide/subagents#await) |
+| `stop_subagent` | 停止一个正在运行的子代理 | [子代理](/guide/subagents#stop) |
 
 ### ask_question {#ask-question}
 

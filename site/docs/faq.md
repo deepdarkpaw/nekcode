@@ -98,9 +98,9 @@ nek 的提示词已要求模型只在真正需要你决定时才提问。如果�
 
 ## 子代理
 
-### 为什么 `/agents` 默认只有 `explorer`？
+### `/agents` 默认有哪些类型？
 
-公共版本只内置只读 `explorer`，默认继承父会话的模型和思考等级，不附带个人子代理配置。其他类型需自行定义，见 [自定义类型](/guide/subagents#custom-types)。如果列表里还有其他类型，检查本机 `~/.nek/agent/agents/` 和项目 `.nek/agents/` 中的文件。
+公共版本内置可写的 `generalPurpose` 和只读的 `explorer`，都默认继承父会话的模型和思考等级，不附带个人子代理配置。其他类型需自行定义，见 [自定义类型](/guide/subagents#custom-types)。如果列表里还有其他类型，检查本机 `~/.nek/agent/agents/` 和项目 `.nek/agents/` 中的文件。
 
 ### 子代理提示忽略模型参数，或改用了父会话模型
 

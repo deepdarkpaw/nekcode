@@ -24,7 +24,10 @@ import { createSubagentToolDefinition } from "../../src/extensions/nek/tools/sub
 import type { SubagentRecord, SubagentToolData } from "../../src/extensions/nek/types.ts";
 import { createHarness, getMessageText, type Harness, type HarnessOptions } from "./harness.ts";
 
-type Reply = (context: { messages: Message[] }) => AssistantMessage | Promise<AssistantMessage>;
+type Reply = (
+	context: { messages: Message[] },
+	options?: SimpleStreamOptions,
+) => AssistantMessage | Promise<AssistantMessage>;
 
 /**
  * Parent and children share one faux provider (the child reuses the parent's ModelRuntime). Every request is routed
@@ -72,7 +75,7 @@ function createRouter(harness: Harness): Router {
 		} else router.parentRequests.push(serialized);
 		const next = (isChild ? router.child : router.parent).shift();
 		if (!next) throw new Error(`No ${isChild ? "child" : "parent"} reply queued`);
-		return next(context);
+		return next(context, options);
 	};
 	harness.setResponses(Array.from({ length: 40 }, () => step));
 	return router;
@@ -111,6 +114,19 @@ function subagentNotices(harness: Harness) {
 interface Gate {
 	promise: Promise<void>;
 	open: () => void;
+}
+
+/** A reply held until its request is aborted; `onAbort` runs when the abort arrives. */
+function abortableReply(onAbort: () => void = () => {}): Reply {
+	return (_context, options) =>
+		new Promise((resolve) => {
+			const abort = () => {
+				onAbort();
+				resolve(fauxAssistantMessage("late"));
+			};
+			if (options?.signal?.aborted) abort();
+			else options?.signal?.addEventListener("abort", abort, { once: true });
+		});
 }
 
 function createGate(): Gate {
@@ -371,6 +387,122 @@ describe("nek subagents", () => {
 		expect(toolResults(harness, "read")[0].isError).toBe(false);
 		const childWrite = JSON.stringify(router.childRequests[1]);
 		expect(childWrite).toContain("File has not been read yet. Read it first before overwriting it.");
+	});
+
+	it("stop_subagent stops a running background subagent without a completion notice", async () => {
+		const { harness, router } = await createNekHarness();
+		let childAborted = false;
+		router.parent.push(
+			reply(subagentCall({ run_in_background: true })),
+			async () => {
+				await vi.waitFor(() => expect(router.childRequests).toHaveLength(1));
+				const id = subagentDetails(toolResults(harness, "subagent")[0]).id;
+				return toolCall("stop_subagent", { subagent_id: id });
+			},
+			reply(fauxAssistantMessage("stopped it")),
+		);
+		router.child.push(
+			abortableReply(() => {
+				childAborted = true;
+			}),
+		);
+
+		await harness.session.prompt("start, then stop");
+
+		const [stopped] = toolResults(harness, "stop_subagent");
+		expect(stopped.isError).toBe(false);
+		expect(getMessageText(stopped)).toContain("Stopped subagent");
+		expect(getMessageText(stopped)).toContain("status: aborted");
+		expect(stopped.details).toMatchObject({ stopped: true, subagent: { status: "aborted" } });
+		expect(childAborted).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(subagentNotices(harness)).toHaveLength(0);
+		expect(router.parentRequests).toHaveLength(3);
+	});
+
+	it("stop_subagent reports an unknown subagent as an error", async () => {
+		const { harness, router } = await createNekHarness();
+		router.parent.push(reply(toolCall("stop_subagent", { subagent_id: "nope" })), reply(fauxAssistantMessage("ok")));
+		await harness.session.prompt("stop nothing");
+		const [result] = toolResults(harness, "stop_subagent");
+		expect(result.isError).toBe(true);
+		expect(getMessageText(result)).toContain("Unknown subagent nope.");
+	});
+
+	it("aborting the parent run stops the background subagents that run launched, not earlier ones", async () => {
+		const start = vi.spyOn(SubagentRegistry.prototype, "start");
+		const { harness, router } = await createNekHarness();
+		const oldGate = createGate();
+		let oldAborted = false;
+		let newAborted = false;
+		router.parent.push(
+			reply(subagentCall({ description: "Old work", run_in_background: true })),
+			reply(fauxAssistantMessage("old work started")),
+		);
+		router.child.push(async (_context, options) => {
+			options?.signal?.addEventListener(
+				"abort",
+				() => {
+					oldAborted = true;
+				},
+				{ once: true },
+			);
+			await oldGate.promise;
+			return fauxAssistantMessage("old findings");
+		});
+		await harness.session.prompt("start old work");
+
+		router.parent.push(reply(subagentCall({ description: "New work", run_in_background: true })), abortableReply());
+		router.child.push(
+			abortableReply(() => {
+				newAborted = true;
+			}),
+		);
+		const running = harness.session.prompt("start new work");
+		await vi.waitFor(() => expect(router.childRequests).toHaveLength(2));
+		await vi.waitFor(() => expect(router.parentRequests).toHaveLength(4));
+		await harness.session.abort();
+		await running;
+
+		const registry = start.mock.contexts[0] as SubagentRegistry;
+		const [oldId, newId] = toolResults(harness, "subagent").map((result) => subagentDetails(result).id);
+		await vi.waitFor(() => expect(registry.get(newId)?.status).toBe("aborted"));
+		expect(newAborted).toBe(true);
+		expect(oldAborted).toBe(false);
+		expect(registry.get(oldId)?.status).toBe("running");
+		// The earlier subagent keeps running to its own end; its notice waits for the next request after the abort.
+		oldGate.open();
+		await vi.waitFor(() =>
+			expect(registry.get(oldId)).toMatchObject({ status: "completed", finalText: "old findings" }),
+		);
+	});
+
+	it("generalPurpose is writable and inherits the parent's model unless the call overrides it", async () => {
+		const { harness, router } = await createNekHarness({
+			models: [
+				{ id: "parent", reasoning: true },
+				{ id: "other", reasoning: true },
+			],
+		});
+		router.parent.push(
+			reply(subagentCall({ subagent_type: "generalPurpose" })),
+			reply(subagentCall({ subagent_type: "generalPurpose", model: "faux/other" })),
+			reply(fauxAssistantMessage("ok")),
+		);
+		router.child.push(reply(fauxAssistantMessage("inherited")), reply(fauxAssistantMessage("overridden")));
+
+		await harness.session.prompt("delegate twice");
+
+		const results = toolResults(harness, "subagent");
+		expect(results.map((result) => result.isError)).toEqual([false, false]);
+		expect(results.map((result) => (result.details as unknown as SubagentToolData).warnings)).toEqual([
+			undefined,
+			undefined,
+		]);
+		expect(router.childModels).toEqual(["faux/parent", "faux/other"]);
+		for (const request of router.childRequests) {
+			expect(requestToolNames(request)).toEqual(expect.arrayContaining(["bash", "edit", "write", "read"]));
+		}
 	});
 
 	it("await without running subagents returns at once", async () => {

@@ -135,6 +135,7 @@ describe("tool exposure provider declarations", () => {
 			const nekTools = [
 				"subagent",
 				"await",
+				"stop_subagent",
 				"todo_write",
 				"create_plan",
 				"update_plan",

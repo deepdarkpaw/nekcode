@@ -14,6 +14,7 @@ import { childToolNames, createChildSession, modelRef } from "./services/child-s
 import { SubagentRegistry } from "./services/subagent-registry.ts";
 import { todosAreActive } from "./state/session-state.ts";
 import { createAwaitToolDefinition } from "./tools/await.ts";
+import { createStopSubagentToolDefinition } from "./tools/stop-subagent.ts";
 import {
 	type BranchSubagent,
 	type ChildSessionRequest,
@@ -35,6 +36,11 @@ export interface SubagentWiring {
 	registry: SubagentRegistry | undefined;
 	/** Latest context, used by background completions that arrive outside any event. */
 	ctx: ExtensionContext | undefined;
+	/**
+	 * Start of the parent's current run (`Date.now()`); aborting the run stops the subagents launched since. A run
+	 * resumed after a restart announces no `agent_start`, so session_start sets it too.
+	 */
+	runStartedAt: number;
 }
 
 /**
@@ -51,6 +57,7 @@ export function registerSubagents(pi: ExtensionAPI, nek: NekRuntime): void {
 		models: [],
 		registry: undefined,
 		ctx: undefined,
+		runStartedAt: Date.now(),
 	};
 	registerSubagentTools(wiring);
 	pi.registerMessageRenderer<SubagentNoticeData>(SUBAGENT_NOTICE_TYPE, renderSubagentNotice);
@@ -79,8 +86,12 @@ export function registerSubagents(pi: ExtensionAPI, nek: NekRuntime): void {
 		wiring.ctx = ctx;
 		return settleNotices(wiring, event);
 	});
-	pi.on("agent_settled", (_event, ctx) => {
+	pi.on("agent_start", () => {
+		wiring.runStartedAt = Date.now();
+	});
+	pi.on("agent_settled", (event, ctx) => {
 		wiring.ctx = ctx;
+		if (event.outcome === "aborted") stopRunSubagents(wiring, ctx);
 		deliverIdleNotices(wiring);
 	});
 	pi.on("session_shutdown", async () => {
@@ -91,8 +102,24 @@ export function registerSubagents(pi: ExtensionAPI, nek: NekRuntime): void {
 	});
 }
 
+/**
+ * The user aborted the parent run (Escape, or a mode change while it ran): stop every subagent that run launched,
+ * background ones included, as a foreground call's abort signal already does. Not awaited, so settlement is not held
+ * up by a child that is slow to stop; a failure is reported.
+ */
+function stopRunSubagents(wiring: SubagentWiring, ctx: ExtensionContext): void {
+	const registry = wiring.registry;
+	if (!registry) return;
+	void registry.abortLaunchedSince(wiring.runStartedAt).catch((error: unknown) => {
+		const message = `Could not stop the subagents of the aborted run: ${error instanceof Error ? error.message : String(error)}`;
+		if (ctx.hasUI) ctx.ui.notify(message, "error");
+		else console.error(message);
+	});
+}
+
 function onSessionStart(wiring: SubagentWiring, ctx: ExtensionContext): void {
 	wiring.ctx = ctx;
+	wiring.runStartedAt = Date.now();
 	const discovery = discoverAgentTypes(getAgentDir(), ctx.cwd, ctx.isProjectTrusted());
 	wiring.agentTypes = discovery.types;
 	if (discovery.errors.length > 0 && ctx.hasUI) {
@@ -102,7 +129,7 @@ function onSessionStart(wiring: SubagentWiring, ctx: ExtensionContext): void {
 	registerSubagentTools(wiring);
 }
 
-/** (Re)register subagent and await; re-registering subagent validates against the current types. */
+/** (Re)register subagent, await, and stop_subagent; re-registering subagent validates against the current types. */
 function registerSubagentTools(wiring: SubagentWiring): void {
 	const { pi, nek } = wiring;
 	pi.registerTool(
@@ -117,6 +144,7 @@ function registerSubagentTools(wiring: SubagentWiring): void {
 		}),
 	);
 	pi.registerTool(createAwaitToolDefinition({ getRegistry: () => getRegistry(wiring) }));
+	pi.registerTool(createStopSubagentToolDefinition({ getRegistry: () => getRegistry(wiring) }));
 }
 
 function getRegistry(wiring: SubagentWiring): SubagentRegistry {

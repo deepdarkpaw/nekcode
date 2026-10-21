@@ -65,4 +65,4 @@ todo:
 
 ## 子代理里的 Todo
 
-内置 `explorer` 只有只读工具，不提供 `todo_write`。自行定义的可写子代理若启用了该工具，Todo 列表属于子会话自己，不会显示在父会话的输入框上方。
+内置 `explorer` 只有只读工具，不提供 `todo_write`。内置 `generalPurpose` 和启用了该工具的自定义子代理，Todo 列表属于子会话自己，不会显示在父会话的输入框上方。

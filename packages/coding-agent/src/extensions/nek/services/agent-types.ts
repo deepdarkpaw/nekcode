@@ -9,7 +9,7 @@ import type { AgentType } from "../types.ts";
 /** Read-only tool allowlist of the built-in explorer type. */
 export const READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls", "ast_grep", "web_search"] as const;
 
-/** Default tool allowlist for writable custom subagent types. */
+/** Tool allowlist of the built-in generalPurpose type and the default of writable custom subagent types. */
 export const DEFAULT_CUSTOM_TOOL_NAMES = [
 	"read",
 	"bash",
@@ -23,8 +23,23 @@ export const DEFAULT_CUSTOM_TOOL_NAMES = [
 	"web_search",
 ] as const;
 
-/** Public defaults contain only a read-only explorer; model and thinking level inherit from the parent. */
+/**
+ * Built-in types, in Cursor's order (reference/cursor/cursor-tools-2026.json line 679): a writable generalPurpose and
+ * a read-only explorer. Neither presets a model, so both inherit the parent's model and thinking level, and the
+ * subagent call's `model` overrides it.
+ */
 export const BUILTIN_AGENT_TYPES: readonly AgentType[] = [
+	{
+		name: "generalPurpose",
+		description:
+			"handles substantial, clearly bounded general work that has already been determined suitable for delegation. It can edit files and run commands. Uncertain search results alone are not enough reason to use it.",
+		source: "builtin",
+		readonly: false,
+		background: false,
+		autonomous: false,
+		tools: [...DEFAULT_CUSTOM_TOOL_NAMES],
+		disallowedTools: [],
+	},
 	{
 		name: "explorer",
 		description:

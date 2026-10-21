@@ -64,6 +64,15 @@ export const AWAIT_DESCRIPTION = `Check or poll a background subagent. Omit suba
 
 Prefer NOT to poll reflexively with await.`;
 
+/**
+ * STOP_SUBAGENT_DESCRIPTION: Claude Code TaskStop description (reference/claude-code/packages/builtin-tools/src/tools/
+ * TaskStopTool/prompt.ts) for subagents; Cursor has no counterpart, and Codex close_agent covers the same need.
+ */
+export const STOP_SUBAGENT_DESCRIPTION = `- Stops a running subagent by its ID
+- Takes a subagent_id parameter identifying the subagent to stop
+- Returns the subagent's status; a stopped subagent is marked aborted and sends no completion notice
+- Use this tool when the user asks to stop a subagent, or when a running subagent's work is no longer needed. Saying you will ignore its result does not stop it`;
+
 /** Codex ERROR_NEXT_ACTION counterpart from plan.md section 7.7. */
 export const SUBAGENT_ERROR_NEXT_ACTION = "Decide whether to retry, resume with more context, or proceed without it.";
 
