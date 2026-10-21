@@ -171,7 +171,7 @@ Review the requested files and report concrete issues with file paths and line n
 ## 崩溃与续接
 
 - nek 在前台子代理运行时被杀掉：重开父会话后，会接回**原来的**子会话，让它把中断的那一轮跑完，结果照常返回给父会话。
-- 后台子代理在父会话重开后不会自动接回，在你（或模型）`resume` 或 `await` 它时才处理。
+- 后台子代理在父会话重开后不会自动接回，在你（或模型）`resume` 或 `await` 它时才处理。`resume` 时它先跑完中断的那一轮再处理新提示，期间可以 `Escape` 中止，发送新消息会让前台等待转入后台；`interrupt: true` 直接放弃中断的那一轮。
 
 见 [Durable 会话与崩溃续跑](/reference/durable-sessions)。
 

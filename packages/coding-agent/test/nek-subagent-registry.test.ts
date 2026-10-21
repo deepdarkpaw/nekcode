@@ -1,4 +1,4 @@
-import { type FauxResponseStep, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type FauxResponseStep, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession, AgentSessionEvent, AgentSessionEventListener } from "../src/core/agent-session.ts";
 import { DEFAULT_NEK_CONFIG } from "../src/extensions/nek/config.ts";
@@ -61,6 +61,116 @@ function fakeSession(events: AgentSessionEvent[]): AgentSession {
 		getLastAssistantText: () => undefined,
 	} as unknown as AgentSession;
 }
+
+/**
+ * A reopened child whose session resumed a run a crash interrupted: busy until `finish()` or `abort()`. Prompts are
+ * recorded and answered at once.
+ */
+function resumedChild() {
+	const messages: AssistantMessage[] = [];
+	const prompts: string[] = [];
+	let running = true;
+	let endRun = () => {};
+	const runEnded = new Promise<void>((resolve) => {
+		endRun = () => {
+			running = false;
+			resolve();
+		};
+	});
+	const session = {
+		sessionId: "reopened-child",
+		sessionFile: undefined,
+		model: undefined,
+		messages,
+		get isStreaming() {
+			return running;
+		},
+		subscribe: () => () => {},
+		waitForIdle: () => runEnded,
+		abort: vi.fn(async () => {
+			if (!running) return;
+			messages.push(fauxAssistantMessage("", { stopReason: "aborted" }));
+			endRun();
+		}),
+		prompt: vi.fn(async (text: string) => {
+			if (running) throw new Error("Agent is already processing.");
+			prompts.push(text);
+			messages.push(fauxAssistantMessage(`answer to ${text}`));
+		}),
+		dispose: () => {},
+		getLastAssistantText: () => {
+			const last = messages.at(-1);
+			return last?.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+		},
+	};
+	const finish = () => {
+		messages.push(fauxAssistantMessage("resumed run done"));
+		endRun();
+	};
+	return { session, prompts, finish };
+}
+
+function reopenInput(session: AgentSession, overrides: { interrupt?: boolean; signal?: AbortSignal } = {}) {
+	return {
+		id: "reopened-child",
+		prompt: "continue",
+		interrupt: overrides.interrupt ?? false,
+		background: false,
+		signal: overrides.signal,
+		reopen: { description: "reopened", type: "explorer", createSession: async () => session },
+	};
+}
+
+describe("SubagentRegistry reopen of a child with a resumed run", () => {
+	it("returns at once and sends the prompt after the resumed run ends", async () => {
+		const child = resumedChild();
+		const registry = new SubagentRegistry(config({}), () => {});
+		const record = await registry.resume(reopenInput(child.session as unknown as AgentSession));
+
+		expect(record).toMatchObject({ id: "reopened-child", status: "running" });
+		expect(child.prompts).toEqual([]);
+		child.finish();
+		expect(await registry.wait(record.id)).toMatchObject({ status: "completed", finalText: "answer to continue" });
+		expect(child.prompts).toEqual(["continue"]);
+	});
+
+	it("moves a foreground wait to the background when the user sends a message", async () => {
+		const child = resumedChild();
+		const registry = new SubagentRegistry(config({}), () => {});
+		const record = await registry.resume(reopenInput(child.session as unknown as AgentSession));
+
+		const waiting = registry.wait(record.id);
+		registry.interruptWaits();
+		await expect(waiting).resolves.toMatchObject({ status: "running", background: true });
+		child.finish();
+		await vi.waitFor(() => expect(registry.get(record.id)?.status).toBe("completed"));
+		expect(child.prompts).toEqual(["continue"]);
+	});
+
+	it("cancels the queued prompt when the parent aborts during the resumed run", async () => {
+		const child = resumedChild();
+		const registry = new SubagentRegistry(config({}), () => {});
+		const controller = new AbortController();
+		const record = await registry.resume(
+			reopenInput(child.session as unknown as AgentSession, { signal: controller.signal }),
+		);
+
+		controller.abort();
+		expect(await registry.wait(record.id)).toMatchObject({ status: "aborted" });
+		expect(child.session.abort).toHaveBeenCalled();
+		expect(child.prompts).toEqual([]);
+	});
+
+	it("replaces the resumed run with interrupt", async () => {
+		const child = resumedChild();
+		const registry = new SubagentRegistry(config({}), () => {});
+		const record = await registry.resume(reopenInput(child.session as unknown as AgentSession, { interrupt: true }));
+
+		expect(child.session.abort).toHaveBeenCalledTimes(1);
+		expect(await registry.wait(record.id)).toMatchObject({ status: "completed", finalText: "answer to continue" });
+		expect(child.prompts).toEqual(["continue"]);
+	});
+});
 
 describe("SubagentRegistry", () => {
 	const harnesses: Harness[] = [];

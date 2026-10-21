@@ -1962,6 +1962,7 @@ export class InteractiveMode {
 		if (!options.renderBeforeBind) {
 			this.subscribeToAgent();
 		}
+		this.showResumedRunStatus();
 
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
@@ -2171,6 +2172,21 @@ export class InteractiveMode {
 				colorFn,
 			),
 		);
+	}
+
+	/**
+	 * A run resumed from the session database (the process stopped mid-run) is already in progress when the session
+	 * is bound, so no `turn_start` announces it; show the status of a running turn, as `turn_start` would.
+	 */
+	private showResumedRunStatus(): void {
+		if (!this.session.isStreaming) return;
+		if (this.settingsManager.getShowTerminalProgress()) {
+			this.ui.terminal.setProgress(true);
+		}
+		if (this.workingVisible && this.activeStatusIndicator?.kind !== "working") {
+			this.showWorkingStatusIndicator();
+		}
+		this.ui.requestRender();
 	}
 
 	private setWorkingVisible(visible: boolean): void {

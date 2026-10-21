@@ -853,6 +853,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		await this.bindCurrentSessionExtensions();
 		if (this.session !== session) return;
 		if (!options.renderBeforeBind) this.subscribeToAgent();
+		this.showResumedRunStatus();
 		this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
@@ -2459,6 +2460,17 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 				colorFn,
 			),
 		);
+	}
+
+	/**
+	 * A run resumed from the session database (the process stopped mid-run) is already in progress when the session
+	 * is bound, so no `turn_start` announces it; show the status of a running turn, as `turn_start` would.
+	 */
+	private showResumedRunStatus(): void {
+		if (!this.session.isStreaming) return;
+		if (this.settingsManager.getShowTerminalProgress()) this.setTerminalProgress(true);
+		if (this.workingVisible && this.activeStatusIndicator?.kind !== "working") this.showWorkingStatusIndicator();
+		this.requestRender();
 	}
 
 	private setWorkingVisible(visible: boolean): void {

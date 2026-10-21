@@ -20,9 +20,11 @@ nek 的每一轮都运行在 durable 引擎（`@earendil-works/pi-durable`）上
 
 中断的工作在扩展收到 `session_start` 之后才恢复，保证重跑工具之前扩展的状态已经恢复。
 
+续跑的这一轮在界面上显示为 Working。这时发送的消息和平常一样作为插话排队，在当前工具调用结束后送达；按 `Escape` 可以中止续跑。
+
 扩展工具用 `replay: "safe"` 声明自己可以安全地执行两次；这样的工具可以用 `ctx.getToolCallMemo(toolCallId)` 在两次执行之间保存值（`set()` 保存的值在崩溃后同一调用重跑时由 `get()` 返回）。`subagent` 工具就是用它找回自己启动的子会话。见 [编写扩展](/develop/extensions#tools)。
 
-后台子代理在父会话重开后不会自动接回，在 `resume` 或 `await` 它时才处理。
+后台子代理在父会话重开后不会自动接回，在 `resume` 或 `await` 它时才处理。`resume` 一个崩溃时还在运行的子代理时，它先把中断的那一轮跑完，再处理新的提示；这期间子代理显示为运行中，可以 `Escape` 中止，发送新消息时前台等待会转入后台。传 `interrupt: true` 则直接放弃中断的那一轮。
 
 ## 存储
 

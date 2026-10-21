@@ -117,6 +117,30 @@ describe("AgentSession crash recovery through SessionManager reopen", { timeout:
 		).toBe("recovered");
 	});
 
+	it("reports a run resumed while binding extensions as streaming until it settles", async () => {
+		const path = sessionPath();
+		await killChild(await startChild(path, "stream", "partial"));
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const harness = await reopen(path, {
+			responses: [
+				async () => {
+					await gate;
+					return fauxAssistantMessage("recovered");
+				},
+			],
+		});
+		await harness.session.bindExtensions({});
+		// The UI shows Working from this: a resumed run announces no turn_start.
+		expect(harness.session.isStreaming).toBe(true);
+		release();
+		await withTimeout(harness.session.waitForIdle(), 30_000, "resumed run");
+		expect(harness.session.isStreaming).toBe(false);
+		expect(harness.session.getLastAssistantText()).toBe("recovered");
+	});
+
 	it("reruns a safe tool after AgentSession reopen", async () => {
 		const path = sessionPath();
 		await killChild(await startChild(path, "safe-tool", "tool"));

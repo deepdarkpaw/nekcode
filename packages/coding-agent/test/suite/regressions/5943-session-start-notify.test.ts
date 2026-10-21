@@ -81,6 +81,7 @@ type RebindContext = {
 	renderCurrentSessionState: () => void;
 	bindCurrentSessionExtensions: () => Promise<void>;
 	subscribeToAgent: () => void;
+	showResumedRunStatus: () => void;
 	updateAvailableProviderCount: () => Promise<void>;
 	updateEditorBorderColor: () => void;
 	updateTerminalTitle: () => void;
@@ -297,6 +298,7 @@ describe("regression #5943: session_start transient UI", () => {
 					});
 				},
 				subscribeToAgent: () => events.push("subscribe"),
+				showResumedRunStatus: () => {},
 				updateAvailableProviderCount: async () => {},
 				updateEditorBorderColor: () => {},
 				updateTerminalTitle: () => {},
@@ -346,6 +348,7 @@ describe("regression #5943: session_start transient UI", () => {
 						events.push(`${event.type}:${event.message.role}:${getMessageText(event)}`);
 					});
 				},
+				showResumedRunStatus: () => {},
 				updateAvailableProviderCount: async () => {},
 				updateEditorBorderColor: () => {},
 				updateTerminalTitle: () => {},
@@ -398,6 +401,7 @@ describe("regression #5943: session_start transient UI", () => {
 						events.push(`${event.type}:${event.message.role}:${getMessageText(event)}`);
 					});
 				},
+				showResumedRunStatus: () => {},
 				updateAvailableProviderCount: async () => {},
 				updateEditorBorderColor: () => {},
 				updateTerminalTitle: () => {},

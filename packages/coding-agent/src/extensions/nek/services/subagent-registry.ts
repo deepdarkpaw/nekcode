@@ -165,12 +165,15 @@ export class SubagentRegistry {
 	async reattach(input: ReattachSubagentInput): Promise<SubagentRecord> {
 		const session = await this.createWithSlot(input.createSession);
 		const entry = this.adopt(session, input.description, input.type, input.background);
-		if (lastUserText(session) === input.prompt) this.follow(entry, input.signal);
-		else this.launch(entry, input.prompt, input.signal);
+		const prompt = lastUserText(session) === input.prompt ? undefined : input.prompt;
+		this.launchAfterResumed(entry, prompt, input.signal);
 		return entry.record;
 	}
 
-	/** Send a follow-up prompt to a finished child, or to a running one when `interrupt` is set (Cursor resume). */
+	/**
+	 * Send a follow-up prompt to a finished child, or to a running one when `interrupt` is set (Cursor resume). A
+	 * reopened child may resume a run a crash interrupted: the prompt follows that run, or replaces it with `interrupt`.
+	 */
 	async resume(input: ResumeSubagentInput): Promise<SubagentRecord> {
 		const entry = this.entries.get(input.id) ?? (await this.reopen(input));
 		if (entry.record.status === "running") {
@@ -182,19 +185,18 @@ export class SubagentRegistry {
 			await entry.done;
 		}
 		this.assertCapacity();
-		input.prepare?.(entry.session);
+		if (input.interrupt && entry.session.isStreaming) await entry.session.abort();
 		entry.record.background = input.background;
 		entry.record.model ??= sessionModelRef(entry.session);
 		await input.beforeLaunch?.(entry.record);
-		this.launch(entry, input.prompt, input.signal);
+		this.launchAfterResumed(entry, input.prompt, input.signal, input.prepare);
 		return entry.record;
 	}
 
+	/** Adopt a child that is no longer retained; its session resumes a run a crash interrupted by itself. */
 	private async reopen(input: ResumeSubagentInput): Promise<SubagentEntry> {
 		if (!input.reopen) throw new Error(`Unknown subagent ${input.id}.`);
 		const session = await this.createWithSlot(input.reopen.createSession);
-		// A run a crash interrupted resumes when the child reopens; it finishes before the new prompt.
-		await session.waitForIdle();
 		const entry = this.adopt(session, input.reopen.description, input.reopen.type, input.background);
 		entry.record.status = "completed";
 		entry.record.observed = true;
@@ -318,9 +320,24 @@ export class SubagentRegistry {
 		this.begin(entry, signal, () => entry.session.prompt(prompt, { expandPromptTemplates: false }));
 	}
 
-	/** Follow the run a reopened child resumed by itself. */
-	private follow(entry: SubagentEntry, signal: AbortSignal | undefined): void {
-		this.begin(entry, signal, () => entry.session.waitForIdle());
+	/**
+	 * One tracked run: the run a reopened child resumed by itself, if any, then `prompt`, if given. Tracking the resumed
+	 * run makes it abortable and detachable like any other, instead of blocking the caller until it ends.
+	 */
+	private launchAfterResumed(
+		entry: SubagentEntry,
+		prompt: string | undefined,
+		signal: AbortSignal | undefined,
+		prepare?: (session: AgentSession) => void,
+	): void {
+		const resumed = entry.session.isStreaming;
+		this.begin(entry, signal, async () => {
+			if (resumed) await entry.session.waitForIdle();
+			// An abort of the resumed run cancels the prompt queued behind it; that run's aborted answer is the outcome.
+			if (prompt === undefined || (resumed && entry.abortRequested)) return;
+			prepare?.(entry.session);
+			await entry.session.prompt(prompt, { expandPromptTemplates: false });
+		});
 	}
 
 	private begin(entry: SubagentEntry, signal: AbortSignal | undefined, work: () => Promise<void>): void {
