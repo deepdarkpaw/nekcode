@@ -7,10 +7,14 @@ nek 直接从源码运行，不需要构建。安装脚本会把源码下载到�
 | 依赖 | 版本 | 用途 |
 |---|---|---|
 | [Git](https://git-scm.com/) | 任意较新版本 | 下载和更新源码 |
-| [Node.js](https://nodejs.org/) | 22.19 或更高 | 运行 nek（自带 npm） |
+| [Node.js](https://nodejs.org/) | 22.19 或更高 | 运行 nek（自带 npm；未安装时安装脚本会自动下载） |
 | [Bun](https://bun.sh)（可选） | 1.3 或更高 | 只有实验性的 [OpenTUI 界面](/guide/opentui) 需要 |
 
 Windows 上还需要 Bash 来执行模型的 `bash` 工具调用，通常装好 [Git for Windows](https://git-scm.com/download/win) 就够了，见 [在 Windows 上运行](/platform/windows)。
+
+::: tip 自动安装 Node.js
+如果本机未安装 Node.js 或已安装的版本低于 22.19，安装脚本会自动下载官方预编译包安装至 `~/.nek/node`（Windows 为 `%USERPROFILE%\.nek\node`），并自动配置环境与启动器，无需手动预装 Node.js。
+:::
 
 ::: info nek 没有发布到 npm
 npm 上的 `@earendil-works/pi-coding-agent` 是上游 pi，装出来的是 `pi` 命令，不是 `nek`。请使用下面的安装脚本。
@@ -32,10 +36,10 @@ irm https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.ps
 
 安装脚本依次完成：
 
-1. 检查 Git、Node.js、npm 的版本，版本不够时直接报错退出；
+1. 检查 Git 与 Node.js 环境：若缺少 Node.js 或低于 22.19，自动下载并准备好官方 Node.js 运行时；
 2. 下载源码：Linux/macOS 放在 `~/.local/share/nekcode`，Windows 放在 `%LOCALAPPDATA%\nekcode`。默认取最新的正式版本（`nek-v*` 标签）；
 3. 用 `npm ci --ignore-scripts` 安装依赖，生成内置的模型列表；
-4. 创建 `nek` 命令：Linux/macOS 放在 `~/.local/bin`；Windows 放在 `%LOCALAPPDATA%\nekcode\bin`，并自动加入用户 PATH；
+4. 创建 `nek` 命令：Linux/macOS 放在 `~/.local/bin`；Windows 放在 `%LOCALAPPDATA%\nekcode\bin`，并自动加入用户 PATH（包含自动安装的 Node.js）；
 5. 准备搜索工具 fd、ripgrep、ast-grep，并逐个运行 `--version` 确认可用（见 [搜索工具](#search-tools)）。
 
 装好后**打开一个新终端**，验证：
@@ -62,6 +66,9 @@ Linux/macOS 上如果脚本提示 `~/.local/bin` 不在 PATH 里，把它打印�
 | `NEK_REPO_URL` | 仓库地址（例如换成镜像） | `https://github.com/deepdarkpaw/nekcode.git` |
 | `NEK_SKIP_TOOLS=1` | 跳过 fd / rg / ast-grep 的准备 | 不跳过 |
 | `NEK_INSTALL_BUN=1` | 没有 Bun 时通过官方脚本自动安装（OpenTUI 界面需要） | 不安装 |
+| `NEK_NODE_DIR` | Node.js 自动安装目录 | `~/.nek/node` / `%USERPROFILE%\.nek\node` |
+| `NEK_NODE_MIRROR` | Node.js 下载镜像源（例如 `https://npmmirror.com/mirrors/node`） | `https://nodejs.org/dist` |
+| `NEK_NODE_VERSION` | Node.js 自动安装版本 | `22.19.0` |
 
 例如把源码装到自定义目录：
 

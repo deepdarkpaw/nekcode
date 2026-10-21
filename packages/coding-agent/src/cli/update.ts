@@ -25,6 +25,7 @@ interface InstallState {
 	branch?: string;
 	skipTools?: boolean;
 	installBun?: boolean;
+	nodeDir?: string;
 }
 
 interface RemoteRef {
@@ -117,6 +118,7 @@ function readInstallState(checkout: string): InstallState {
 			branch: typeof state.branch === "string" ? state.branch : undefined,
 			skipTools: typeof state.skipTools === "boolean" ? state.skipTools : undefined,
 			installBun: typeof state.installBun === "boolean" ? state.installBun : undefined,
+			nodeDir: typeof state.nodeDir === "string" ? state.nodeDir : undefined,
 		};
 	} catch (error) {
 		throw new Error(`Invalid installer state at ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -207,6 +209,7 @@ async function runInstaller(checkout: string, channel: UpdateChannel, state: Ins
 		...(state.installBun !== undefined && process.env.NEK_INSTALL_BUN === undefined
 			? { NEK_INSTALL_BUN: state.installBun ? "1" : "0" }
 			: {}),
+		...(state.nodeDir ? { NEK_NODE_DIR: state.nodeDir } : {}),
 	};
 	const child = spawnProcess(command, args, { cwd: checkout, env, stdio: "inherit" });
 	return (await waitForChildProcess(child)) ?? 1;

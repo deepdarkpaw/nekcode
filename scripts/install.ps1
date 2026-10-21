@@ -1,6 +1,7 @@
 # Source installer for Windows (PowerShell 5.1+).
 # Options: NEK_INSTALL_DIR, NEK_BIN_DIR, NEK_REPO_URL, NEK_BRANCH,
-# NEK_CHANNEL (stable|dev), NEK_SKIP_TOOLS=1, NEK_INSTALL_BUN=1.
+# NEK_CHANNEL (stable|dev), NEK_SKIP_TOOLS=1, NEK_INSTALL_BUN=1,
+# NEK_NODE_DIR, NEK_NODE_MIRROR, NEK_NODE_VERSION.
 $ErrorActionPreference = 'Stop'
 
 function Get-Option([string]$Name, [string]$Default) {
@@ -30,27 +31,101 @@ $savedChannel = 'stable'
 $savedBranch = 'nek'
 $savedSkip = '0'
 $savedBun = '0'
+$defaultNodeDir = Join-Path $env:USERPROFILE '.nek\node'
+$savedNodeDir = $defaultNodeDir
 if ($state.skipTools) { $savedSkip = '1' }
 if ($state.installBun) { $savedBun = '1' }
 if ($state.binDir) { $savedBin = $state.binDir }
 if ($state.channel) { $savedChannel = $state.channel }
 if ($state.branch) { $savedBranch = $state.branch }
+if ($state.nodeDir) { $savedNodeDir = $state.nodeDir }
 $BinDir = [IO.Path]::GetFullPath((Get-Option 'NEK_BIN_DIR' $savedBin))
 $SkipTools = Get-Option 'NEK_SKIP_TOOLS' $savedSkip
 $InstallBun = Get-Option 'NEK_INSTALL_BUN' $savedBun
 $Channel = Get-Option 'NEK_CHANNEL' $savedChannel
 $Branch = Get-Option 'NEK_BRANCH' $savedBranch
+$NodeInstallDir = [IO.Path]::GetFullPath((Get-Option 'NEK_NODE_DIR' $savedNodeDir))
+$AutoNodeVersion = Get-Option 'NEK_NODE_VERSION' '22.19.0'
+$NodeDistUrl = Get-Option 'NEK_NODE_MIRROR' 'https://nodejs.org/dist'
 if ($Channel -ne 'stable' -and $Channel -ne 'dev') { Stop-Install 'NEK_CHANNEL must be stable or dev.' }
 $MinNode = [version]'22.19.0'
 $Resolver = 'packages/coding-agent/src/experimental/source-resolver.ts'
 
+function Test-NodeValid([string]$Command) {
+	if (-not (Get-Command $Command -ErrorAction SilentlyContinue)) { return $false }
+	try {
+		$raw = & $Command -p 'process.versions.node' 2>$null
+		if (-not $raw) { return $false }
+		$ver = [version]$raw.Trim()
+		return ($ver -ge $MinNode)
+	} catch {
+		return $false
+	}
+}
+
+function Install-Node {
+	Write-Step "Installing Node.js $AutoNodeVersion into $NodeInstallDir"
+	$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+	$pkgName = "node-v$AutoNodeVersion-win-$arch.zip"
+	$url = "$($NodeDistUrl.TrimEnd('/'))/v$AutoNodeVersion/$pkgName"
+	$tempZip = Join-Path ([IO.Path]::GetTempPath()) "nek-$pkgName"
+	$tempExtract = Join-Path ([IO.Path]::GetTempPath()) "nek-node-extract-$([Guid]::NewGuid().ToString('N'))"
+
+	Write-Host "Downloading $url"
+	try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]'Tls12,Tls13' } catch {}
+	$webClient = New-Object System.Net.WebClient
+	try {
+		$webClient.DownloadFile($url, $tempZip)
+	} catch {
+		Stop-Install "Failed to download Node.js from ${url}: $($_.Exception.Message)"
+	} finally {
+		$webClient.Dispose()
+	}
+
+	Write-Step 'Extracting Node.js'
+	if (Test-Path $tempExtract) { Remove-Item -Recurse -Force $tempExtract }
+	New-Item -ItemType Directory -Force -Path $tempExtract | Out-Null
+	[System.Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null
+	[System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $tempExtract)
+
+	New-Item -ItemType Directory -Force -Path $NodeInstallDir | Out-Null
+	$extractedFolder = Join-Path $tempExtract "node-v$AutoNodeVersion-win-$arch"
+	if (Test-Path $extractedFolder) {
+		Get-ChildItem -Path $extractedFolder | ForEach-Object {
+			$dest = Join-Path $NodeInstallDir $_.Name
+			if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+			Move-Item -Path $_.FullName -Destination $NodeInstallDir -Force
+		}
+	}
+
+	Remove-Item -Force $tempZip -ErrorAction SilentlyContinue
+	Remove-Item -Recurse -Force $tempExtract -ErrorAction SilentlyContinue
+}
+
+function Ensure-Node {
+	if ((Test-NodeValid 'node') -and (Get-Command 'npm.cmd' -ErrorAction SilentlyContinue)) {
+		return
+	}
+
+	$installedNode = Join-Path $NodeInstallDir 'node.exe'
+	$installedNpm = Join-Path $NodeInstallDir 'npm.cmd'
+	if ((Test-Path $installedNode) -and (Test-Path $installedNpm) -and (Test-NodeValid $installedNode)) {
+		$env:Path = "$NodeInstallDir;$env:Path"
+		return
+	}
+
+	Install-Node
+	$env:Path = "$NodeInstallDir;$env:Path"
+
+	if (-not (Test-NodeValid 'node') -or -not (Get-Command 'npm.cmd' -ErrorAction SilentlyContinue)) {
+		Stop-Install "Node.js $MinNode or newer is required, and automated installation failed. Install it manually: https://nodejs.org/"
+	}
+}
+
 function Test-Prerequisites {
 	Write-Step 'Checking prerequisites'
-	foreach ($name in @('git', 'node', 'npm.cmd')) {
-		if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { Stop-Install "$name is required." }
-	}
-	$nodeVersion = [version](& node -p 'process.versions.node')
-	if ($nodeVersion -lt $MinNode) { Stop-Install "Node.js $MinNode or newer is required (found $nodeVersion)." }
+	if (-not (Get-Command 'git' -ErrorAction SilentlyContinue)) { Stop-Install 'git is required. Install git with your package manager.' }
+	Ensure-Node
 }
 
 function Sync-Source {
@@ -158,12 +233,26 @@ function Write-Launchers {
 	New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 	$root = (Resolve-Path $InstallDir).Path -replace '\\', '/'
 	$resolverUrl = ([uri](Join-Path $InstallDir $Resolver)).AbsoluteUri
-	$cmd = "@echo off`r`nnode --import `"$resolverUrl`" `"$InstallDir\packages\coding-agent\src\cli.ts`" %*`r`nexit /b %ERRORLEVEL%`r`n"
-	$bash = "#!/usr/bin/env bash`nexec node --import '$resolverUrl' '$root/packages/coding-agent/src/cli.ts' `"`$@`"`n"
+	$nodeExePath = Join-Path $NodeInstallDir 'node.exe'
+	$cmd = "@echo off`r`n" +
+		"setlocal`r`n" +
+		"set `"NODE_EXE=node`"`r`n" +
+		"where node >nul 2>nul`r`n" +
+		"if %ERRORLEVEL% neq 0 (`r`n" +
+		"    if exist `"$nodeExePath`" set `"NODE_EXE=$nodeExePath`"`r`n" +
+		")`r`n" +
+		"`"%NODE_EXE%`" --import `"$resolverUrl`" `"$InstallDir\packages\coding-agent\src\cli.ts`" %*`r`n" +
+		"exit /b %ERRORLEVEL%`r`n"
+	$bash = "#!/usr/bin/env bash`n" +
+		"NODE_CMD=`"node`"`n" +
+		"if ! command -v `"`$NODE_CMD`" >/dev/null 2>&1; then`n" +
+		"    if [ -f '$nodeExePath' ]; then NODE_CMD='$nodeExePath'; fi`n" +
+		"fi`n" +
+		"exec `"`$NODE_CMD`" --import '$resolverUrl' '$root/packages/coding-agent/src/cli.ts' `"`$@`"`n"
 	$oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
 	[IO.File]::WriteAllText((Join-Path $BinDir 'nek.cmd'), $cmd, $oem)
 	[IO.File]::WriteAllText((Join-Path $BinDir 'nek'), $bash, (New-Object Text.UTF8Encoding $false))
-	$json = @{ binDir = $BinDir; channel = $Channel; branch = $Branch; skipTools = ($SkipTools -eq '1'); installBun = ($InstallBun -eq '1') } | ConvertTo-Json
+	$json = @{ binDir = $BinDir; channel = $Channel; branch = $Branch; skipTools = ($SkipTools -eq '1'); installBun = ($InstallBun -eq '1'); nodeDir = $NodeInstallDir } | ConvertTo-Json
 	[IO.File]::WriteAllText($StateFile, $json + "`n", (New-Object Text.UTF8Encoding $false))
 }
 function Add-ToUserPath {
@@ -171,12 +260,21 @@ function Add-ToUserPath {
 	try {
 		$raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
 		$entries = @($raw -split ';' | Where-Object { $_ })
-		if ($entries -contains $BinDir) { return }
-		$key.SetValue('Path', ((@($BinDir) + $entries) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+		$pathsToAdd = @()
+		if ($entries -notcontains $BinDir) { $pathsToAdd += $BinDir }
+		if ((Test-Path (Join-Path $NodeInstallDir 'node.exe')) -and ($entries -notcontains $NodeInstallDir)) {
+			$pathsToAdd += $NodeInstallDir
+		}
+		if ($pathsToAdd.Count -gt 0) {
+			$key.SetValue('Path', ((@($pathsToAdd) + $entries) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+		}
 	} finally { $key.Close() }
 	[Environment]::SetEnvironmentVariable('NEK_PATH_REFRESH', '1', 'User')
 	[Environment]::SetEnvironmentVariable('NEK_PATH_REFRESH', $null, 'User')
 	$env:Path = "$BinDir;$env:Path"
+	if (Test-Path (Join-Path $NodeInstallDir 'node.exe')) {
+		$env:Path = "$NodeInstallDir;$env:Path"
+	}
 }
 function Install-Tools {
 	if ($SkipTools -eq '1') { return }
