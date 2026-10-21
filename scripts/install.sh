@@ -287,11 +287,13 @@ install_bun() {
 }
 
 configure_path() {
-	local path_configured=0
+	step "Configuring PATH environment variable"
+	local path_line="export PATH=\"$BIN_DIR:\$PATH\""
+	local target_files=()
 
 	# If /usr/local/bin exists and is writable (common for root), link nek there for instant access
 	if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ] && [ "$BIN_DIR" != "/usr/local/bin" ]; then
-		ln -sf "$BIN_DIR/nek" /usr/local/bin/nek 2>/dev/null && path_configured=1
+		ln -sf "$BIN_DIR/nek" /usr/local/bin/nek 2>/dev/null || true
 		if [ -x "$NODE_INSTALL_DIR/bin/node" ] && [ ! -e "/usr/local/bin/node" ]; then
 			ln -sf "$NODE_INSTALL_DIR/bin/node" /usr/local/bin/node 2>/dev/null || true
 			ln -sf "$NODE_INSTALL_DIR/bin/npm" /usr/local/bin/npm 2>/dev/null || true
@@ -299,19 +301,26 @@ configure_path() {
 		fi
 	fi
 
-	case ":$PATH:" in
-		*":$BIN_DIR:"*) return 0 ;;
-	esac
+	# Target shell profiles for automatic PATH setup
+	target_files+=("$HOME/.bashrc")
+	if [ -f "$HOME/.bash_profile" ]; then
+		target_files+=("$HOME/.bash_profile")
+	else
+		target_files+=("$HOME/.profile")
+	fi
+	if [ -f "$HOME/.zshrc" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+		target_files+=("$HOME/.zshrc")
+	fi
 
-	local line="export PATH=\"$BIN_DIR:\$PATH\""
-	local rc
-	for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
-		if [ -f "$rc" ] && [ -w "$rc" ]; then
-			if ! grep -qsF "$BIN_DIR" "$rc" 2>/dev/null; then
-				printf '\n# Added by nekcode installer\n%s\n' "$line" >> "$rc"
-				echo "Added $BIN_DIR to PATH in $rc"
-				path_configured=1
+	for file in "${target_files[@]}"; do
+		if [ -f "$file" ]; then
+			if ! grep -qsF "$BIN_DIR" "$file" 2>/dev/null; then
+				printf '\n# Added by nekcode installer\n%s\n' "$path_line" >> "$file"
+				echo "Added $BIN_DIR to PATH in $file"
 			fi
+		else
+			printf '# Added by nekcode installer\n%s\n' "$path_line" > "$file"
+			echo "Created $file with $BIN_DIR in PATH"
 		fi
 	done
 }
@@ -327,10 +336,11 @@ setup_tools
 install_bun
 step "Done: $("$BIN_DIR/nek" --version)"
 echo "Update later with 'nek update'. Channel: $CHANNEL."
+echo ""
+echo "PATH has been configured in your shell profile (~/.bashrc)."
 if command -v nek >/dev/null 2>&1; then
 	echo "nek is ready! Run: nek"
 else
-	echo "To run nek in this terminal session:"
-	echo "  export PATH=\"$BIN_DIR:\$PATH\""
-	echo "or start a new terminal / run: source ~/.bashrc"
+	echo "To run nek in your current shell without restarting:"
+	echo "  source ~/.bashrc   # or: export PATH=\"$BIN_DIR:\$PATH\""
 fi
