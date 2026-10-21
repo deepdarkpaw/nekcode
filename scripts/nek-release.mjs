@@ -15,19 +15,26 @@ function git(args) {
 
 function release() {
 	const [bump, ...rest] = process.argv.slice(2);
-	if (rest.length || !bump || (bump !== "patch" && bump !== "minor" && !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(bump))) {
-		throw new Error("Usage: node scripts/nek-release.mjs patch|minor|<x.y.z>");
+	const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/;
+	if (rest.length || !bump || (bump !== "patch" && bump !== "minor" && !semverPattern.test(bump))) {
+		throw new Error("Usage: node scripts/nek-release.mjs patch|minor|<x.y.z[-prerelease]>");
 	}
 	if (git(["branch", "--show-current"]) !== "nek") throw new Error("Releases require branch nek.");
 	if (git(["status", "--porcelain"])) throw new Error("Releases require a clean working tree.");
 	const path = resolve(root, manifestPath);
 	const manifest = JSON.parse(readFileSync(path, "utf8"));
 	const current = manifest.nekConfig?.version;
-	if (typeof current !== "string" || !/^\d+\.\d+\.\d+$/.test(current)) throw new Error("nekConfig.version must be x.y.z.");
-	const [major, minor, patch] = current.split(".").map(Number);
+	if (typeof current !== "string" || !semverPattern.test(current)) throw new Error("nekConfig.version must be semver.");
+	const currentMatch = semverPattern.exec(current);
+	const [major, minor, patch] = currentMatch.slice(1, 4).map(Number);
 	const version = bump === "patch" ? `${major}.${minor}.${patch + 1}` : bump === "minor" ? `${major}.${minor + 1}.0` : bump;
-	const next = version.split(".").map(Number);
-	if (next[0] < major || (next[0] === major && next[1] < minor) || (next[0] === major && next[1] === minor && next[2] <= patch)) {
+	const nextMatch = semverPattern.exec(version);
+	if (!nextMatch) throw new Error(`Invalid release version ${version}.`);
+	const next = nextMatch.slice(1, 4).map(Number);
+	if (next[0] < major || (next[0] === major && next[1] < minor) || (next[0] === major && next[1] === minor && next[2] < patch)) {
+		throw new Error(`Release version ${version} must be newer than ${current}.`);
+	}
+	if (next[0] === major && next[1] === minor && next[2] === patch && (!nextMatch[4] || nextMatch[4] <= (currentMatch[4] || ""))) {
 		throw new Error(`Release version ${version} must be newer than ${current}.`);
 	}
 	const tag = `nek-v${version}`;
