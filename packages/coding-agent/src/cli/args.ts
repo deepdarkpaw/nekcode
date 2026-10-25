@@ -22,6 +22,8 @@ export interface Args {
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
+	/** RPC mode only: run the control process, which creates no session and loads no extensions or MCP servers. */
+	control?: boolean;
 	name?: string;
 	noSession?: boolean;
 	session?: string;
@@ -130,6 +132,8 @@ export function parseArgs(args: string[]): Args {
 			} else {
 				result.diagnostics.push({ type: "error", message: "--name requires a value" });
 			}
+		} else if (arg === "--control") {
+			result.control = true;
 		} else if (arg === "--no-session") {
 			result.noSession = true;
 		} else if (arg === "--session" && i + 1 < args.length) {
@@ -304,6 +308,7 @@ ${chalk.bold("Options:")}
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
+  --control                      With --mode rpc: run the session-less control process
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume

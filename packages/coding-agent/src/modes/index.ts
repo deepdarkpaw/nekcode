@@ -5,6 +5,7 @@
 export { InteractiveMode, type InteractiveModeOptions } from "./interactive/interactive-mode.ts";
 export type { JsonAgentSessionEvent } from "./json-event.ts";
 export { type PrintModeOptions, runPrintMode } from "./print-mode.ts";
+export { isControlCommand, runControlMode } from "./rpc/control-mode.ts";
 export {
 	NEK_CONTROL_COMMANDS,
 	NEK_GUI_PROTOCOL_VERSION,

@@ -27,6 +27,7 @@ import {
 } from "./cli/auth-command.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
+import { runGuiInfoCommand } from "./cli/gui-info.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { launchOpenTui } from "./cli/opentui-launcher.ts";
@@ -65,7 +66,7 @@ import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/tru
 import { builtInExtensions } from "./extensions/index.ts";
 import { loadMcpCommand } from "./extensions/mcp/cli.lazy.ts";
 import { runMigrations } from "./migrations.ts";
-import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
+import { InteractiveMode, runControlMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import type { InteractiveModeOptions } from "./modes/interactive/interactive-mode.ts";
 import type { CreateInteractiveMode, InteractiveModeLike } from "./modes/interactive/interactive-mode-factory.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
@@ -598,6 +599,11 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
+	if (args[0] === "gui-info") {
+		process.exitCode = runGuiInfoCommand(args.slice(1));
+		return;
+	}
+
 	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
@@ -655,6 +661,15 @@ export async function main(args: string[], options?: MainOptions) {
 
 	validateForkFlags(parsed);
 	validateSessionIdFlags(parsed);
+
+	if (parsed.control) {
+		if (parsed.mode !== "rpc") {
+			console.error(chalk.red("Error: --control requires --mode rpc"));
+			process.exit(1);
+		}
+		printTimings();
+		await runControlMode();
+	}
 
 	// Run migrations (pass cwd for project-local migrations)
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd);
