@@ -9,7 +9,7 @@
 import type { RpcResponse } from "../rpc-types.ts";
 import { authLogin, authLogout, authStatus } from "./auth.ts";
 import { createReloadScheduler, validateConfig } from "./config.ts";
-import type { GuiContext } from "./context.ts";
+import { type GuiContext, requireSession } from "./context.ts";
 import { getChangelog, getInfo } from "./info.ts";
 import { fetchProviderModels, getModelCatalog, testProvider } from "./models.ts";
 import { mcpTest, testWebSearch } from "./probes.ts";
@@ -50,6 +50,7 @@ export const GUI_COMMAND_TYPES: ReadonlySet<string> = new Set<RpcGuiCommand["typ
 	"set_project_trust",
 	"test_web_search",
 	"mcp_test",
+	"extension_call",
 ]);
 
 /** Build the reload hook of a process mode. */
@@ -120,6 +121,12 @@ export async function handleGuiCommand(
 				return guiSuccess(id, "test_web_search", await testWebSearch(ctx, cmd.query));
 			case "mcp_test":
 				return guiSuccess(id, "mcp_test", await mcpTest(ctx, cmd));
+			case "extension_call": {
+				const session = requireSession(ctx, "extension_call");
+				return guiSuccess(id, "extension_call", {
+					result: await session.extensionRunner.callRpcHandler(cmd.method, cmd.params),
+				});
+			}
 			default:
 				return undefined;
 		}

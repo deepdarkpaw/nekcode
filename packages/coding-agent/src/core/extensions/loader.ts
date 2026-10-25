@@ -30,6 +30,7 @@ import type {
 	MessageRenderer,
 	ProviderConfig,
 	RegisteredCommand,
+	RpcHandler,
 	ToolDefinition,
 } from "./types.ts";
 
@@ -351,6 +352,26 @@ function createExtensionAPI(
 			extension.entryRenderers.set(customType, renderer as EntryRenderer);
 		},
 
+		registerRpcHandler(method: string, handler: RpcHandler): void {
+			assertActive();
+			if (typeof method !== "string" || method.trim().length === 0) {
+				throw new Error(
+					`RPC methods registered by extension "${extension.path}" need a non-empty name. Use pi.registerRpcHandler("name", handler).`,
+				);
+			}
+			if (typeof handler !== "function") {
+				throw new Error(
+					`RPC method "${method}" registered by extension "${extension.path}" must define handler().`,
+				);
+			}
+			extension.rpcHandlers.set(method, handler);
+		},
+
+		emitRpcEvent(name: string, payload: unknown): void {
+			assertActive();
+			runtime.emitRpcEvent?.(name, payload);
+		},
+
 		// Flag access - checks extension registered it, reads from runtime
 		getFlag(name: string): boolean | string | undefined {
 			assertActive();
@@ -570,6 +591,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		commands: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),
+		rpcHandlers: new Map(),
 	};
 }
 

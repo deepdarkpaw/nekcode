@@ -116,6 +116,9 @@ export interface ExtensionUIDialogOptions {
 /** Placement for extension widgets. */
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
 
+/** Handler exposed to RPC clients through `extension_call`; its return value becomes `{ result }`. */
+export type RpcHandler = (params: unknown) => unknown | Promise<unknown>;
+
 /** Options for extension widgets. */
 export interface ExtensionWidgetOptions {
 	/** Where the widget is rendered. Defaults to "aboveEditor". */
@@ -232,7 +235,15 @@ export interface ExtensionUIContext {
 	getEditorText(): string;
 
 	/** Show a multi-line editor for text editing. */
-	editor(title: string, prefill?: string): Promise<string | undefined>;
+	editor(title: string, prefill?: string, opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+
+	/**
+	 * Ask the client a structured question and resolve with the client's `result` payload.
+	 *
+	 * Only RPC mode provides this method; other modes leave it `undefined`, so extensions must call it as
+	 * `ctx.ui.structured?.(...)`. `kind` names the payload shape and is chosen by the extension.
+	 */
+	structured?<T = unknown>(kind: string, payload: unknown, opts?: ExtensionUIDialogOptions): Promise<T | undefined>;
 
 	/** Stack additional autocomplete behavior on top of the built-in provider. */
 	addAutocompleteProvider(factory: AutocompleteProviderFactory): void;
@@ -1741,6 +1752,20 @@ export interface ExtensionAPI {
 	/** Registered servers for the extension that connects them. */
 	getMcpServers(): RegisteredMcpServer[];
 
+	/**
+	 * Register a handler that the RPC-mode `extension_call` command invokes by method name.
+	 *
+	 * The JSON response carries the handler's return value as `{ result }`. A method registered twice is a
+	 * conflict: the first registration wins and later ones are reported as extension errors.
+	 */
+	registerRpcHandler(method: string, handler: RpcHandler): void;
+
+	/**
+	 * Emit an `extension_event` record with this name and payload. RPC mode writes it to the client; every
+	 * other mode ignores it, so it is safe to call unconditionally.
+	 */
+	emitRpcEvent(name: string, payload: unknown): void;
+
 	/** Shared event bus for extension communication. */
 	events: EventBus;
 }
@@ -1965,6 +1990,8 @@ export interface ExtensionRuntimeState {
 	invalidate: (message?: string) => void;
 	/** Retain an event-bus subscription until this runtime is invalidated. */
 	trackEventBusSubscription: (unsubscribe: () => void) => () => void;
+	/** Set by RPC mode to receive `pi.emitRpcEvent` records; other modes leave it undefined. */
+	emitRpcEvent?: (name: string, payload: unknown) => void;
 	/**
 	 * Register or unregister a provider.
 	 *
@@ -2063,6 +2090,8 @@ export interface Extension {
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
+	/** Handlers exposed to RPC clients through `extension_call`, keyed by method name. */
+	rpcHandlers: Map<string, RpcHandler>;
 }
 
 /** Result of loading extensions. */

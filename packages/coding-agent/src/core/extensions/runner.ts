@@ -73,6 +73,7 @@ import type {
 	ResolvedCommand,
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
+	RpcHandler,
 	SessionBeforeCompactResult,
 	SessionBeforeForkResult,
 	SessionBeforeSwitchResult,
@@ -807,6 +808,36 @@ export class ExtensionRunner {
 
 	getModelRegistry(): ModelRegistry {
 		return this.modelRegistry;
+	}
+
+	/**
+	 * RPC methods the loaded extensions expose, with the extension that registered each one. A method
+	 * registered twice keeps the first registration and reports the conflict as an extension error.
+	 */
+	getRpcHandlers(): Map<string, { handler: RpcHandler; extensionPath: string }> {
+		const handlers = new Map<string, { handler: RpcHandler; extensionPath: string }>();
+		for (const extension of this.extensions) {
+			for (const [method, handler] of extension.rpcHandlers) {
+				const existing = handlers.get(method);
+				if (existing !== undefined) {
+					this.emitError({
+						extensionPath: extension.path,
+						event: "register_rpc_handler",
+						error: `RPC method "${method}" is already registered by extension "${existing.extensionPath}"`,
+					});
+					continue;
+				}
+				handlers.set(method, { handler, extensionPath: extension.path });
+			}
+		}
+		return handlers;
+	}
+
+	/** Invoke a registered RPC handler; an unknown method is an error the client sees. */
+	async callRpcHandler(method: string, params: unknown): Promise<unknown> {
+		const registered = this.getRpcHandlers().get(method);
+		if (!registered) throw new Error(`No RPC handler registered for method: ${method}`);
+		return await registered.handler(params);
 	}
 
 	getRegisteredCommands(): ResolvedCommand[] {
