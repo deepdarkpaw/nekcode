@@ -288,14 +288,30 @@ export class DurableEngine {
 		);
 	}
 
-	/** Queue input that joins the current run after its tool round; starts a run when idle. */
-	steer(content: UserInput): Promise<Submission> {
-		return this.#conversation.submit({ type: "input", content, whenBusy: "steer" }, BACKGROUND_CONTEXT);
+	/**
+	 * Queue input that joins the current run after its tool round; starts a run when idle. `after` messages are placed
+	 * right after the input, in its placement commit, as with {@link prompt}.
+	 */
+	steer(content: UserInput, after: readonly AgentMessage[] = []): Promise<Submission> {
+		return this.#queueInput(content, "steer", after);
 	}
 
-	/** Queue input that runs after the current run's last answer; starts a run when idle. */
-	followUp(content: UserInput): Promise<Submission> {
-		return this.#conversation.submit({ type: "input", content, whenBusy: "followUp" }, BACKGROUND_CONTEXT);
+	/** Queue input that runs after the current run's last answer; starts a run when idle. `after` as for steer. */
+	followUp(content: UserInput, after: readonly AgentMessage[] = []): Promise<Submission> {
+		return this.#queueInput(content, "followUp", after);
+	}
+
+	#queueInput(
+		content: UserInput,
+		whenBusy: "steer" | "followUp",
+		after: readonly AgentMessage[],
+	): Promise<Submission> {
+		const convert = this.#options.hooks?.convertToLlm ?? convertToLlm;
+		const entries = after.map((message) => agentMessageEntry(message, convert));
+		return this.#conversation.submit(
+			{ type: "input", content, whenBusy, ...(entries.length > 0 ? { after: entries } : {}) },
+			BACKGROUND_CONTEXT,
+		);
 	}
 
 	/**

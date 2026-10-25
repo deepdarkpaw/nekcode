@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 import { theme } from "../theme/theme.ts";
+import { styleMentionsInLine } from "./mention-style.ts";
 import type { StatusIndicator } from "./status-indicator.ts";
 
 export type CustomEditorOptions = EditorOptions & {
@@ -45,6 +46,11 @@ export class CustomEditor extends Editor {
 	/** Set by the nek.mode status channel, independently of editor text and working status. */
 	setPlanMode(enabled: boolean): void {
 		this.planMode = enabled;
+	}
+
+	/** `@agent:`/`@skill:` mentions take the link color while typing, as they do in the sent message. */
+	protected override decorateLine(line: string): string {
+		return styleMentionsInLine(line);
 	}
 
 	protected override renderBottomBorder(width: number, hiddenLineCount: number): string {

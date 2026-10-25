@@ -22,7 +22,9 @@ export const SUBAGENTS_SECTION = "subagents";
  * SUBAGENT_DESCRIPTION: condensed from the Cursor Task description (reference/cursor/cursor-tools-2026.json line 679).
  * The type and model lists live in the `subagents` system prompt section, so this description is static. Spawning
  * authorization follows Codex spawn_agent (codex-rs/core/src/tools/handlers/multi_agents_spec.rs): only types marked
- * autonomous may be started without an explicit user request.
+ * autonomous may be started without an explicit user request. The `@agent:<type>` rule carries the Claude Code
+ * agent_mention reminder (reference/claude-code/src/utils/messages.ts) in the static description, so it also covers
+ * steering and follow-up messages.
  */
 export const SUBAGENT_DESCRIPTION = `Launch a subagent: a separate agent with its own context window that completes one clearly bounded task and returns its final answer to you. The available types and model overrides are listed in the <subagents> section of the system prompt.
 
@@ -30,6 +32,7 @@ When to delegate
 - By default, do the work yourself with your own tools. A task being broad, multi-step, exploratory, or uncertain is not by itself a reason to delegate.
 - Types marked [autonomous] may be started on your own initiative when a task clearly needs broad codebase exploration that would take many searches or flood your context with raw output.
 - Every other type, including custom types, needs an explicit user request: the user asks for a subagent, delegation, or parallel work, or names the agent. Requests for depth, thoroughness, investigation, or research do not count as permission.
+- @agent:<type> in the user's message means the user wants that type invoked: launch it with that subagent_type for the part of the request it fits, passing the context it needs.
 - Never delegate what one or a few direct tool calls can do, and never hand the whole request to a subagent and relay its answer. You remain responsible for understanding the request, integrating results, and the final response.
 
 How to call

@@ -109,6 +109,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { findMentions } from "./mentions.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -125,6 +126,7 @@ import {
 	SessionManager,
 } from "./session-manager.ts";
 import type { CacheWarmingMode, SettingsManager } from "./settings-manager.ts";
+import type { Skill } from "./skills.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import {
@@ -144,6 +146,31 @@ import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 // ============================================================================
 // Skill Block Parsing
 // ============================================================================
+
+/**
+ * Custom message type of the `<skill>` block an `@skill:name` mention attaches right after the user message. It is
+ * hidden (`display: false`): the transcript shows the user's text as typed, and only the model reads the skill.
+ */
+export const SKILL_MENTION_MESSAGE_TYPE = "skill_mention";
+
+/** Details of a {@link SKILL_MENTION_MESSAGE_TYPE} message. */
+export interface SkillMentionDetails {
+	name: string;
+	location: string;
+}
+
+/** Submitted text after expansion, and the hidden messages that follow it. */
+interface ExpandedInput {
+	text: string;
+	after: CustomMessage<SkillMentionDetails>[];
+}
+
+/** Queued user input waiting for the next run, with the hidden messages placed right after it. */
+interface HeldInput {
+	behavior: "steer" | "followUp";
+	content: (TextContent | ImageContent)[];
+	after: readonly AgentMessage[];
+}
 
 /** Parsed skill block from a user message */
 export interface ParsedSkillBlock {
@@ -412,7 +439,7 @@ export class AgentSession {
 	/** Custom messages sent without a turn trigger while the run was settling; written at settlement. */
 	private _pendingCustomMessages: CustomMessage[] = [];
 	/** User inputs queued while the run was settling; they join a continuation, else wait for the next prompt. */
-	private _heldInputs: Array<{ behavior: "steer" | "followUp"; content: (TextContent | ImageContent)[] }> = [];
+	private _heldInputs: HeldInput[] = [];
 	/** Resolved when the active run settled. */
 	private _settledWaiters: Array<() => void> = [];
 	/**
@@ -981,7 +1008,10 @@ export class AgentSession {
 						content: text,
 						timestamp: Date.now(),
 					}))
-				: this._heldInputs.map((input) => ({ role: "user", content: input.content, timestamp: Date.now() }));
+				: this._heldInputs.flatMap((input): AgentMessage[] => [
+						{ role: "user", content: input.content, timestamp: Date.now() },
+						...input.after,
+					]);
 		const pendingMessages: AgentMessage[] = [...queuedInputs, ...queuedCustom, ...this._pendingCustomMessages];
 		const hasQueued = queuedInputs.length > 0 || queuedCustom.length > 0;
 		const header = this.sessionManager.getHeader();
@@ -1378,10 +1408,7 @@ export class AgentSession {
 		this.agent.clearAllQueues();
 		if (inputs.length === 0 && custom.length === 0) return false;
 		this._runEnded = false;
-		for (const input of inputs) {
-			if (input.behavior === "steer") await engine.steer(input.content);
-			else await engine.followUp(input.content);
-		}
+		for (const input of inputs) await this._submitQueuedInput(engine, input);
 		for (const message of custom) await engine.appendMessage(message, { trigger: true, deliverAs: "steer" });
 		return true;
 	}
@@ -2130,10 +2157,7 @@ export class AgentSession {
 			return;
 		}
 		// Inputs held while an earlier run settled without continuing, or while this one was prepared, join this run.
-		for (const input of this._heldInputs.splice(0)) {
-			if (input.behavior === "steer") await engine.steer(input.content);
-			else await engine.followUp(input.content);
-		}
+		for (const input of this._heldInputs.splice(0)) await this._submitQueuedInput(engine, input);
 	}
 
 	/**
@@ -2223,20 +2247,15 @@ export class AgentSession {
 			return;
 		}
 		const preflightResult = options?.preflightResult;
-		let expanded = currentText;
-		if (options?.expandPromptTemplates ?? true) {
-			expanded = this._expandSkillCommand(expanded);
-			expanded = expandPromptTemplate(expanded, [...this.promptTemplates]);
-		}
+		const input: ExpandedInput =
+			(options?.expandPromptTemplates ?? true) ? this._expandInput(currentText) : { text: currentText, after: [] };
 		if (this.isStreaming) {
 			if (options?.streamingBehavior === undefined) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
-			const source = options.source ?? "interactive";
-			if (options.streamingBehavior === "followUp") await this._queueFollowUp(expanded, currentImages, source);
-			else await this._queueSteer(expanded, currentImages, source);
+			await this._queueInput(options.streamingBehavior, input, currentImages, options.source ?? "interactive");
 			preflightResult?.("queued");
 			return;
 		}
@@ -2246,13 +2265,15 @@ export class AgentSession {
 		let messages: AgentMessage[];
 		let content: (TextContent | ImageContent)[];
 		try {
-			messages = await this._prepareRun({ messageType: "user", prompt: expanded, images: currentImages });
+			const runMessages = await this._prepareRun({ messageType: "user", prompt: input.text, images: currentImages });
+			// The mentioned skills follow the user message directly, before the run's other messages.
+			messages = [...input.after, ...runMessages];
 			// Normalized after before_agent_start, so a model a handler selected determines the resize profile.
 			const normalized = await this._normalizePromptImages(currentImages);
 			content = [
 				{
 					type: "text",
-					text: normalized.hints.length === 0 ? expanded : `${expanded}\n\n${normalized.hints.join("\n")}`,
+					text: normalized.hints.length === 0 ? input.text : `${input.text}\n\n${normalized.hints.join("\n")}`,
 				},
 				...normalized.images,
 			];
@@ -2293,28 +2314,31 @@ export class AgentSession {
 		this._startCacheWarming();
 	}
 
-	/** Queue already processed steering input; it joins the run after its current tool round. */
-	private async _queueSteer(text: string, images: ImageContent[] | undefined, source: InputSource): Promise<void> {
-		this._steeringMessages.push(text);
+	/**
+	 * Queue already processed input with the hidden messages that follow it. Steering joins the run after its current
+	 * tool round; follow-up input runs after the run's last answer. The visible queue holds the text as typed.
+	 */
+	private async _queueInput(
+		behavior: "steer" | "followUp",
+		input: ExpandedInput,
+		images: ImageContent[] | undefined,
+		source: InputSource,
+	): Promise<void> {
+		(behavior === "steer" ? this._steeringMessages : this._followUpMessages).push(input.text);
 		this._emitQueueUpdate();
-		await this._extensionRunner.emit({ type: "input_queued", behavior: "steer", source });
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...(images ?? [])];
+		await this._extensionRunner.emit({ type: "input_queued", behavior, source });
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text: input.text }, ...(images ?? [])];
 		// A settling run, or one still being prepared, cannot take input yet; it joins the next run.
-		if (this._runEnded || this._startingRunMessages !== undefined)
-			this._heldInputs.push({ behavior: "steer", content });
-		else await (await this._engineOrThrow()).steer(content);
+		if (this._runEnded || this._startingRunMessages !== undefined) {
+			this._heldInputs.push({ behavior, content, after: input.after });
+			return;
+		}
+		await this._submitQueuedInput(await this._engineOrThrow(), { behavior, content, after: input.after });
 	}
 
-	/** Queue already processed follow-up input; it runs after the current run's last answer. */
-	private async _queueFollowUp(text: string, images: ImageContent[] | undefined, source: InputSource): Promise<void> {
-		this._followUpMessages.push(text);
-		this._emitQueueUpdate();
-		await this._extensionRunner.emit({ type: "input_queued", behavior: "followUp", source });
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }, ...(images ?? [])];
-		// A settling run, or one still being prepared, cannot take input yet; it joins the next run.
-		if (this._runEnded || this._startingRunMessages !== undefined)
-			this._heldInputs.push({ behavior: "followUp", content });
-		else await (await this._engineOrThrow()).followUp(content);
+	private async _submitQueuedInput(engine: DurableEngine, input: HeldInput): Promise<void> {
+		if (input.behavior === "steer") await engine.steer(input.content, input.after);
+		else await engine.followUp(input.content, input.after);
 	}
 
 	private _assertQueueableInput(text: string): void {
@@ -2357,6 +2381,33 @@ export class AgentSession {
 	}
 
 	/**
+	 * Expand one submitted text. A leading `/skill:name` command and prompt templates rewrite the text; `@skill:name`
+	 * mentions leave it as typed and add the skill's `<skill>` block as a hidden message that follows it (Claude Code
+	 * attachments, Codex skill injections). Mentions are read from the submitted text only, so skill and template bodies
+	 * never pull in further skills; unknown names stay plain text.
+	 */
+	private _expandInput(text: string): ExpandedInput {
+		const expanded = expandPromptTemplate(this._expandSkillCommand(text), [...this.promptTemplates]);
+		const commandSkill = text.startsWith("/skill:") ? text.slice(7).split(" ", 1)[0] : undefined;
+		const skills = this.resourceLoader.getSkills().skills;
+		const after: CustomMessage<SkillMentionDetails>[] = [];
+		for (const name of findMentions(text, "skill")) {
+			const skill = name === commandSkill ? undefined : skills.find((candidate) => candidate.name === name);
+			const block = skill ? this._skillBlock(skill) : undefined;
+			if (!skill || !block) continue;
+			after.push({
+				role: "custom",
+				customType: SKILL_MENTION_MESSAGE_TYPE,
+				content: block,
+				display: false,
+				details: { name: skill.name, location: skill.filePath },
+				timestamp: Date.now(),
+			});
+		}
+		return { text: expanded, after };
+	}
+
+	/**
 	 * Expand skill commands (/skill:name args) to their full content.
 	 * Returns the expanded text, or the original text if not a skill command or skill not found.
 	 * Emits errors via extension runner if file read fails.
@@ -2371,19 +2422,23 @@ export class AgentSession {
 		const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
 		if (!skill) return text; // Unknown skill, pass through
 
+		const skillBlock = this._skillBlock(skill);
+		if (!skillBlock) return text; // Return original on error
+		return args ? `${skillBlock}\n\n${args}` : skillBlock;
+	}
+
+	/** The `<skill>` block of one skill; a read failure is reported like an extension error and yields undefined. */
+	private _skillBlock(skill: Skill): string | undefined {
 		try {
-			const content = readFileSync(skill.filePath, "utf-8");
-			const body = stripFrontmatter(content).trim();
-			const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
-			return args ? `${skillBlock}\n\n${args}` : skillBlock;
+			const body = stripFrontmatter(readFileSync(skill.filePath, "utf-8")).trim();
+			return `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
 		} catch (err) {
-			// Emit error like extension commands do
 			this._extensionRunner.emitError({
 				extensionPath: skill.filePath,
 				event: "skill_expansion",
 				error: err instanceof Error ? err.message : String(err),
 			});
-			return text; // Return original on error
+			return undefined;
 		}
 	}
 
@@ -2433,9 +2488,7 @@ export class AgentSession {
 		) {
 			return "queued";
 		}
-		const expanded = expandPromptTemplate(this._expandSkillCommand(processed.text), [...this.promptTemplates]);
-		if (behavior === "steer") await this._queueSteer(expanded, processed.images, source);
-		else await this._queueFollowUp(expanded, processed.images, source);
+		await this._queueInput(behavior, this._expandInput(processed.text), processed.images, source);
 		return "queued";
 	}
 

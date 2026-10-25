@@ -7,6 +7,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "../../core/extensions/types.ts";
+import { type MentionTarget, withMentionCompletions } from "../../modes/interactive/mention-autocomplete.ts";
 import { createNekExtension, type NekRuntime } from "./index.ts";
 import { completionNotice, SUBAGENTS_SECTION, subagentsSection } from "./prompts/subagent.ts";
 import { BUILTIN_AGENT_TYPES, describeAgentTypes, discoverAgentTypes } from "./services/agent-types.ts";
@@ -127,6 +128,15 @@ function onSessionStart(wiring: SubagentWiring, ctx: ExtensionContext): void {
 	}
 	wiring.models = ctx.scopedModels.map((scoped) => modelRef(scoped.model));
 	registerSubagentTools(wiring);
+	// The UI drops extension autocomplete wrappers whenever the session is replaced or reloaded, so add it per session.
+	ctx.ui.addAutocompleteProvider((current) =>
+		withMentionCompletions(current, () => agentMentionTargets(wiring.agentTypes)),
+	);
+}
+
+/** `@agent:<type>` completion targets, in the order of the `subagents` section. */
+function agentMentionTargets(types: readonly AgentType[]): MentionTarget[] {
+	return types.map((type) => ({ kind: "agent", name: type.name, description: type.description }));
 }
 
 /** (Re)register subagent, await, and stop_subagent; re-registering subagent validates against the current types. */

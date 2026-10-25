@@ -51,8 +51,10 @@ Read `references/formats.md` before converting a document. Run scripts relative 
 
 命令后面的参数会作为用户请求附加在加载的说明之后。
 
-- frontmatter 中设置 `disable-model-invocation: true`：Skill 不出现在模型的自动选择里，只能通过命令使用。
-- 设置 `enableSkillCommands`（默认 `true`）控制 Skill 命令是否出现在命令补全里；手动输入的 `/skill:名字` 始终有效。
+也可以在消息任意位置写 `@skill:名字`（输入 `@` 会补全）。对话里只显示你输入的原文，完整说明作为隐藏消息紧跟在后面发给模型，一条消息可以引用多个 Skill，见 [点名子代理和 Skill](/guide/usage#mentions)。
+
+- frontmatter 中设置 `disable-model-invocation: true`：Skill 不出现在模型的自动选择里，只能通过命令或 `@skill:名字` 使用。
+- 设置 `enableSkillCommands`（默认 `true`）控制 Skill 命令是否出现在命令补全里；手动输入的 `/skill:名字` 始终有效，`@` 补全里的 Skill 不受这个设置影响。
 
 ## 放在哪里 {#locations}
 

@@ -132,6 +132,7 @@ import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
 import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
+import { type MentionLinks, sessionMentionLinks } from "./components/mention-style.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import {
@@ -158,6 +159,7 @@ import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import { editInExternalEditor } from "./external-editor.ts";
+import { type MentionTarget, withMentionCompletions } from "./mention-autocomplete.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
 import { getModelSearchText } from "./model-search.ts";
 import { shareSession } from "./session-share.ts";
@@ -755,11 +757,19 @@ export class InteractiveMode {
 			}
 		}
 
-		return new CombinedAutocompleteProvider(
+		// `@skill:name` mentions are offered whether or not skills are registered as commands.
+		const skillMentions: MentionTarget[] = this.session.resourceLoader.getSkills().skills.map((skill) => ({
+			kind: "skill",
+			name: skill.name,
+			description: this.prefixAutocompleteDescription(skill.description, skill.sourceInfo),
+		}));
+
+		const provider = new CombinedAutocompleteProvider(
 			[...slashCommands, ...templateCommands, ...extensionCommands, ...skillCommandList],
 			this.sessionManager.getCwd(),
 			this.fdPath,
 		);
+		return withMentionCompletions(provider, () => skillMentions);
 	}
 
 	private setupAutocompleteProvider(): void {
@@ -2042,6 +2052,10 @@ export class InteractiveMode {
 
 	private getMarkdownTransformers(): MarkdownTransformer[] {
 		return [this.mermaidMarkdownTransformer, ...this.session.extensionRunner.getMarkdownTransformers()];
+	}
+
+	private getMentionLinks(): MentionLinks {
+		return sessionMentionLinks(this.sessionManager.getCwd(), this.session.resourceLoader.getSkills().skills);
 	}
 
 	/**
@@ -3727,6 +3741,7 @@ export class InteractiveMode {
 								this.getMarkdownThemeWithSettings(),
 								this.outputPad,
 								this.getMarkdownTransformers(),
+								this.getMentionLinks(),
 							);
 							this.chatContainer.addChild(userComponent);
 						}
@@ -3736,6 +3751,7 @@ export class InteractiveMode {
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
 							this.getMarkdownTransformers(),
+							this.getMentionLinks(),
 						);
 						this.chatContainer.addChild(userComponent);
 					}

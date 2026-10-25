@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
+	type AssistantMessage,
 	fauxAssistantMessage,
 	fauxToolCall,
 	getCurrentSystemPrompt,
@@ -11,6 +12,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SKILL_MENTION_MESSAGE_TYPE } from "../../src/core/agent-session.ts";
 import type { BeforeAgentStartEvent, ExtensionAPI, InputEvent } from "../../src/core/extensions/index.ts";
 import type { PromptTemplate } from "../../src/core/prompt-templates.ts";
 import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
@@ -203,7 +205,18 @@ describe("AgentSession prompt characterization", () => {
 		});
 	});
 
-	it("expands skill commands before sending the prompt", async () => {
+	/** User-role texts of one provider request, custom messages included (they reach the model as user messages). */
+	function userTexts(context: { messages: { role: string }[] }): string[] {
+		return context.messages.filter((message) => message.role === "user").map((message) => getMessageText(message));
+	}
+
+	/**
+	 * Harness with one skill named "test". `requests` collects the user texts of every provider request; without
+	 * `responses`, one "ok" answer is queued.
+	 */
+	async function createSkillHarness(
+		options: { tools?: AgentTool[]; responses?: AssistantMessage[] } = {},
+	): Promise<{ harness: Harness; skillPath: string; requests: string[][] }> {
 		const tempDir = join(tmpdir(), `pi-skill-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 		tempDirs.push(tempDir);
@@ -231,23 +244,94 @@ describe("AgentSession prompt characterization", () => {
 				diagnostics: [],
 			}),
 		};
-		const harness = await createHarness({ resourceLoader });
+		const harness = await createHarness({ resourceLoader, tools: options.tools });
 		harnesses.push(harness);
-		let expandedPrompt = "";
+		const requests: string[][] = [];
+		harness.setResponses(
+			(options.responses ?? [fauxAssistantMessage("ok")]).map((response) => (context) => {
+				requests.push(userTexts(context));
+				return response;
+			}),
+		);
+		return { harness, skillPath, requests };
+	}
 
-		harness.setResponses([
-			(context) => {
-				const user = context.messages.find((message) => message.role === "user");
-				expandedPrompt = user ? getMessageText(user) : "";
-				return fauxAssistantMessage("ok");
-			},
-		]);
+	it("expands skill commands before sending the prompt", async () => {
+		const { harness, requests } = await createSkillHarness();
 
 		await harness.session.prompt("/skill:test explain this");
 
-		expect(expandedPrompt).toContain('<skill name="test" location="');
-		expect(expandedPrompt).toContain("Use the skill body.");
-		expect(expandedPrompt).toContain("explain this");
+		const [sent] = requests[0]!;
+		expect(sent).toContain('<skill name="test" location="');
+		expect(sent).toContain("Use the skill body.");
+		expect(sent).toContain("explain this");
+	});
+
+	it("keeps the user's text as typed and sends a mentioned skill as a hidden message right after it", async () => {
+		const { harness, skillPath, requests } = await createSkillHarness();
+		const text = "请用 @skill:test 处理，@skill:test 只展开一次，@skill:missing 保持原样";
+
+		await harness.session.prompt(text);
+
+		expect(requests[0]).toEqual([text, expect.stringMatching(/^<skill name="test" location="[^"]+">\nReferences/)]);
+		expect(requests[0]![1]).toContain("Use the skill body.");
+		expect(harness.session.messages.filter((message) => message.role === "custom")).toEqual([
+			expect.objectContaining({
+				customType: SKILL_MENTION_MESSAGE_TYPE,
+				display: false,
+				details: { name: "test", location: skillPath },
+			}),
+		]);
+	});
+
+	it("does not repeat a skill that the /skill command already expands", async () => {
+		const { harness, requests } = await createSkillHarness();
+
+		await harness.session.prompt("/skill:test explain @skill:test");
+
+		expect(requests[0]).toHaveLength(1);
+		expect(requests[0]![0]!.endsWith("</skill>\n\nexplain @skill:test")).toBe(true);
+	});
+
+	it("places the mentioned skill right after steering input that waited in the queue", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const waitTool: AgentTool = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait for release",
+			parameters: Type.Object({}),
+			execute: async () => {
+				await gate;
+				return { content: [{ type: "text", text: "released" }], details: {} };
+			},
+		};
+		const { harness, requests } = await createSkillHarness({
+			tools: [waitTool],
+			responses: [
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			],
+		});
+		const toolStarted = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type !== "tool_execution_start") return;
+				unsubscribe();
+				resolve();
+			});
+		});
+
+		const run = harness.session.prompt("start");
+		await toolStarted;
+		await harness.session.steer("now use @skill:test");
+		expect(harness.session.getSteeringMessages()).toEqual(["now use @skill:test"]);
+		release();
+		await run;
+
+		expect(requests[1]).toEqual(["start", "now use @skill:test", expect.stringContaining('<skill name="test"')]);
+		expect(harness.session.getSteeringMessages()).toEqual([]);
 	});
 
 	it("expands prompt templates before sending the prompt", async () => {

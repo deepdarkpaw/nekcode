@@ -521,6 +521,14 @@ export class Editor implements Component, Focusable {
 		return this.borderColor(border);
 	}
 
+	/**
+	 * Style one visible content line, e.g. to color tokens. The line may already contain the cursor's escape
+	 * sequences; an override may only add escape sequences, so the visible width stays the same.
+	 */
+	protected decorateLine(line: string): string {
+		return line;
+	}
+
 	render(width: number): string[] {
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
 		const paddingX = Math.min(this.paddingX, maxPadding);
@@ -611,7 +619,7 @@ export class Editor implements Component, Focusable {
 			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
 
 			// Render the line (no side borders, just horizontal lines above and below)
-			result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
+			result.push(`${leftPadding}${this.decorateLine(displayText)}${padding}${lineRightPadding}`);
 		}
 
 		// Render bottom border (with scroll indicator if more content below)

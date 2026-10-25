@@ -86,6 +86,10 @@ import {
 	keyText,
 	rawKeyHint,
 } from "@earendil-works/pi-coding-agent/modes/interactive/components/keybinding-hints";
+import {
+	type MentionLinks,
+	sessionMentionLinks,
+} from "@earendil-works/pi-coding-agent/modes/interactive/components/mention-style";
 import { createMermaidMarkdownTransformer } from "@earendil-works/pi-coding-agent/modes/interactive/components/mermaid";
 import { SkillInvocationMessageComponent } from "@earendil-works/pi-coding-agent/modes/interactive/components/skill-invocation-message";
 import {
@@ -104,6 +108,10 @@ import {
 	type InteractiveModeOptions,
 } from "@earendil-works/pi-coding-agent/modes/interactive/interactive-mode";
 import type { InteractiveModeLike } from "@earendil-works/pi-coding-agent/modes/interactive/interactive-mode-factory";
+import {
+	type MentionTarget,
+	withMentionCompletions,
+} from "@earendil-works/pi-coding-agent/modes/interactive/mention-autocomplete";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -1122,11 +1130,18 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 				});
 			}
 		}
-		return new CombinedAutocompleteProvider(
+		// `@skill:name` mentions are offered whether or not skills are registered as commands.
+		const skillMentions: MentionTarget[] = this.session.resourceLoader.getSkills().skills.map((skill) => ({
+			kind: "skill",
+			name: skill.name,
+			description: this.prefixAutocompleteDescription(skill.description, skill.sourceInfo),
+		}));
+		const provider = new CombinedAutocompleteProvider(
 			[...slashCommands, ...templateCommands, ...extensionCommands, ...skillCommands],
 			this.sessionManager.getCwd(),
 			this.fdPath,
 		);
+		return withMentionCompletions(provider, () => skillMentions);
 	}
 
 	private setupAutocompleteProvider(): void {
@@ -2006,6 +2021,10 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		return [this.mermaidMarkdownTransformer, ...this.session.extensionRunner.getMarkdownTransformers()];
 	}
 
+	private getMentionLinks(): MentionLinks {
+		return sessionMentionLinks(this.sessionManager.getCwd(), this.session.resourceLoader.getSkills().skills);
+	}
+
 	private createAssistantComponent(message: AssistantMessage | undefined): AssistantMessageComponent {
 		return new AssistantMessageComponent(
 			message,
@@ -2120,6 +2139,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 								this.getMarkdownThemeWithSettings(),
 								this.outputPad,
 								this.getMarkdownTransformers(),
+								this.getMentionLinks(),
 							),
 						);
 					}
@@ -2130,6 +2150,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
 							this.getMarkdownTransformers(),
+							this.getMentionLinks(),
 						),
 					);
 				}
