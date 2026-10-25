@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import type { GuiContext } from "../src/modes/rpc/gui/context.ts";
-import { fetchProviderModels } from "../src/modes/rpc/gui/models.ts";
+import { fetchProviderModels, testProvider } from "../src/modes/rpc/gui/models.ts";
 import type { RpcFetchModelsResult } from "../src/modes/rpc/gui/protocol.ts";
 
 interface RecordedRequest {
@@ -232,6 +232,54 @@ describe("fetch_provider_models", () => {
 		expect(unauthorized).toMatchObject({ ok: false, status: 401 });
 		expect(unauthorized.ok === false && unauthorized.message).toContain("invalid x-api-key");
 		expect(missing).toMatchObject({ ok: false, status: 404 });
+	});
+
+	it("tests a draft endpoint with one minimal completion", async () => {
+		/** One SSE chunk of a chat completion stream. */
+		const chunk = (delta: Record<string, unknown>, finishReason: string | null, usage?: Record<string, number>) =>
+			`data: ${JSON.stringify({
+				id: "chatcmpl-gui",
+				object: "chat.completion.chunk",
+				created: 0,
+				model: "draft-model",
+				choices: [{ index: 0, delta, finish_reason: finishReason }],
+				...(usage === undefined ? {} : { usage }),
+			})}\n\n`;
+		const server = await serve({
+			"/v1/chat/completions": (request, response) => {
+				expect(request.headers.authorization).toBe("Bearer sk-test");
+				response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+				response.write(chunk({ role: "assistant", content: "ok" }, null));
+				response.write(chunk({}, "stop", { prompt_tokens: 1, completion_tokens: 1 }));
+				response.write("data: [DONE]\n\n");
+				response.end();
+			},
+		});
+
+		const result = await testProvider(unusedContext, {
+			modelId: "draft-model",
+			draft: { api: "openai-completions", baseUrl: `${server.baseUrl}/v1`, apiKey: "sk-test" },
+		});
+
+		expect(result.ok).toBe(true);
+		expect(server.requests).toHaveLength(1);
+	});
+
+	it("reports a rejected test request with its status", async () => {
+		const server = await serve({
+			"/v1/chat/completions": (_request, response) =>
+				json(response, 401, { error: { message: "invalid api key", type: "authentication_error" } }),
+		});
+
+		const result = await testProvider(unusedContext, {
+			modelId: "draft-model",
+			draft: { api: "openai-completions", baseUrl: `${server.baseUrl}/v1`, apiKey: "nope" },
+		});
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.status).toBe(401);
+		expect(result.message).toContain("invalid api key");
 	});
 
 	it("rejects an invalid base URL", async () => {

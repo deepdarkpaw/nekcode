@@ -374,6 +374,12 @@ interface TestOutcome {
 	error?: Error;
 }
 
+/** HTTP status an error message mentions, for SDK errors that fail before the response hook runs. */
+function statusFromMessage(message: string): number | undefined {
+	const match = /(?:^|\D)([45]\d\d)(?:\D|$)/u.exec(message);
+	return match === null ? undefined : Number(match[1]);
+}
+
 /** Run one minimal completion and report its latency or failure. */
 async function runTest(runtime: ModelRuntime, model: Model<Api>): Promise<RpcTestProviderResult> {
 	const signal = AbortSignal.timeout(TEST_TIMEOUT_MS);
@@ -389,10 +395,12 @@ async function runTest(runtime: ModelRuntime, model: Model<Api>): Promise<RpcTes
 			},
 		});
 	} catch (error: unknown) {
-		return { ok: false, status: outcome.status, message: errorMessage(error) };
+		const failure = errorMessage(error);
+		return { ok: false, status: outcome.status ?? statusFromMessage(failure), message: failure };
 	}
 	if (message.stopReason === "error") {
-		return { ok: false, status: outcome.status, message: message.errorMessage ?? "Provider request failed" };
+		const failure = message.errorMessage ?? "Provider request failed";
+		return { ok: false, status: outcome.status ?? statusFromMessage(failure), message: failure };
 	}
 	return { ok: true, latencyMs: Date.now() - started };
 }
