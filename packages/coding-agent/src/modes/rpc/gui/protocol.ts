@@ -73,6 +73,7 @@ export type RpcGuiCommand =
 	| { id?: string; type: "reload" }
 	| { id?: string; type: "validate_config"; cwd?: string }
 	| { id?: string; type: "get_changelog"; sinceVersion?: string }
+	| { id?: string; type: "get_mention_targets"; cwd?: string }
 	// ---- session catalog [session + control] ----
 	| { id?: string; type: "list_sessions"; cwd?: string; all?: boolean; limit?: number }
 	| { id?: string; type: "delete_session"; sessionPath: string }
@@ -117,6 +118,7 @@ export const NEK_CONTROL_COMMANDS: readonly string[] = [
 	"reload",
 	"validate_config",
 	"get_changelog",
+	"get_mention_targets",
 	"list_sessions",
 	"delete_session",
 	"rename_session",
@@ -162,6 +164,15 @@ export interface RpcReloadResult {
 	/** true: a turn was in flight and the reload runs after `agent_settled`. */
 	deferred: boolean;
 	diagnostics: RpcConfigDiagnostic[];
+}
+
+/** One `@kind:name` completion target: a subagent type or a skill. */
+export interface RpcMentionTarget {
+	kind: "agent" | "skill";
+	name: string;
+	description?: string;
+	/** `SKILL.md` of a skill; absent for subagent types. */
+	location?: string;
 }
 
 export interface RpcSessionSummary {
@@ -258,6 +269,7 @@ export interface RpcGuiResponseData {
 	reload: RpcReloadResult;
 	validate_config: { diagnostics: RpcConfigDiagnostic[] };
 	get_changelog: { markdown: string };
+	get_mention_targets: { targets: RpcMentionTarget[] };
 	list_sessions: { sessions: RpcSessionSummary[] };
 	delete_session: Record<string, never>;
 	rename_session: Record<string, never>;

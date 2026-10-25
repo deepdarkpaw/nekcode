@@ -879,6 +879,20 @@ Bundled `CHANGELOG.md` as Markdown, newest entry first.
 
 Response data: `markdown`. `sinceVersion` limits the result to entries newer than that version.
 
+### get_mention_targets
+
+What `@agent:<type>` and `@skill:<name>` can complete to.
+
+```json
+{"type": "get_mention_targets", "cwd": "/home/user/project"}
+```
+
+Response data: `targets`, each with `kind` (`"agent"` or `"skill"`), `name`, optional `description`, and, for skills, `location` (the skill's `SKILL.md`).
+
+Subagent types come first, in the order of the `subagents` system prompt section: the built-in types, then user presets, then project presets. Skills follow in the order of the session's loaded skills.
+
+`cwd` names the directory to describe. A session answers from its live resources, so extension-provided skills and its own trust decision apply; asked about a different directory, it answers from that directory's files instead. The control process always answers from the files of `cwd` (default: its working directory), which means `<agentDir>/skills` and, once the project is trusted, `<cwd>/.nek/skills`.
+
 ### list_sessions
 
 List sessions, newest first.

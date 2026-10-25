@@ -11,6 +11,7 @@ import { authLogin, authLogout, authStatus } from "./auth.ts";
 import { createReloadScheduler, validateConfig } from "./config.ts";
 import { type GuiContext, requireSession } from "./context.ts";
 import { getChangelog, getInfo } from "./info.ts";
+import { getMentionTargets } from "./mentions.ts";
 import { fetchProviderModels, getModelCatalog, testProvider } from "./models.ts";
 import { mcpTest, testWebSearch } from "./probes.ts";
 import type { RpcGuiCommand, RpcReloadResult } from "./protocol.ts";
@@ -31,6 +32,7 @@ export const GUI_COMMAND_TYPES: ReadonlySet<string> = new Set<RpcGuiCommand["typ
 	"reload",
 	"validate_config",
 	"get_changelog",
+	"get_mention_targets",
 	"list_sessions",
 	"delete_session",
 	"rename_session",
@@ -77,6 +79,8 @@ export async function handleGuiCommand(
 				return guiSuccess(id, "validate_config", { diagnostics: await validateConfig(ctx, cmd.cwd) });
 			case "get_changelog":
 				return guiSuccess(id, "get_changelog", getChangelog(cmd.sinceVersion));
+			case "get_mention_targets":
+				return guiSuccess(id, "get_mention_targets", { targets: getMentionTargets(ctx, cmd.cwd) });
 			case "list_sessions":
 				return guiSuccess(id, "list_sessions", { sessions: await listSessions(ctx, cmd) });
 			case "delete_session":

@@ -25,7 +25,7 @@ RPC mode rejects `@file` prompt arguments. Send prompts through the [`prompt`](r
 nek --mode rpc --control
 ```
 
-A control process answers configuration and session questions without creating a session and without loading extensions or MCP servers, which keeps a settings window cheap and side-effect free. It reads JSONL commands from stdin exactly like a session process, but accepts only the control subset of the commands: `get_info`, `reload`, `validate_config`, `get_changelog`, the session catalog commands (`list_sessions`, `delete_session`, `rename_session`, `read_session_snapshot`, `import_session`), the auth commands, the model commands, the project-trust commands, `test_web_search`, `mcp_test`, and `get_available_models`. Any other command is answered with
+A control process answers configuration and session questions without creating a session and without loading extensions or MCP servers, which keeps a settings window cheap and side-effect free. It reads JSONL commands from stdin exactly like a session process, but accepts only the control subset of the commands: `get_info`, `reload`, `validate_config`, `get_changelog`, `get_mention_targets`, the session catalog commands (`list_sessions`, `delete_session`, `rename_session`, `read_session_snapshot`, `import_session`), the auth commands, the model commands, the project-trust commands, `test_web_search`, `mcp_test`, and `get_available_models`. Any other command is answered with
 
 ```json
 {"id":"req-1","type":"response","command":"prompt","success":false,"error":"Command not available in control mode: prompt"}
