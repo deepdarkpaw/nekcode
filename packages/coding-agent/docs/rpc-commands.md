@@ -833,6 +833,249 @@ Each command has:
 
 **Note**: Built-in TUI commands (`/settings`, `/hotkeys`, etc.) are not included. They are handled only in interactive mode and would not execute if sent via `prompt`.
 
+## GUI commands
+
+These commands serve desktop and IDE clients that manage configuration and sessions alongside a session. Every one answers with the usual `response` record; a failure is `success: false` with `error` unless the command documents a structured result instead.
+
+`nek --mode rpc --control` runs a **control process**: no session, no extensions, no MCP servers. It accepts only these commands plus `get_available_models`, and answers anything else with `{"success": false, "error": "Command not available in control mode: <type>"}`.
+
+### get_info
+
+Identity of the running process.
+
+```json
+{"type": "get_info"}
+```
+
+Response data: `protocolVersion`, `nekVersion`, `piVersion`, `mode` (`"session"` or `"control"`), `agentDir`, `sessionDir`, `cwd`, `platform`, `nodeVersion`.
+
+### reload
+
+Re-read `settings.json`, `models.json`, credentials, and MCP configuration. In a session process it also reloads extensions, skills, prompts, themes, and context files through the session.
+
+```json
+{"type": "reload"}
+```
+
+Response data: `deferred` and `diagnostics`. `deferred: true` means a run is in flight: the reload is queued and applied after `agent_settled`, and the response carries a validation pass of the current configuration instead of reload results.
+
+### validate_config
+
+Check configuration files without applying them.
+
+```json
+{"type": "validate_config", "cwd": "/home/user/project"}
+```
+
+Response data: `diagnostics`, an array of `{file, severity, message}`. Without `cwd` only global files are checked: `models.json` (schema), the global `settings.json`, and the global `mcp.json`, `nek.yaml`, and `agents/*.md`. With `cwd`, the project `settings.json`, `mcp.json`, `nek.yaml`, and `agents/*.md` are checked too, once the project is trusted.
+
+### get_changelog
+
+Bundled `CHANGELOG.md` as Markdown, newest entry first.
+
+```json
+{"type": "get_changelog", "sinceVersion": "0.3.0"}
+```
+
+Response data: `markdown`. `sinceVersion` limits the result to entries newer than that version.
+
+### list_sessions
+
+List sessions, newest first.
+
+```json
+{"type": "list_sessions", "cwd": "/home/user/project", "all": true, "limit": 100}
+```
+
+`cwd` selects the project directory (default: the process working directory). `all: true` lists every project under the session root. `limit` defaults to 500.
+
+Response data: `sessions`, each with `path`, `id`, `cwd`, `name?`, `parentSessionPath?`, `createdAt`, `modifiedAt`, `messageCount`, `firstMessage` (truncated to 200 characters), and `locked` (a live process holds the session lock).
+
+### delete_session
+
+Delete a session and every file it owns: the database, its sidecar, and SQLite journal files.
+
+```json
+{"type": "delete_session", "sessionPath": "/home/user/.nek/agent/sessions/--home-user-project--/2026-01-01T00-00-00-000Z_uuid.sqlite"}
+```
+
+The current session and sessions whose lock a live process holds are refused.
+
+### rename_session
+
+Set a session's display name.
+
+```json
+{"type": "rename_session", "sessionPath": "...sqlite", "name": "Refactor the parser"}
+```
+
+The name is stored as a `session_info` entry, the same entry `/resume` writes. A locked session is refused.
+
+### read_session_snapshot
+
+Read a session without opening it as a session and without taking its lock.
+
+```json
+{"type": "read_session_snapshot", "sessionPath": "...sqlite"}
+```
+
+Response data: `session` (as in `list_sessions`), `entries` (same shape as `get_entries`), `leafId`, and `messages` (same shape as `get_messages` on the leaf branch).
+
+### import_session
+
+Import a JSONL session or session database as a new session of another working directory.
+
+```json
+{"type": "import_session", "inputPath": "/home/user/export.jsonl", "cwd": "/home/user/project"}
+```
+
+Response data: `sessionPath`, the new session file. The source file is left untouched.
+
+### export_session
+
+Export the current session.
+
+```json
+{"type": "export_session", "format": "html"}
+```
+
+`format` is `"html"` (self-contained page) or `"jsonl"`. `outputPath` is optional; without it the export lands next to the session or in the working directory. Response data: `path`. Session processes only.
+
+### share_session
+
+Upload the current session and return a viewer URL. It uses Radius when configured and otherwise a private GitHub gist, which needs `gh auth login`. Response data: `url`. Session processes only.
+
+### navigate_tree
+
+Move the session leaf to an entry, optionally summarizing the branch that is left behind.
+
+```json
+{"type": "navigate_tree", "entryId": "a1b2c3d4", "summarize": true, "label": "checkpoint"}
+```
+
+Response data: `cancelled`, and `editorText` when the target restores editor text. Session processes only.
+
+### set_entry_label
+
+Set or clear an entry label. Same storage as the `/tree` label editor.
+
+```json
+{"type": "set_entry_label", "entryId": "a1b2c3d4", "label": "before refactor"}
+```
+
+### auth_status
+
+Credential status of every known provider.
+
+```json
+{"type": "auth_status"}
+```
+
+Response data: `providers`, each with `provider`, `name` (auth display name), `kind` (`"oauth"`, `"api_key"`, `"env"`, or `"none"`), `loginMethods` (`"oauth"` and/or `"api_key"`), and `expiresAt` for stored OAuth credentials. nek refreshes expiring OAuth tokens itself.
+
+### auth_login
+
+Run a provider's interactive login.
+
+```json
+{"type": "auth_login", "provider": "anthropic", "method": "oauth"}
+```
+
+`method` defaults to the provider's first supported method. While the flow runs, nek writes [`auth_event`](json.md#auth-event) records for progress, URLs, and device codes, and asks for input through the `auth.prompt` structured interaction (see [RPC extension UI](rpc-extension-ui.md#structured)). A cancelled or aborted prompt ends the login with an error response. Response data: `provider`.
+
+### auth_logout
+
+Remove a provider's stored credential.
+
+```json
+{"type": "auth_logout", "provider": "anthropic"}
+```
+
+### get_model_catalog
+
+Models nek knows about: built-in providers plus `models.json` entries.
+
+```json
+{"type": "get_model_catalog", "provider": "anthropic", "ids": ["claude-sonnet-4-5"]}
+```
+
+Response data: `models`, each with `provider`, `id`, `name`, `api`, `contextWindow`, `maxTokens`, `reasoning`, `thinkingLevels` (the levels this model accepts), optional `thinkingLevelMap`, `input`, and `cost`.
+
+### fetch_provider_models
+
+List the models an endpoint serves, either from a configured provider or from a draft provider entry.
+
+```json
+{
+  "type": "fetch_provider_models",
+  "draft": {"api": "openai-completions", "baseUrl": "https://api.example.com/v1", "apiKey": "$EXAMPLE_KEY"}
+}
+```
+
+`draft` has `api` (`openai-completions`, `openai-responses`, `anthropic-messages`, or `google-generative-ai`), `baseUrl`, optional `apiKey` (literal, `$ENV`, or `!command`), optional `headers`, and optional `authHeader`.
+
+The request matches what nek sends for that API: an OpenAI-compatible base URL is asked for `<base>/models` with a bearer token, an Anthropic base URL for `<base>/v1/models` with `x-api-key` and `anthropic-version`, and a Gemini base URL (which already carries its version) for `<base>/models` with `x-goog-api-key`. Discovery follows `after_id` (Anthropic) and `pageToken` (Gemini) pagination, up to 20 pages and 2000 models, within 15 seconds. The `httpProxy` setting and `$ENV`/`!command` keys resolve exactly as they do for real requests.
+
+Response data is `{"ok": true, "endpoint": "<url>", "models": [...]}` or `{"ok": false, "endpoint": "<url>", "status": 401, "message": "..."}`. A failed discovery is data, not a command error, so a client can map `401`, `403`, and `404` in its UI. Each model has `id`, optional `name`, `contextWindow`, `maxTokens`, `reasoning`, `thinkingLevels`, and `input`.
+
+### test_provider
+
+Send one minimal completion to verify an endpoint and model.
+
+```json
+{"type": "test_provider", "provider": "anthropic", "modelId": "claude-sonnet-4-5"}
+```
+
+Pass `draft` instead of `provider` to test an unsaved endpoint. The request uses the provider's resolved auth or the draft's configuration, with a 30 second timeout. Response data is `{"ok": true, "latencyMs": 812}` or `{"ok": false, "status": 401, "message": "..."}`.
+
+### get_project_trust
+
+Trust decision for a directory and the project resources that need one.
+
+```json
+{"type": "get_project_trust", "cwd": "/home/user/project"}
+```
+
+Response data: `cwd`, `trusted` (`true`, `false`, or `null` when nothing is stored), `defaultProjectTrust` (`"ask"`, `"always"`, or `"never"`), and `resources`, each with `kind` (`settings`, `mcp`, `extensions`, `skills`, `prompts`, `themes`, `agents`, `system_prompt`) and `path`.
+
+### set_project_trust
+
+Store a trust decision for a directory. This writes the same `trust.json` as the trust prompt and `/trust`.
+
+```json
+{"type": "set_project_trust", "cwd": "/home/user/project", "trusted": true}
+```
+
+### test_web_search
+
+Run one web search with the configured `webSearch` settings.
+
+```json
+{"type": "test_web_search", "query": "nek rpc"}
+```
+
+Response data is `{"ok": true, "latencyMs": 640, "resultCount": 8}` or `{"ok": false, "message": "..."}`.
+
+### mcp_test
+
+Connect to an MCP server, list its tools, and disconnect.
+
+```json
+{"type": "mcp_test", "name": "docs", "cwd": "/home/user/project"}
+```
+
+The name is looked up in the global `mcp.json` and, for a trusted project, in `<cwd>/.nek/mcp.json`. Pass `config` instead to test an entry that is not saved yet. Response data is `{"ok": true, "latencyMs": 220, "tools": [{"name": "search", "description": "..."}]}` or `{"ok": false, "message": "..."}`.
+
+### extension_call
+
+Call an RPC method an extension registered with `pi.registerRpcHandler()`. Session processes only.
+
+```json
+{"type": "extension_call", "method": "nek.get_state", "params": {}}
+```
+
+Response data: `{ "result": <handler return value> }`. An unknown method is a command error: `No RPC handler registered for method: <method>`. Extensions push updates the other way with `pi.emitRpcEvent()`, which becomes an [`extension_event`](json.md#extension-event) record.
+
 ## Model object
 
 Model commands return the complete configured model definition. Costs are in US dollars per million tokens.

@@ -7,6 +7,7 @@ This page documents nekcode's command-line commands and options. Run `nek --help
 ```sh
 nek [options] [--] [@files...] [messages...]
 nek auth <check|print-api-key|print-bearer-token> [options]
+nek gui-info [--json]
 nek mcp <add|remove|list|login|logout> [options]
 nek update [--channel stable|dev] [--check]
 ```
@@ -41,6 +42,7 @@ nekcode resolves `@path` from the current working directory. The working directo
 | `--mode text` | Select text output; still open the terminal UI when stdin and stdout are terminals |
 | `--mode json` | Run the supplied prompts, write JSONL events to stdout, then exit |
 | `--mode rpc` | Read JSONL commands from stdin and write responses and events to stdout until shutdown |
+| `--control` | With `--mode rpc`: run the session-less control process described in [RPC Mode](rpc.md#control-process) |
 | `--export <input> [output]` | Export a session file to HTML and exit; derive the destination when `output` is omitted |
 
 RPC mode rejects `@file` arguments. JSON and RPC modes reserve stdout for protocol records. See [JSON Event Stream](json.md) and [RPC Protocol](rpc.md).
@@ -226,6 +228,16 @@ Without `--check`, the command runs the checkout's Bash installer on Linux/macOS
 Installer options are `NEK_INSTALL_DIR`, `NEK_BIN_DIR`, `NEK_REPO_URL`, `NEK_BRANCH`, `NEK_CHANNEL`, `NEK_SKIP_TOOLS=1`, and `NEK_INSTALL_BUN=1`. The gitignored `.nek-install-state.json` in the install root stores `binDir`, `channel`, `branch`, `skipTools`, and `installBun`; update reuses these values. Explicit installer environment options override saved state. A missing stable release stops installation and suggests `NEK_CHANNEL=dev`.
 
 `npm run nek:release -- patch|minor|<x.y.z>` prepares a nek release from a clean tree on branch `nek`. It changes only `nekConfig.version`, commits `Release nek v<x.y.z>`, and creates `nek-v<x.y.z>`. It never pushes and prints the push commands for review.
+
+## GUI integration
+
+```sh
+nek gui-info --json
+```
+
+`gui-info` prints one JSON object that lets a desktop client start nek without a shell: the protocol version, `nekVersion` and `piVersion`, the Node executable and version, `launch.args` to prefix the nek arguments, the agent and session directories, and the platform and architecture. In a source checkout, `launch.args` preloads `src/experimental/source-resolver.ts` so Node's TypeScript stripping resolves the workspace aliases; a built install lists the `dist` entry instead. `installDir` is present when the CLI runs from a source install directory that holds `.nek-install-state.json`.
+
+The client starts a session process with `nek --mode rpc` (plus session options) and, for configuration work, a control process with `nek --mode rpc --control`. The control process creates no session and loads no extensions or MCP servers, and accepts only the commands listed in [RPC Commands](rpc-commands.md#gui-commands). See [RPC Mode](rpc.md) for the protocol.
 
 ## MCP commands
 

@@ -37,9 +37,26 @@ See [Choose a Model](models.md) for model selection and thinking controls.
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
-| `defaultTools` | `string[]` | `read`, `bash`, `edit`, `write` | Built-in tools enabled at startup. An empty array disables all built-in tools but not extension or SDK tools. |
+| `defaultTools` | `string[]` | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ast_grep`, `web_search` | Built-in tools enabled at startup. An empty array disables all built-in tools but not extension or SDK tools. `+name` adds to the selection and `-name` removes from it. |
+| `webSearch` | object | Exa's hosted server | Endpoint, API key, and default result count of the `web_search` tool. See [Web search](#web-search). |
 
-Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, and `ls`. `/reload` enables tools newly added to `defaultTools`, keeps removed tools active, and does not re-enable unchanged tools disabled during the session. CLI tool options override this setting, including on reload. See [Command Line](cli.md#tools).
+Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`, `ast_grep`, and `web_search`.
+
+`defaultTools` entries are tool names, or `+name` to add a tool and `-name` to remove one. Entries without a prefix form the base selection; with only prefixed entries the base is the default list, so `["+powershell"]` means the defaults plus `powershell` and `["-web_search"]` means the defaults without it. Additions keep their order and never duplicate an already selected tool. An empty array keeps its meaning: no built-in tools. Names that match no built-in tool are reported as startup warnings and otherwise ignored.
+
+`/reload` enables tools newly added to `defaultTools`, keeps removed tools active, and does not re-enable unchanged tools disabled during the session. CLI tool options override this setting, including on reload. See [Command Line](cli.md#tools).
+
+### Web search
+
+`web_search` talks to Exa's hosted MCP server by default. The settings object has three optional fields:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | string | `https://mcp.exa.ai/mcp` | MCP endpoint of the search server |
+| `apiKey` | string | None | Exa API key. A literal, `$ENV_VAR`/`${ENV_VAR}`, or `!command`, resolved like every other nek credential. Raised limits apply to the account that owns the key. |
+| `numResults` | number | `8` | Result count used when a call does not pass `num_results` |
+
+The key travels as the endpoint's `exaApiKey` query parameter, which is how Exa's hosted server accepts it; a keyless endpoint stays usable at Exa's rate limits. Without settings, `web_search` uses the default endpoint without a key.
 
 ## Sessions and context
 

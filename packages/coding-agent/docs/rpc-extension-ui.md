@@ -4,7 +4,7 @@ Extensions can request user interaction through `ctx.ui`. In RPC mode, supported
 
 There are two categories of extension UI methods:
 
-- **Dialog methods** (`select`, `confirm`, `input`, `editor`): emit an `extension_ui_request` on stdout and block until the client sends back an `extension_ui_response` on stdin with the matching `id`.
+- **Dialog methods** (`select`, `confirm`, `input`, `editor`, and the RPC-only `structured`): emit an `extension_ui_request` on stdout and block until the client sends back an `extension_ui_response` on stdin with the matching `id`.
 - **Fire-and-forget methods** (`notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`): emit an `extension_ui_request` on stdout but do not expect a response. The client can display the information or ignore it.
 
 If a dialog method includes a `timeout` field, the agent-side will auto-resolve with a default value when the timeout expires. The client does not need to track timeouts.
@@ -93,6 +93,30 @@ Open a multi-line text editor with optional prefilled content.
 ```
 
 Expected response: `extension_ui_response` with `value` (the edited text) or `cancelled: true`.
+
+### structured
+
+Ask the client a structured question and receive a structured answer. Only RPC mode provides `ctx.ui.structured`, so extensions call it optionally: `await ctx.ui.structured?.("my.kind", payload, { signal, timeout })`.
+
+```json
+{
+  "type": "extension_ui_request",
+  "id": "uuid-10",
+  "method": "structured",
+  "kind": "auth.prompt",
+  "payload": {"provider": "anthropic", "prompt": {"type": "secret", "message": "Enter Anthropic API key"}}
+}
+```
+
+`kind` names the payload shape; the extension chooses both. The answer comes back as `result`:
+
+```json
+{"type": "extension_ui_response", "id": "uuid-10", "result": {"value": "sk-example"}}
+```
+
+`cancelled: true` resolves the extension's promise with `undefined`. The core uses `auth.prompt` for [`auth_login`](rpc-commands.md#auth_login); nek extensions add their own kinds.
+
+The `editor` dialog also accepts `ctx.ui.editor(title, prefill, { signal, timeout })` and includes `timeout` in its request when the caller sets one.
 
 ### notify
 
@@ -192,6 +216,23 @@ Dismiss any dialog method. The extension receives `undefined` (for select/input/
 ```json
 {"type": "extension_ui_response", "id": "uuid-3", "cancelled": true}
 ```
+
+### Cancellation
+
+nek dismisses a dialog itself when the requesting extension aborts it (an `AbortSignal` fires, for example when a run ends), when its timeout expires, or when the process shuts down. The client then receives an `extension_ui_cancel` record and closes that dialog without answering:
+
+```json
+{"type": "extension_ui_cancel", "id": "uuid-3"}
+```
+
+The extension's call resolves with the same default as a cancellation response: `undefined` for `select`, `input`, `editor`, and `structured`, and `false` for `confirm`. Timeouts are always resolved on the nek side, so a client never has to track them.
+
+## Extension RPC methods
+
+Extensions expose their own RPC surface through two calls that work in every mode but only produce protocol records in RPC mode:
+
+- `pi.registerRpcHandler(method, handler)` makes `method` callable through the [`extension_call`](rpc-commands.md#extension_call) command. The handler receives the command's `params` and its return value becomes `{ "result": ... }`. Registering the same method twice keeps the first handler and reports an extension error.
+- `pi.emitRpcEvent(name, payload)` writes an [`extension_event`](json.md#extension-event) record. Other modes ignore it, so an extension may call it unconditionally.
 
 ## Example
 

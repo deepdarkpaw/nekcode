@@ -19,6 +19,22 @@ Normal CLI options still select the working folder, model, tools, resources, and
 
 RPC mode rejects `@file` prompt arguments. Send prompts through the [`prompt`](rpc-commands.md#prompt) command instead.
 
+## Control process
+
+```bash
+nek --mode rpc --control
+```
+
+A control process answers configuration and session questions without creating a session and without loading extensions or MCP servers, which keeps a settings window cheap and side-effect free. It reads JSONL commands from stdin exactly like a session process, but accepts only the control subset of the commands: `get_info`, `reload`, `validate_config`, `get_changelog`, the session catalog commands (`list_sessions`, `delete_session`, `rename_session`, `read_session_snapshot`, `import_session`), the auth commands, the model commands, the project-trust commands, `test_web_search`, `mcp_test`, and `get_available_models`. Any other command is answered with
+
+```json
+{"id":"req-1","type":"response","command":"prompt","success":false,"error":"Command not available in control mode: prompt"}
+```
+
+Session-only commands (`export_session`, `share_session`, `navigate_tree`, `set_entry_label`, `extension_call`, prompting, and the run-control commands) need a session process. See [RPC Commands](rpc-commands.md#gui-commands) for every command's data.
+
+`nek gui-info --json` describes how to start either process; see [Command Line](cli.md#gui-integration).
+
 ## Protocol records
 
 The protocol has four record families:

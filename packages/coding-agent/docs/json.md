@@ -195,6 +195,45 @@ RPC also adds `extension_error` when an extension handler throws:
 
 Extension UI records are a separate RPC subprotocol, not `AgentSessionEvent` values. See [RPC Extension UI](rpc-extension-ui.md).
 
+### extension_event
+
+`pi.emitRpcEvent(name, payload)` writes a record with the extension's own name and payload. Only RPC mode emits it; every other mode ignores the call, so extensions may emit unconditionally.
+
+```json
+{"type":"extension_event","name":"nek.state","payload":{"mode":"agent","todos":[]}}
+```
+
+The name and payload shapes belong to the extension. Clients should ignore names they do not know.
+
+### auth_event
+
+While an [`auth_login`](rpc-commands.md#auth_login) runs, nek forwards the provider's notifications:
+
+```json
+{"type":"auth_event","provider":"anthropic","event":{"type":"auth_url","url":"https://example.com/authorize","instructions":"Open the URL to continue"}}
+```
+
+`event` is one of:
+
+| `event.type` | Fields | Meaning |
+|---|---|---|
+| `info` | `message`, `links?` | Instructions or context. Each link has `url` and optional `label`. |
+| `auth_url` | `url`, `instructions?` | The user must open the URL to continue. |
+| `device_code` | `userCode`, `verificationUri`, `intervalSeconds?`, `expiresInSeconds?` | Device-code login is waiting for approval. |
+| `progress` | `message` | The flow advanced, for example after the browser callback. |
+
+The login also asks for values through the `auth.prompt` structured request. A client that answers with `cancelled: true` ends the flow, and the `auth_login` response reports the failure.
+
+### extension_ui_cancel
+
+nek dismisses a dialog it sent when the request is aborted or times out, or when the process shuts down:
+
+```json
+{"type":"extension_ui_cancel","id":"uuid-3"}
+```
+
+The client closes the dialog with that `id` and sends no response. See [RPC Extension UI](rpc-extension-ui.md#cancellation).
+
 ## TypeScript types
 
 The SDK's `AgentSessionEvent` contains cumulative streaming snapshots for in-process consumers. JSON and RPC transform only `message_update`:
