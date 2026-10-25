@@ -12,6 +12,43 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import type { RpcGuiCommand, RpcGuiResponseData } from "./gui/protocol.ts";
+
+export {
+	NEK_CONTROL_COMMANDS,
+	NEK_ENDPOINT_APIS,
+	NEK_GUI_PROTOCOL_VERSION,
+	NEK_STRUCTURED_KINDS,
+	NEK_THINKING_LEVELS,
+	type RpcAuthEventRecord,
+	type RpcAuthPromptPayload,
+	type RpcAuthProviderStatus,
+	type RpcCatalogModel,
+	type RpcConfigDiagnostic,
+	type RpcEndpointApi,
+	type RpcExtensionEvent,
+	type RpcExtensionUiCancel,
+	type RpcFetchModelsResult,
+	type RpcGuiCommand,
+	type RpcGuiCommandType,
+	type RpcGuiInfo,
+	type RpcGuiResponseData,
+	type RpcInfo,
+	type RpcMcpTestResult,
+	type RpcProcessMode,
+	type RpcProjectTrust,
+	type RpcProjectTrustResource,
+	type RpcProviderDraft,
+	type RpcReloadResult,
+	type RpcRemoteModel,
+	type RpcSessionSnapshot,
+	type RpcSessionSummary,
+	type RpcStructuredUiRequest,
+	type RpcStructuredUiResponse,
+	type RpcTestProviderResult,
+	type RpcTestWebSearchResult,
+	type RpcThinkingLevel,
+} from "./gui/protocol.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -71,7 +108,10 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 
 	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
+	| { id?: string; type: "get_commands" }
+
+	// GUI commands (see gui/protocol.ts)
+	| RpcGuiCommand;
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -111,6 +151,17 @@ export interface RpcSessionState {
 // ============================================================================
 // RPC Responses (stdout)
 // ============================================================================
+
+// GUI commands (see gui/protocol.ts)
+export type RpcGuiResponse = {
+	[K in keyof RpcGuiResponseData]: {
+		id?: string;
+		type: "response";
+		command: K;
+		success: true;
+		data: RpcGuiResponseData[K];
+	};
+}[keyof RpcGuiResponseData];
 
 // Success responses with data
 export type RpcResponse =
@@ -242,7 +293,8 @@ export type RpcResponse =
 	  }
 
 	// Error response (any command can fail)
-	| { id?: string; type: "response"; command: string; success: false; error: string };
+	| { id?: string; type: "response"; command: string; success: false; error: string }
+	| RpcGuiResponse;
 
 // ============================================================================
 // Extension UI Events (stdout)
@@ -260,7 +312,15 @@ export type RpcExtensionUIRequest =
 			placeholder?: string;
 			timeout?: number;
 	  }
-	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string }
+	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string; timeout?: number }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "structured";
+			kind: string;
+			payload: unknown;
+			timeout?: number;
+	  }
 	| {
 			type: "extension_ui_request";
 			id: string;
@@ -294,6 +354,7 @@ export type RpcExtensionUIRequest =
 export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
+	| { type: "extension_ui_response"; id: string; result: unknown }
 	| { type: "extension_ui_response"; id: string; cancelled: true };
 
 // ============================================================================

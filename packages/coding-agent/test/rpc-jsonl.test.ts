@@ -62,4 +62,29 @@ describe("RPC JSONL framing", () => {
 
 		expect(lines).toEqual(['{"a":1}']);
 	});
+
+	test("keeps a GUI response with Unicode separators in one record", async () => {
+		const record = {
+			id: "s1",
+			type: "response",
+			command: "list_sessions",
+			success: true,
+			data: { sessions: [{ firstMessage: "line one\u2028line two\u2029line three" }] },
+		};
+		const lines: string[] = [];
+		const stream = Readable.from([serializeJsonLine(record)]);
+
+		const done = new Promise<void>((resolve) => {
+			stream.on("end", resolve);
+		});
+
+		attachJsonlLineReader(stream, (line) => {
+			lines.push(line);
+		});
+
+		await done;
+
+		expect(lines).toHaveLength(1);
+		expect(JSON.parse(lines[0])).toEqual(record);
+	});
 });
