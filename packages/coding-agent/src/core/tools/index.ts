@@ -133,6 +133,7 @@ export {
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";
+import type { ToolName } from "../tool-names.ts";
 import { type AstGrepToolOptions, createAstGrepTool, createAstGrepToolDefinition } from "./ast-grep.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
@@ -147,42 +148,7 @@ import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } fro
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName =
-	| "read"
-	| "bash"
-	| "powershell"
-	| "edit"
-	| "write"
-	| "grep"
-	| "find"
-	| "ls"
-	| "ast_grep"
-	| "web_search";
-export const allToolNames: Set<ToolName> = new Set([
-	"read",
-	"bash",
-	"powershell",
-	"edit",
-	"write",
-	"grep",
-	"find",
-	"ls",
-	"ast_grep",
-	"web_search",
-]);
-
-/** Built-in tools active in a new session when neither settings nor options select tools. */
-export const DEFAULT_ACTIVE_TOOL_NAMES: readonly ToolName[] = [
-	"read",
-	"bash",
-	"edit",
-	"write",
-	"grep",
-	"find",
-	"ls",
-	"ast_grep",
-	"web_search",
-];
+export { allToolNames, DEFAULT_ACTIVE_TOOL_NAMES, type ToolName } from "../tool-names.ts";
 
 export interface ToolsOptions {
 	read?: ReadToolOptions;

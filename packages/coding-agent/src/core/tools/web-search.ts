@@ -13,6 +13,7 @@ import { type Static, Type } from "typebox";
 import { APP_NAME, VERSION } from "../../config.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
+import { resolveConfigValueOrThrow } from "../resolve-config-value.ts";
 import { webSearchRenderers } from "./renderers/web-search.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -48,7 +49,12 @@ export interface WebSearchToolDetails {
 }
 
 export interface WebSearchToolOptions {
+	/** MCP endpoint of the search server; defaults to Exa's hosted server. */
 	endpoint?: string;
+	/** Exa API key, literal or `$ENV`/`!cmd`; passed as the endpoint's `exaApiKey` query parameter. */
+	apiKey?: string;
+	/** Result count used when a call does not pass `num_results`. */
+	defaultResults?: number;
 	fetch?: McpFetch;
 	/** New transport for each connection, including a retry. Useful for offline testing. */
 	createTransport?: (endpoint: string) => McpTransport;
@@ -59,6 +65,22 @@ export interface WebSearchToolOptions {
 const DEFAULT_ENDPOINT = "https://mcp.exa.ai/mcp";
 const DEFAULT_TIMEOUT_MS = 25_000;
 const DEFAULT_RESULTS = 8;
+
+/**
+ * The endpoint a search actually uses. Exa's hosted server takes an API key as the `exaApiKey` query
+ * parameter, so the key rides in the URL instead of a header.
+ */
+export function webSearchEndpoint(endpoint: string, apiKey: string | undefined): string {
+	if (!apiKey) return endpoint;
+	let url: URL;
+	try {
+		url = new URL(endpoint);
+	} catch {
+		return endpoint;
+	}
+	url.searchParams.set("exaApiKey", apiKey);
+	return url.href;
+}
 
 export const webSearchToolSystemPromptContribution = {
 	snippet: "Search the public web for current information and cite the returned sources.",
@@ -140,9 +162,19 @@ function formatResults(results: readonly WebSearchResult[]): string {
 export function createWebSearchToolDefinition(
 	options: WebSearchToolOptions = {},
 ): ToolDefinition<typeof webSearchSchema, WebSearchToolDetails> {
-	const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+	const configuredEndpoint = options.endpoint ?? DEFAULT_ENDPOINT;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+	const defaultResults = options.defaultResults ?? DEFAULT_RESULTS;
+	/** Resolved on first use so a configured `!command` key runs when a search runs, not when the tool loads. */
+	let endpoint: string | undefined;
+	const resolveEndpoint = (): string => {
+		endpoint ??= webSearchEndpoint(
+			configuredEndpoint,
+			options.apiKey === undefined ? undefined : resolveConfigValueOrThrow(options.apiKey, "web search API key"),
+		);
+		return endpoint;
+	};
 	const createTransport =
 		options.createTransport ??
 		((url: string) => new StreamableHttpTransport({ url, fetch: options.fetch, openGetStream: false }));
@@ -155,7 +187,7 @@ export function createWebSearchToolDefinition(
 			const next = new McpClient({ name: APP_NAME, version: VERSION, requestTimeoutMs: timeoutMs });
 			const state = { client: next, ready: Promise.resolve(next), waiters: 0 };
 			state.ready = next
-				.connect(createTransport(endpoint))
+				.connect(createTransport(resolveEndpoint()))
 				.then(() => {
 					if (opening === state) client = next;
 					return next;
@@ -199,7 +231,7 @@ export function createWebSearchToolDefinition(
 						{
 							query: input.query,
 							objective: input.objective ?? input.query,
-							numResults: input.num_results ?? DEFAULT_RESULTS,
+							numResults: input.num_results ?? defaultResults,
 						},
 						{ signal: combinedSignal, timeoutMs },
 					);

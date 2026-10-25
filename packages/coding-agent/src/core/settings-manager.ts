@@ -11,6 +11,7 @@ import { stripBom } from "../utils/text.ts";
 import { type CompactionContentSettings, resolveCompactionContentSettings } from "./compaction/content-policy.ts";
 import { THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import { resolveDefaultTools } from "./tool-names.ts";
 
 export interface CompactionModelOverride {
 	reserveTokens?: number;
@@ -96,6 +97,16 @@ export interface WarningSettings {
 
 export type DefaultProjectTrust = "ask" | "always" | "never";
 
+/** Web search settings: a custom Exa-compatible endpoint, its API key, and the default result count. */
+export interface WebSearchSettings {
+	/** MCP endpoint of the search server; defaults to Exa's hosted server. */
+	endpoint?: string;
+	/** Literal, `$ENV`/`${ENV}`, or `!command`, resolved like any other nek credential. */
+	apiKey?: string;
+	/** Default number of results per search (1-20). */
+	numResults?: number;
+}
+
 export type TransportSetting = Transport;
 
 /**
@@ -150,7 +161,7 @@ export interface Settings {
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
-	defaultTools?: string[]; // Initial built-in tool selection
+	defaultTools?: string[]; // Initial built-in tool selection; "+name" adds to the defaults, "-name" removes
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
@@ -161,6 +172,7 @@ export interface Settings {
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
+	webSearch?: WebSearchSettings; // Endpoint, API key, and default result count of the web_search tool
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	cacheWarming?: CacheWarmingMode; // default: "streaming"; global only because each refresh costs money
@@ -1377,9 +1389,22 @@ export class SettingsManager {
 		return this.settings.enabledModels;
 	}
 
+	/** Built-in tools the session starts with, after applying the `+name`/`-name` entries. */
 	getDefaultTools(): string[] | undefined {
 		const tools = this.settings.defaultTools;
-		return tools ? [...tools] : undefined;
+		return tools ? resolveDefaultTools(tools).names : undefined;
+	}
+
+	/** `defaultTools` entries that name no built-in tool; reported as diagnostics at startup. */
+	getUnknownDefaultTools(): string[] {
+		const tools = this.settings.defaultTools;
+		return tools ? resolveDefaultTools(tools).unknown : [];
+	}
+
+	/** Web search endpoint, key, and default result count; `undefined` when nothing is configured. */
+	getWebSearchSettings(): WebSearchSettings | undefined {
+		const settings = this.settings.webSearch;
+		return settings ? { ...settings } : undefined;
 	}
 
 	setEnabledModels(patterns: string[] | undefined): void {

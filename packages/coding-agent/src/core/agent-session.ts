@@ -3815,9 +3815,15 @@ export class AgentSession {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
+		const webSearch = this.settingsManager.getWebSearchSettings();
 		const toolsOptions: ToolsOptions = {
 			read: { autoResizeImages },
 			bash: { commandPrefix: shellCommandPrefix, shellPath },
+			web_search: {
+				endpoint: webSearch?.endpoint,
+				apiKey: webSearch?.apiKey,
+				defaultResults: webSearch?.numResults,
+			},
 			readState: this._readState,
 		};
 		const baseToolDefinitions = this._baseToolsOverride
