@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Contents of a session lock file. */
@@ -134,4 +134,11 @@ function errorCode(error: unknown): string | undefined {
 /** Lock file guarding a session database against a second process. */
 export function sessionLockPath(path: string): string {
 	return `${path}.lock`;
+}
+
+/** Whether a live process holds the lock of the session at `path`. A stale lock does not count. */
+export function isSessionLocked(path: string): boolean {
+	const lockPath = sessionLockPath(path);
+	if (!existsSync(lockPath)) return false;
+	return !isStale(lockPath, readOwner(lockPath));
 }
