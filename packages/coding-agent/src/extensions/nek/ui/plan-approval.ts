@@ -29,6 +29,10 @@ export interface PlanApprovalOption {
 /** The persisted snapshot being reviewed; its body is shown in the transcript, not in this panel. */
 export type PlanApprovalSnapshot = PlanData;
 
+interface RpcPlanReviewResult {
+	action: "implement" | "implement_fresh" | "keep_planning" | "exit";
+}
+
 /** Pointer from the compact panel to the plan preview appended to the transcript just before it. */
 export const PLAN_APPROVAL_TRANSCRIPT_HINT = "Full plan is above in the transcript";
 
@@ -52,6 +56,34 @@ export async function showPlanApproval(
 		return ctx.ui.custom<PlanApprovalChoice | undefined>((tui, theme, _keybindings, done) =>
 			createApprovalView(options, theme, tui, done, snapshot),
 		);
+	}
+	if (ctx.mode === "rpc") {
+		if (!ctx.ui.structured) throw new Error("Structured UI is unavailable in RPC mode.");
+		const result = await ctx.ui.structured<RpcPlanReviewResult>(
+			"nek.plan_review",
+			{
+				path: snapshot.plan.path,
+				revision: snapshot.plan.revision,
+				name: snapshot.plan.name,
+				overview: snapshot.plan.overview,
+				markdown: snapshot.markdown,
+				todos: snapshot.plan.todos,
+			},
+			{ signal: ctx.signal },
+		);
+		if (result === undefined) return undefined;
+		switch (result.action) {
+			case "implement":
+				return "implement";
+			case "implement_fresh":
+				return "fresh";
+			case "keep_planning":
+				return "stay";
+			case "exit":
+				return "exit";
+			default:
+				throw new Error("Invalid action for nek.plan_review.");
+		}
 	}
 	const label = await ctx.ui.select(
 		IMPLEMENT_TITLE,

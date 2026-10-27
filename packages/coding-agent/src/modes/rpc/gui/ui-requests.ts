@@ -79,7 +79,7 @@ export function createUiRequester(output: (record: object) => void): UiRequester
 		requestStructured: <T = unknown>(kind: string, payload: unknown, options?: UiRequestOptions) =>
 			request<T | undefined>(
 				undefined,
-				{ method: "structured", kind, payload, timeout: options?.timeout },
+				{ method: "structured", kind, payload },
 				(response) =>
 					"cancelled" in response && response.cancelled
 						? undefined

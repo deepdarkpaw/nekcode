@@ -295,10 +295,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	});
 
 	const rebindSession = async (): Promise<void> => {
+		ui.cancelAll();
 		session = runtimeHost.session;
 		await session.bindExtensions({
 			uiContext: createExtensionUIContext(),
 			mode: "rpc",
+			abortHandler: () => {
+				ui.cancelAll();
+				void session.abort();
+			},
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
 				newSession: async (options) => runtimeHost.newSession(options),
@@ -338,6 +343,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		unsubscribe = session.subscribe((event) => {
 			output(toJsonEvent(event));
 			if (event.type === "agent_settled") {
+				if (event.outcome === "aborted") ui.cancelAll();
 				void checkShutdownRequested();
 			}
 		});
@@ -411,6 +417,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "abort": {
+				ui.cancelAll();
 				await session.abort();
 				return success(id, "abort");
 			}

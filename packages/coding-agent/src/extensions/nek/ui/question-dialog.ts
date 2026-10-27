@@ -39,10 +39,39 @@ export function buildAnswer(question: Question, optionIds: readonly string[], ot
 	return answer;
 }
 
+/** Result shape returned by the GUI for `nek.ask_question`. */
+interface RpcQuestionResult {
+	answers: Array<{ questionId: string; selected: string[]; other?: string }>;
+}
+
+function parseRpcQuestionResult(question: Question, result: unknown): QuestionAnswer | undefined {
+	if (typeof result !== "object" || result === null || !("answers" in result) || !Array.isArray(result.answers)) {
+		throw new Error("Invalid result for nek.ask_question: expected an answers array.");
+	}
+	const answer = (result as RpcQuestionResult).answers.find((item) => item?.questionId === question.id);
+	if (!answer) throw new Error(`Invalid result for nek.ask_question: missing answer for ${question.id}.`);
+	if (!Array.isArray(answer.selected) || !answer.selected.every((id) => typeof id === "string")) {
+		throw new Error(`Invalid result for nek.ask_question: selected must be an array for ${question.id}.`);
+	}
+	if (!question.allow_multiple && answer.selected.length > 1) {
+		throw new Error(`Invalid result for nek.ask_question: ${question.id} allows one selection.`);
+	}
+	const optionIds = new Set(question.options.map((option) => option.id));
+	if (answer.selected.some((id) => !optionIds.has(id))) {
+		throw new Error(`Invalid result for nek.ask_question: unknown option for ${question.id}.`);
+	}
+	if (answer.other !== undefined && typeof answer.other !== "string") {
+		throw new Error(`Invalid result for nek.ask_question: other must be a string for ${question.id}.`);
+	}
+	const other = answer.other?.trim();
+	return answer.selected.length === 0 && !other ? undefined : buildAnswer(question, answer.selected, other);
+}
+
 /**
  * Ask one question and resolve with the answer, or undefined when the user dismisses it. The TUI shows the options
- * plus "Other..." (free text); in multi-select questions Enter toggles an option and the Submit row confirms. Other
- * dialog UIs (RPC) fall back to select for single choice and one confirm per option for multiple choice.
+ * plus "Other..." (free text); in multi-select questions Enter toggles an option and the Submit row confirms. RPC
+ * mode sends one structured request so the GUI can render the complete form; other dialog-capable modes keep using
+ * their existing select/confirm behavior.
  */
 export async function askQuestion(
 	ctx: ExtensionContext,
@@ -66,6 +95,13 @@ export async function askQuestion(
 			const view = createQuestionView(question, title, { tui, theme, keybindings }, finish);
 			return { ...view, dispose: () => signal?.removeEventListener("abort", abort) };
 		});
+	}
+	if (ctx.mode === "rpc") {
+		if (!ctx.ui.structured) throw new Error("Structured UI is unavailable in RPC mode.");
+		const payload = { title, questions: [question] };
+		const result = await ctx.ui.structured<RpcQuestionResult>("nek.ask_question", payload, { signal });
+		signal?.throwIfAborted();
+		return result === undefined ? undefined : parseRpcQuestionResult(question, result);
 	}
 	if (question.allow_multiple) return askMultipleByConfirm(ctx, question, signal);
 	const labels = question.options.map((option) => option.label);
