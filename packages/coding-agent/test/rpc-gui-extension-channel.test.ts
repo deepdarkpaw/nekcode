@@ -171,6 +171,21 @@ describe("client dialogs", () => {
 		await expect(pending).resolves.toBe("b");
 	});
 
+	it("cancels every pending structured request when the turn is aborted", async () => {
+		const { ui, emitted } = createHarness();
+		const first = ui.requestStructured("nek.ask_question", { questions: [] });
+		const second = ui.requestStructured("nek.plan_review", { path: "plan.md" });
+
+		ui.cancelAll();
+
+		await expect(first).resolves.toBeUndefined();
+		await expect(second).resolves.toBeUndefined();
+		expect(emitted.slice(2)).toEqual([
+			{ type: "extension_ui_cancel", id: emitted[0].id },
+			{ type: "extension_ui_cancel", id: emitted[1].id },
+		]);
+	});
+
 	it("ignores a response for an unknown id", () => {
 		const { ui } = createHarness();
 

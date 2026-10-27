@@ -241,6 +241,68 @@ describe("Plan documents and mode presentation", () => {
 		expect(await review).toBeUndefined();
 	});
 
+	it("uses structured RPC payloads for questions, plan review, and mode approval", async () => {
+		const questionStructured = vi.fn(async () => ({
+			answers: [{ questionId: "store", selected: ["redis"], other: "" }],
+		}));
+		const questionCtx = {
+			mode: "rpc",
+			hasUI: true,
+			ui: { structured: questionStructured },
+		} as unknown as ExtensionContext;
+		await expect(
+			askQuestion(
+				questionCtx,
+				{
+					id: "store",
+					prompt: "Which store?",
+					options: [
+						{ id: "redis", label: "Redis" },
+						{ id: "memory", label: "Memory" },
+					],
+				},
+				"Cache",
+			),
+		).resolves.toMatchObject({ questionId: "store", optionIds: ["redis"] });
+		expect(questionStructured).toHaveBeenCalledWith(
+			"nek.ask_question",
+			{ title: "Cache", questions: [expect.objectContaining({ id: "store" })] },
+			expect.anything(),
+		);
+
+		const planStructured = vi.fn(async () => ({ action: "implement_fresh" as const }));
+		const planCtx = {
+			mode: "rpc",
+			hasUI: true,
+			ui: { structured: planStructured },
+			getContextUsage: () => undefined,
+		} as unknown as ExtensionContext;
+		await expect(showPlanApproval(planCtx, snapshot)).resolves.toBe("fresh");
+		expect(planStructured).toHaveBeenCalledWith(
+			"nek.plan_review",
+			expect.objectContaining({ revision: 2 }),
+			expect.anything(),
+		);
+
+		const modeStructured = vi.fn(async () => ({ approved: true }));
+		const setMode = vi.fn();
+		const modeCtx = { mode: "rpc", hasUI: true, ui: { structured: modeStructured } } as unknown as ExtensionContext;
+		const tool = createSwitchModeToolDefinition({ getMode: () => "agent", setMode });
+		await tool.execute(
+			"switch-structured",
+			{ target_mode_id: "plan", explanation: "Need a plan" },
+			undefined,
+			undefined,
+			modeCtx,
+		);
+		expect(modeStructured).toHaveBeenCalledWith(
+			"nek.switch_mode",
+			{ from: "agent", to: "plan", explanation: "Need a plan" },
+			expect.anything(),
+		);
+		expect(setMode).toHaveBeenCalledWith("plan", modeCtx);
+	});
+
 	it("does not change mode after cancellation while confirmation is pending", async () => {
 		const approval = Promise.withResolvers<boolean>();
 		const controller = new AbortController();
