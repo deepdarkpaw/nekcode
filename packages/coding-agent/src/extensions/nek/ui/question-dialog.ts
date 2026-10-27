@@ -96,8 +96,7 @@ export async function askQuestion(
 			return { ...view, dispose: () => signal?.removeEventListener("abort", abort) };
 		});
 	}
-	if (ctx.mode === "rpc") {
-		if (!ctx.ui.structured) throw new Error("Structured UI is unavailable in RPC mode.");
+	if (ctx.mode === "rpc" && ctx.ui.structured) {
 		const payload = { title, questions: [question] };
 		const result = await ctx.ui.structured<RpcQuestionResult>("nek.ask_question", payload, { signal });
 		signal?.throwIfAborted();

@@ -7,7 +7,7 @@ import type {
 	ExtensionFactory,
 } from "../../core/extensions/types.ts";
 import { DEFAULT_NEK_CONFIG, loadNekConfig, type NekConfig } from "./config.ts";
-import { registerPlanMode, setMode, type PlanWiring } from "./plan-wiring.ts";
+import { type PlanWiring, registerPlanMode, setMode } from "./plan-wiring.ts";
 import { openTodosReminder, TASK_MANAGEMENT } from "./prompts/task-management.ts";
 import { registerSubagentPrompts } from "./services/subagent-role.ts";
 import { createSessionState, replayBranch, todosAreActive } from "./state/session-state.ts";
@@ -51,7 +51,11 @@ export interface NekRuntime {
 export const NEK_REMINDER_TYPE = "nek.reminder";
 
 /** A JSON-safe plan summary used by the GUI state surface. */
-function planSummary(snapshot: PlanData, activePath: string | undefined, activeStatus: NekSessionState["planStatus"]): {
+function planSummary(
+	snapshot: PlanData,
+	activePath: string | undefined,
+	activeStatus: NekSessionState["planStatus"],
+): {
 	path: string;
 	name: string;
 	overview: string;
