@@ -63,10 +63,12 @@ export interface PlanWiring {
 	planCreated?: PlanReference;
 	epoch: number;
 	pendingImplementation?: PendingImplementation;
+	/** Latest live context, used by RPC state mutations. */
+	context?: ExtensionContext;
 }
 
 /** Register planning, review, explicit mode exit, and approval that hands the plan to Agent mode. */
-export function registerPlanMode(pi: ExtensionAPI, nek: NekRuntime): void {
+export function registerPlanMode(pi: ExtensionAPI, nek: NekRuntime): PlanWiring {
 	const wiring: PlanWiring = { pi, nek, announcedMode: nek.session.mode, epoch: 0 };
 	registerPlanTools(wiring);
 	registerPlanCommands(wiring);
@@ -90,6 +92,7 @@ export function registerPlanMode(pi: ExtensionAPI, nek: NekRuntime): void {
 		return reason ? { block: true, reason } : undefined;
 	});
 	pi.on("agent_settled", (event, ctx) => onPlanSettled(wiring, event, ctx));
+	return wiring;
 }
 
 function registerPlanTools(wiring: PlanWiring): void {
@@ -115,6 +118,7 @@ function registerPlanTools(wiring: PlanWiring): void {
 		wiring.planCreated = { path: plan.path, revision: plan.revision };
 		wiring.epoch++;
 		syncPlanUi(ctx, nek.session, nek.config.plan.shortcut);
+		nek.emitState();
 	};
 	pi.registerTool(
 		createCreatePlanToolDefinition({
@@ -163,6 +167,7 @@ function registerPlanCommands(wiring: PlanWiring): void {
 }
 
 function onSessionStart(wiring: PlanWiring, event: SessionStartEvent, ctx: ExtensionContext): void {
+	wiring.context = ctx;
 	wiring.pi.registerShortcut(wiring.nek.config.plan.shortcut as KeyId, {
 		description: "Switch between Plan and Agent",
 		handler: (shortcutCtx) =>
@@ -173,6 +178,7 @@ function onSessionStart(wiring: PlanWiring, event: SessionStartEvent, ctx: Exten
 }
 
 function restoreMode(wiring: PlanWiring, ctx: ExtensionContext): void {
+	wiring.context = ctx;
 	cancelPendingWork(wiring);
 	wiring.announcedMode = wiring.nek.session.mode;
 	syncMode(wiring, ctx);
@@ -187,6 +193,7 @@ export function setMode(wiring: PlanWiring, ctx: ExtensionContext, next: Mode): 
 	wiring.nek.session.mode = next;
 	if (next === "plan") markDraft(wiring, ctx);
 	syncMode(wiring, ctx);
+	wiring.nek.emitState();
 }
 
 function changeUserMode(wiring: PlanWiring, ctx: ExtensionContext, next: Mode): void {
@@ -211,6 +218,7 @@ function persistLifecycle(wiring: PlanWiring, ctx: ExtensionContext): void {
 		...(state.activePlan ? { active: state.activePlan } : {}),
 	});
 	syncPlanUi(ctx, state, wiring.nek.config.plan.shortcut);
+	wiring.nek.emitState();
 }
 
 /** Invalidate an open approval panel, the pending plan review, and any deferred approved-plan message. */

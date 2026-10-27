@@ -278,6 +278,13 @@ export class SubagentRegistry {
 		return this.entries.get(id)?.record;
 	}
 
+	/** Current child transcript for the GUI; the registry remains the single owner of child sessions. */
+	transcript(id: string): unknown[] {
+		const entry = this.entries.get(id);
+		if (!entry) throw new Error(`Unknown subagent ${id}.`);
+		return entry.session.messages.map((message) => structuredClone(message));
+	}
+
 	/** End active waits after a user message without aborting the child sessions. */
 	interruptWaits(): void {
 		for (const entry of this.entries.values()) {

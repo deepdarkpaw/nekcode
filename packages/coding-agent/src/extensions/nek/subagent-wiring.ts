@@ -37,11 +37,57 @@ export interface SubagentWiring {
 	registry: SubagentRegistry | undefined;
 	/** Latest context, used by background completions that arrive outside any event. */
 	ctx: ExtensionContext | undefined;
+	/** Per-subagent event throttle state; retained records are bounded by SubagentConfig.maxRetained. */
+	lastRpcEventAt: Map<string, number>;
+	rpcTimers: Map<string, ReturnType<typeof setTimeout>>;
 	/**
 	 * Start of the parent's current run (`Date.now()`); aborting the run stops the subagents launched since. A run
 	 * resumed after a restart announces no `agent_start`, so session_start sets it too.
 	 */
 	runStartedAt: number;
+}
+
+/** Remove the internal observed marker before crossing the GUI protocol boundary. */
+function rpcSubagentSnapshot(record: SubagentRecord): Omit<SubagentRecord, "observed"> {
+	const { observed: _observed, ...snapshot } = record;
+	return { ...snapshot, ...(snapshot.finalText ? { finalText: snapshot.finalText.slice(0, 4096) } : {}) };
+}
+
+function rpcId(params: unknown, method: string): string {
+	if (typeof params !== "object" || params === null || Array.isArray(params)) {
+		throw new Error(`${method} params must be an object.`);
+	}
+	const id = (params as Record<string, unknown>).id;
+	if (typeof id !== "string" || id.length === 0) throw new Error(`${method} requires a non-empty id.`);
+	return id;
+}
+
+function registerSubagentRpcHandlers(wiring: SubagentWiring): void {
+	const { pi } = wiring;
+	pi.registerRpcHandler("nek.stop_subagent", async (params) => {
+		const id = rpcId(params, "nek.stop_subagent");
+		const registry = getRegistry(wiring);
+		const record = registry.get(id);
+		if (!record) throw new Error(`Unknown subagent ${id}.`);
+		await registry.abort(id);
+		return { status: record.status };
+	});
+	pi.registerRpcHandler("nek.get_subagent_transcript", (params) => {
+		const id = rpcId(params, "nek.get_subagent_transcript");
+		return { messages: getRegistry(wiring).transcript(id) };
+	});
+	pi.registerRpcHandler("nek.list_agent_types", () => ({
+		types: wiring.agentTypes.map((type) => ({
+			name: type.name,
+			description: type.description,
+			source: type.source,
+			readonly: type.readonly,
+			background: type.background,
+			autonomous: type.autonomous,
+			...(type.model === undefined ? {} : { model: type.model }),
+			...(type.thinking === undefined ? {} : { thinking: type.thinking }),
+		})),
+	}));
 }
 
 /**
@@ -58,9 +104,21 @@ export function registerSubagents(pi: ExtensionAPI, nek: NekRuntime): void {
 		models: [],
 		registry: undefined,
 		ctx: undefined,
+		lastRpcEventAt: new Map(),
+		rpcTimers: new Map(),
 		runStartedAt: Date.now(),
 	};
+	nek.getSubagents = () => wiring.registry?.list() ?? [];
+	nek.emitSubagent = (record) => {
+		try {
+			pi.emitRpcEvent("nek.subagent", rpcSubagentSnapshot(record));
+		} catch (error) {
+			// A final throttle timer can race session disposal after the extension runtime is invalidated.
+			if (!(error instanceof Error) || !error.message.startsWith("This extension ctx is stale")) throw error;
+		}
+	};
 	registerSubagentTools(wiring);
+	registerSubagentRpcHandlers(wiring);
 	pi.registerMessageRenderer<SubagentNoticeData>(SUBAGENT_NOTICE_TYPE, renderSubagentNotice);
 	pi.registerCommand("subagents", {
 		description: "List subagents; cancel one or show its result",
@@ -99,6 +157,9 @@ export function registerSubagents(pi: ExtensionAPI, nek: NekRuntime): void {
 		const registry = wiring.registry;
 		wiring.registry = undefined;
 		wiring.ctx = undefined;
+		for (const timer of wiring.rpcTimers.values()) clearTimeout(timer);
+		wiring.rpcTimers.clear();
+		wiring.lastRpcEventAt.clear();
 		await registry?.disposeAll();
 	});
 }
@@ -161,7 +222,7 @@ function getRegistry(wiring: SubagentWiring): SubagentRegistry {
 	wiring.registry ??= new SubagentRegistry(
 		wiring.nek.config.subagent,
 		() => deliverIdleNotices(wiring),
-		() => syncSubagentStatus(wiring),
+		(record) => onSubagentChange(wiring, record),
 	);
 	return wiring.registry;
 }
@@ -258,6 +319,26 @@ function deliverIdleNotices(wiring: SubagentWiring): void {
 		};
 		wiring.pi.sendMessage<SubagentNoticeData>(message, defer ? { deliverAs: "nextTurn" } : { triggerTurn: true });
 	}
+}
+
+/** Emit one subagent update immediately or after the remaining 100 ms throttle window. */
+function onSubagentChange(wiring: SubagentWiring, record: SubagentRecord): void {
+	syncSubagentStatus(wiring);
+	wiring.nek.emitState();
+	const now = Date.now();
+	const last = wiring.lastRpcEventAt.get(record.id) ?? 0;
+	const elapsed = now - last;
+	const emit = () => {
+		wiring.rpcTimers.delete(record.id);
+		wiring.lastRpcEventAt.set(record.id, Date.now());
+		wiring.nek.emitSubagent(record);
+	};
+	if (elapsed >= 100) {
+		emit();
+		return;
+	}
+	if (wiring.rpcTimers.has(record.id)) return;
+	wiring.rpcTimers.set(record.id, setTimeout(emit, 100 - elapsed));
 }
 
 /** Refresh the running-subagent widget above the editor; removes it when nothing is running in the background. */
