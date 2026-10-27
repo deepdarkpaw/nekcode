@@ -57,7 +57,8 @@ export async function showPlanApproval(
 			createApprovalView(options, theme, tui, done, snapshot),
 		);
 	}
-	if (ctx.mode === "rpc" && ctx.ui.structured) {
+	if (ctx.mode === "rpc") {
+		if (!ctx.ui.structured) throw new Error("Structured UI is unavailable in RPC mode.");
 		const result = await ctx.ui.structured<RpcPlanReviewResult>(
 			"nek.plan_review",
 			{

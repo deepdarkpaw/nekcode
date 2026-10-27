@@ -2,7 +2,8 @@ import { type JsonRpcRequest, LATEST_PROTOCOL_VERSION } from "@earendil-works/pi
 import { createInMemoryTransportPair } from "@earendil-works/pi-mcp/testing";
 import { describe, expect, it } from "vitest";
 import { createMcpExtension } from "../../src/extensions/mcp/index.ts";
-import { createNekExtension, DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/index.ts";
+import { DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/config.ts";
+import { createNekExtension } from "../../src/extensions/nek/index.ts";
 import { createHarness, createTestUiContext } from "./harness.ts";
 
 describe("RPC extension surfaces", () => {

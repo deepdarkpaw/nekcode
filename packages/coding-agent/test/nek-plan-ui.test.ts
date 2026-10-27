@@ -303,39 +303,71 @@ describe("Plan documents and mode presentation", () => {
 		expect(setMode).toHaveBeenCalledWith("plan", modeCtx);
 	});
 
-	it("does not change mode after cancellation while confirmation is pending", async () => {
-		const approval = Promise.withResolvers<boolean>();
+	/** A pending mode approval through the TUI confirm dialog or the RPC structured request. */
+	function pendingModeApproval(mode: "tui" | "rpc") {
+		const approval = Promise.withResolvers<boolean | undefined>();
+		const ui =
+			mode === "tui"
+				? { confirm: async () => (await approval.promise) === true }
+				: {
+						structured: async () => {
+							const approved = await approval.promise;
+							return approved === undefined ? undefined : { approved };
+						},
+					};
+		const ctx = { mode, hasUI: true, ui } as unknown as ExtensionContext;
+		return { approval, ctx };
+	}
+
+	it.each(["tui", "rpc"] as const)(
+		"does not change mode after cancellation while confirmation is pending (%s)",
+		async (runMode) => {
+			const { approval, ctx } = pendingModeApproval(runMode);
+			const controller = new AbortController();
+			const setMode = vi.fn();
+			const tool = createSwitchModeToolDefinition({ getMode: () => "agent", setMode });
+			const operation = tool.execute("switch-1", { target_mode_id: "plan" }, controller.signal, undefined, ctx);
+			controller.abort();
+			approval.resolve(true);
+			await expect(operation).rejects.toMatchObject({ name: "AbortError" });
+			expect(setMode).not.toHaveBeenCalled();
+		},
+	);
+
+	it("reports an aborted RPC approval as an abort, not as a decline", async () => {
+		const { approval, ctx } = pendingModeApproval("rpc");
 		const controller = new AbortController();
-		const setMode = vi.fn();
-		const tool = createSwitchModeToolDefinition({ getMode: () => "agent", setMode });
-		const ctx = {
-			mode: "rpc",
-			hasUI: true,
-			ui: { confirm: async () => approval.promise },
-		} as unknown as ExtensionContext;
+		const tool = createSwitchModeToolDefinition({ getMode: () => "agent", setMode: vi.fn() });
 		const operation = tool.execute("switch-1", { target_mode_id: "plan" }, controller.signal, undefined, ctx);
 		controller.abort();
-		approval.resolve(true);
+		approval.resolve(undefined);
 		await expect(operation).rejects.toMatchObject({ name: "AbortError" });
+	});
+
+	it("rejects RPC mode without structured UI instead of falling back to confirm", async () => {
+		const ctx = { mode: "rpc", hasUI: true, ui: { confirm: async () => true } } as unknown as ExtensionContext;
+		const setMode = vi.fn();
+		const tool = createSwitchModeToolDefinition({ getMode: () => "agent", setMode });
+		await expect(tool.execute("switch-1", { target_mode_id: "plan" }, undefined, undefined, ctx)).rejects.toThrow(
+			"Structured UI is unavailable in RPC mode.",
+		);
 		expect(setMode).not.toHaveBeenCalled();
 	});
 
-	it("rejects a confirmation result when another action already changed the mode", async () => {
-		const approval = Promise.withResolvers<boolean>();
-		let mode: Mode = "agent";
-		const setMode = vi.fn();
-		const tool = createSwitchModeToolDefinition({ getMode: () => mode, setMode });
-		const ctx = {
-			mode: "rpc",
-			hasUI: true,
-			ui: { confirm: async () => approval.promise },
-		} as unknown as ExtensionContext;
-		const operation = tool.execute("switch-1", { target_mode_id: "plan" }, undefined, undefined, ctx);
-		mode = "plan";
-		approval.resolve(true);
-		await expect(operation).rejects.toThrow("The mode changed while this approval was pending");
-		expect(setMode).not.toHaveBeenCalled();
-	});
+	it.each(["tui", "rpc"] as const)(
+		"rejects a confirmation result when another action already changed the mode (%s)",
+		async (runMode) => {
+			const { approval, ctx } = pendingModeApproval(runMode);
+			let mode: Mode = "agent";
+			const setMode = vi.fn();
+			const tool = createSwitchModeToolDefinition({ getMode: () => mode, setMode });
+			const operation = tool.execute("switch-1", { target_mode_id: "plan" }, undefined, undefined, ctx);
+			mode = "plan";
+			approval.resolve(true);
+			await expect(operation).rejects.toThrow("The mode changed while this approval was pending");
+			expect(setMode).not.toHaveBeenCalled();
+		},
+	);
 
 	it("closes a question immediately on abort and ignores a later answer", async () => {
 		initTheme("dark");

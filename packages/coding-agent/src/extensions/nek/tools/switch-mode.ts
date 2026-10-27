@@ -53,12 +53,14 @@ export function createSwitchModeToolDefinition(
 			if (target_mode_id === current) return textResult(`Already in ${modeLabel(current)} mode.`);
 			if (!ctx.hasUI) throw new Error("Mode switch requires user approval, which is unavailable in this run mode.");
 			let approved: boolean;
-			if (ctx.mode === "rpc" && ctx.ui.structured) {
+			if (ctx.mode === "rpc") {
+				if (!ctx.ui.structured) throw new Error("Structured UI is unavailable in RPC mode.");
 				const result = await ctx.ui.structured<{ approved: boolean }>(
 					"nek.switch_mode",
 					{ from: current, to: target_mode_id, ...(explanation === undefined ? {} : { explanation }) },
 					{ signal },
 				);
+				signal?.throwIfAborted();
 				if (result === undefined)
 					return textResult(`User declined the mode switch. Stay in ${modeLabel(current)} mode.`);
 				if (typeof result.approved !== "boolean") throw new Error("Invalid result for nek.switch_mode.");
