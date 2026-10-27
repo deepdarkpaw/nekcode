@@ -203,7 +203,11 @@ Extension UI records are a separate RPC subprotocol, not `AgentSessionEvent` val
 {"type":"extension_event","name":"nek.state","payload":{"mode":"agent","todos":[]}}
 ```
 
-The name and payload shapes belong to the extension. Clients should ignore names they do not know.
+The name and payload shapes belong to the extension. Clients should ignore names they do not know. The built-in GUI extension records are:
+
+- `nek.state`: `{mode:"agent"|"plan", todos:[{id,content,status}], plans:[{path,name,overview,revision,status,todos}], activePlanPath?, subagents:[...]}`.
+- `nek.subagent`: one subagent record `{id,description,type,background,status,model?,activity?,usage?,startedAt,endedAt?,lastActivityAt?,sessionFile?,error?,finalText?}`. The internal `observed` flag is not sent. Updates include background progress and are throttled to ten per second per subagent.
+- `mcp.status_changed`: `{servers:[{name,scope:"global"|"project",transport:"stdio"|"http",enabled,exposure:"deferred"|"direct"|"hidden",state:"disabled"|"connecting"|"connected"|"failed"|"needs_auth",error?,tools:[{name,exposure}],auth?:{required,loggedIn}}]}`.
 
 ### auth_event
 

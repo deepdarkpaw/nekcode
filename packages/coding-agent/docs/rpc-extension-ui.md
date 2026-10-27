@@ -118,6 +118,16 @@ Ask the client a structured question and receive a structured answer. Only RPC m
 
 The `editor` dialog also accepts `ctx.ui.editor(title, prefill, { signal, timeout })` and includes `timeout` in its request when the caller sets one.
 
+#### nek structured kinds
+
+The built-in `nek` extension uses these structured request kinds in RPC mode. TUI mode keeps its existing terminal components.
+
+- `nek.ask_question`: payload `{title?, questions:[{id, prompt, allow_multiple?, options:[{id,label}]}]}`; result `{answers:[{questionId, selected:string[], other?}]}`.
+- `nek.plan_review`: payload `{path, revision, name, overview, markdown, todos:[{id,content}]}`; result `{action}` where `action` is `implement`, `implement_fresh`, `keep_planning`, or `exit`.
+- `nek.switch_mode`: payload `{from, to, explanation?}`; result `{approved:boolean}`.
+
+If the client answers with `cancelled: true`, the question or plan review is dismissed and the mode switch is declined. If the turn is aborted, nekcode sends `extension_ui_cancel` and the tool call ends as aborted, not as declined. The GUI should close the request when it receives `extension_ui_cancel`. In RPC mode these interactions require `structured`; they never fall back to the generic `select`/`confirm` dialogs.
+
 ### notify
 
 Display a notification. Fire-and-forget, no response expected.
@@ -195,7 +205,7 @@ Set the text in the input editor. Fire-and-forget.
 
 ## Responses to nekcode
 
-Responses are sent for dialog methods only (`select`, `confirm`, `input`, `editor`). The `id` must match the request.
+Responses are sent for dialog methods (`select`, `confirm`, `input`, `editor`, and `structured`). The `id` must match the request.
 
 ### Value response (select, input, editor)
 

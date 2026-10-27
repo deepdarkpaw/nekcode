@@ -1090,6 +1090,25 @@ Call an RPC method an extension registered with `pi.registerRpcHandler()`. Sessi
 
 Response data: `{ "result": <handler return value> }`. An unknown method is a command error: `No RPC handler registered for method: <method>`. Extensions push updates the other way with `pi.emitRpcEvent()`, which becomes an [`extension_event`](json.md#extension-event) record.
 
+The built-in `nek` extension exposes these session methods:
+
+| method | params | result |
+|---|---|---|
+| `nek.get_state` | `{}` | `{mode, todos, plans, activePlanPath?, subagents}` |
+| `nek.set_mode` | `{mode: "agent"|"plan"}` | the complete state snapshot |
+| `nek.stop_subagent` | `{id}` | `{status}` |
+| `nek.get_subagent_transcript` | `{id}` | `{messages}` |
+| `nek.list_agent_types` | `{}` | `{types:[{name,description,source,readonly,background,autonomous,model?,thinking?}]}` |
+| `nek.get_plan` | `{path}` | `{path,name,overview,revision,status,todos,markdown}` |
+
+The built-in MCP extension exposes these session methods:
+
+- `mcp.status` with `{}` returns `{servers:[...]}`.
+- `mcp.test` with `{name}` connects, lists the server tools, and disconnects. It returns `{ok:true,latencyMs,tools}` or `{ok:false,message}`.
+- `mcp.reconnect` with `{name}`, `mcp.login` with `{name}`, and `mcp.logout` with `{name}` each return `{server:<status>}`. Login reuses the normal OAuth browser/callback flow.
+
+An `extension_event` named `nek.state` carries the complete state snapshot. `nek.subagent` carries one subagent record (including background activity) and is throttled to at most ten records per second per subagent. `mcp.status_changed` carries `{servers:[...]}`. The control process does not load extensions or MCP and therefore does not expose these methods.
+
 ## Model object
 
 Model commands return the complete configured model definition. Costs are in US dollars per million tokens.
