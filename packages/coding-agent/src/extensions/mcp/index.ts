@@ -97,6 +97,15 @@ function firstLine(text: string): string {
 	return text.split("\n", 1)[0] ?? "";
 }
 
+function rpcServerName(params: unknown, method: string): string {
+	if (typeof params !== "object" || params === null || Array.isArray(params)) {
+		throw new Error(`${method} params must be an object.`);
+	}
+	const name = (params as Record<string, unknown>).name;
+	if (typeof name !== "string" || name.length === 0) throw new Error(`${method} requires a non-empty name.`);
+	return name;
+}
+
 function isEnabled(server: Pick<McpServer, "entry">): boolean {
 	return server.entry.config.enabled !== false;
 }
@@ -256,6 +265,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const signIns = new Set<Promise<void>>();
 		/** Working directory of the session, for stdio servers. */
 		let sessionCwd = process.cwd();
+		let currentContext: ExtensionContext | undefined;
 		let credentials = options.credentials;
 		let serverLog: McpServerLog | undefined;
 		const openUrl = options.openUrl ?? openBrowser;
@@ -267,8 +277,44 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				}));
 
 		const listeners = new Set<() => void>();
+		const serverStatus = (server: McpServer) => {
+			const { entry, connection } = server;
+			const enabled = isEnabled(server);
+			const requiredAuth =
+				connection?.oauthUrl !== undefined ||
+				("url" in entry.config &&
+					!Object.keys(entry.config.headers ?? {}).some((header) => header.toLowerCase() === "authorization"));
+			const connectionState = connection?.state;
+			const state = !enabled
+				? "disabled"
+				: connectionState === "needs-auth"
+					? "needs_auth"
+					: connectionState === "failed"
+						? "failed"
+						: connectionState === "connected"
+							? "connected"
+							: "connecting";
+			return {
+				name: entry.name,
+				scope: entry.scope === "project" ? "project" : "global",
+				transport: "url" in entry.config ? "http" : "stdio",
+				enabled,
+				exposure: exposureOf(entry),
+				state,
+				...((server.message ?? connection?.error) === undefined
+					? {}
+					: { error: server.message ?? connection?.error }),
+				tools: (connection?.tools ?? []).map((tool) => ({
+					name: tool.name,
+					exposure: getMcpToolExposure(entry.config, tool.name),
+				})),
+				...(requiredAuth ? { auth: { required: true, loggedIn: connectionState === "connected" } } : {}),
+			};
+		};
+		const serverStatuses = () => servers.map(serverStatus);
 		const emitChange = () => {
 			for (const listener of listeners) listener();
+			pi.emitRpcEvent("mcp.status_changed", { servers: serverStatuses() });
 		};
 		const subscribe = (listener: () => void) => {
 			listeners.add(listener);
@@ -607,6 +653,85 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				return errorMessage(error);
 			}
 		};
+
+		const testServer = async (server: McpServer) => {
+			if (!isEnabled(server))
+				return { ok: false as const, message: `MCP server "${server.entry.name}" is disabled.` };
+			if (!server.connection) await startConnection(server, () => true);
+			const connection = server.connection;
+			if (!connection) return { ok: false as const, message: "MCP connection did not start." };
+			const startedAt = Date.now();
+			try {
+				await connection.getClient();
+				return {
+					ok: true as const,
+					latencyMs: Date.now() - startedAt,
+					tools: connection.tools.map((tool) => ({ name: tool.name, description: tool.description })),
+				};
+			} catch (error) {
+				return { ok: false as const, message: errorMessage(error) };
+			} finally {
+				if (server.connection === connection) {
+					server.connection = undefined;
+					server.pendingSource?.();
+					hideTools(server.entry.name);
+					emitChange();
+				}
+				await connection.close();
+			}
+		};
+
+		pi.registerRpcHandler("mcp.status", () => ({ servers: serverStatuses() }));
+		pi.registerRpcHandler("mcp.test", async (params) => {
+			await pending;
+			const name = rpcServerName(params, "mcp.test");
+			const server = findServer(name);
+			if (!server) throw new Error(`No MCP server named "${name}".`);
+			return await testServer(server);
+		});
+		pi.registerRpcHandler("mcp.reconnect", async (params) => {
+			await pending;
+			const name = rpcServerName(params, "mcp.reconnect");
+			const server = findServer(name);
+			if (!server) throw new Error(`No MCP server named "${name}".`);
+			server.message = await reconnect(server);
+			emitChange();
+			return { server: serverStatus(server) };
+		});
+		pi.registerRpcHandler("mcp.login", async (params) => {
+			await pending;
+			const name = rpcServerName(params, "mcp.login");
+			const server = findServer(name);
+			if (!server) throw new Error(`No MCP server named "${name}".`);
+			const ctx = currentContext;
+			if (!ctx) throw new Error("mcp.login is unavailable before the session starts.");
+			if (!server.connection) await startConnection(server, () => true);
+			const failure = await signIn(server, {
+				showAuthorizationUrl: (url) => {
+					ctx.ui.notify(`Sign in to MCP server "${name}" in your browser:\n${url.href}`, "info");
+					openUrl(url.href);
+				},
+				promptForRedirectUrl: (signal) =>
+					ctx.ui.input(
+						`Waiting for sign-in to "${name}". Paste the redirect URL if needed.`,
+						"http://127.0.0.1:.../callback?code=...",
+						{ signal },
+					),
+			});
+			server.message = failure;
+			emitChange();
+			return { server: serverStatus(server) };
+		});
+		pi.registerRpcHandler("mcp.logout", async (params) => {
+			await pending;
+			const name = rpcServerName(params, "mcp.logout");
+			const server = findServer(name);
+			if (!server) throw new Error(`No MCP server named "${name}".`);
+			await signOut(server);
+			server.message = undefined;
+			emitChange();
+			return { server: serverStatus(server) };
+		});
 
 		/** Returns an error message when the config could not be saved; connection errors show in the state. */
 		const setEnabled = async (
@@ -958,6 +1083,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		};
 
 		pi.on("session_start", (_event, ctx) => {
+			currentContext = ctx;
 			const loaded = (options.loadConfig ?? defaultLoadConfig)(ctx);
 			configErrors = loaded.errors;
 			projectConfig = loaded.projectConfig;
@@ -1088,6 +1214,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		});
 
 		pi.on("session_shutdown", async () => {
+			currentContext = undefined;
 			sessionActive = false;
 			generation++;
 			signInSession.abort();
