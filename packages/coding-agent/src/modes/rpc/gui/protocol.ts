@@ -74,6 +74,7 @@ export type RpcGuiCommand =
 	| { id?: string; type: "validate_config"; cwd?: string }
 	| { id?: string; type: "get_changelog"; sinceVersion?: string }
 	| { id?: string; type: "get_mention_targets"; cwd?: string }
+	| { id?: string; type: "list_builtin_tools" }
 	// ---- session catalog [session + control] ----
 	| { id?: string; type: "list_sessions"; cwd?: string; all?: boolean; limit?: number }
 	| { id?: string; type: "delete_session"; sessionPath: string }
@@ -119,6 +120,7 @@ export const NEK_CONTROL_COMMANDS: readonly string[] = [
 	"validate_config",
 	"get_changelog",
 	"get_mention_targets",
+	"list_builtin_tools",
 	"list_sessions",
 	"delete_session",
 	"rename_session",
@@ -173,6 +175,16 @@ export interface RpcMentionTarget {
 	description?: string;
 	/** `SKILL.md` of a skill; absent for subagent types. */
 	location?: string;
+}
+
+/** One built-in tool of `list_builtin_tools`. */
+export interface RpcBuiltinTool {
+	/** Built-in tool name, as `defaultTools` entries name it, e.g. "read" or "ast_grep". */
+	name: string;
+	/** The tool's description, as the model sees it. */
+	description?: string;
+	/** Whether a new session offers the tool when neither settings nor options select tools. */
+	defaultActive: boolean;
 }
 
 export interface RpcSessionSummary {
@@ -270,6 +282,7 @@ export interface RpcGuiResponseData {
 	validate_config: { diagnostics: RpcConfigDiagnostic[] };
 	get_changelog: { markdown: string };
 	get_mention_targets: { targets: RpcMentionTarget[] };
+	list_builtin_tools: { tools: RpcBuiltinTool[] };
 	list_sessions: { sessions: RpcSessionSummary[] };
 	delete_session: Record<string, never>;
 	rename_session: Record<string, never>;

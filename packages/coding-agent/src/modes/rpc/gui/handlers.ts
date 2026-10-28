@@ -18,6 +18,7 @@ import type { RpcGuiCommand, RpcReloadResult } from "./protocol.ts";
 import { guiError, guiSuccess } from "./response.ts";
 import { exportSession, navigateTree, setEntryLabel, shareSession } from "./session-current.ts";
 import { deleteSession, importSession, listSessions, readSessionSnapshotFor, renameSession } from "./sessions.ts";
+import { listBuiltinTools } from "./tools.ts";
 import { getProjectTrust, setProjectTrust } from "./trust.ts";
 
 /** Hooks the RPC mode supplies, because they depend on the process rather than on a command. */
@@ -33,6 +34,7 @@ export const GUI_COMMAND_TYPES: ReadonlySet<string> = new Set<RpcGuiCommand["typ
 	"validate_config",
 	"get_changelog",
 	"get_mention_targets",
+	"list_builtin_tools",
 	"list_sessions",
 	"delete_session",
 	"rename_session",
@@ -81,6 +83,8 @@ export async function handleGuiCommand(
 				return guiSuccess(id, "get_changelog", getChangelog(cmd.sinceVersion));
 			case "get_mention_targets":
 				return guiSuccess(id, "get_mention_targets", { targets: getMentionTargets(ctx, cmd.cwd) });
+			case "list_builtin_tools":
+				return guiSuccess(id, "list_builtin_tools", { tools: listBuiltinTools(ctx) });
 			case "list_sessions":
 				return guiSuccess(id, "list_sessions", { sessions: await listSessions(ctx, cmd) });
 			case "delete_session":

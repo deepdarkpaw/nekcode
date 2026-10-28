@@ -893,6 +893,16 @@ Subagent types come first, in the order of the `subagents` system prompt section
 
 `cwd` names the directory to describe. A session answers from its live resources, so extension-provided skills and its own trust decision apply; asked about a different directory, it answers from that directory's files instead. The control process always answers from the files of `cwd` (default: its working directory), which means `<agentDir>/skills` and, once the project is trusted, `<cwd>/.nek/skills`.
 
+### list_builtin_tools
+
+The built-in tools a settings page can select in `defaultTools`.
+
+```json
+{"type": "list_builtin_tools"}
+```
+
+Response data: `tools`, each with `name`, `description` (as the model sees it), and `defaultActive` (the tool is offered in a new session when neither settings nor options select tools). The list is nek's own: the names and their order come from the built-in tool table, so it always matches what `defaultTools` accepts.
+
 ### list_sessions
 
 List sessions, newest first.
