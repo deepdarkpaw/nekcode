@@ -23,6 +23,7 @@ export {
 	type RpcAuthEventRecord,
 	type RpcAuthPromptPayload,
 	type RpcAuthProviderStatus,
+	type RpcAuthState,
 	type RpcBuiltinTool,
 	type RpcCatalogModel,
 	type RpcConfigDiagnostic,

@@ -222,7 +222,18 @@ export interface RpcAuthProviderStatus {
 	loginMethods: Array<"oauth" | "api_key">;
 	/** OAuth access-token expiry (ISO 8601); nek refreshes automatically. */
 	expiresAt?: string;
+	state: RpcAuthState;
 }
+
+/**
+ * Health of a provider's stored credential.
+ *
+ * - `ok`: usable as stored, or nothing is stored (an ambient key has nothing dated to judge).
+ * - `expired`: the stored OAuth access token is past its `expires`; the next request refreshes it.
+ * - `refresh_failed`: reserved for a client-visible refresh failure. nek persists no refresh outcome, so it never
+ *   sends this value; an expired token whose refresh failed keeps reporting `expired`.
+ */
+export type RpcAuthState = "ok" | "expired" | "refresh_failed";
 
 export interface RpcCatalogModel {
 	provider: string;

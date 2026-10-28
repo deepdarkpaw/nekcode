@@ -995,7 +995,9 @@ Credential status of every known provider.
 {"type": "auth_status"}
 ```
 
-Response data: `providers`, each with `provider`, `name` (auth display name), `kind` (`"oauth"`, `"api_key"`, `"env"`, or `"none"`), `loginMethods` (`"oauth"` and/or `"api_key"`), and `expiresAt` for stored OAuth credentials. nek refreshes expiring OAuth tokens itself.
+Response data: `providers`, each with `provider`, `name` (auth display name), `kind` (`"oauth"`, `"api_key"`, `"env"`, or `"none"`), `loginMethods` (`"oauth"` and/or `"api_key"`), `expiresAt` for stored OAuth credentials, and `state`. nek refreshes expiring OAuth tokens itself.
+
+`state` is `"expired"` when a stored OAuth access token is past its `expires`, and `"ok"` otherwise, including rows with a stored API key, an ambient key, or no credential at all (nothing dated to judge). `"refresh_failed"` is part of the value union but nek never sends it: it persists no refresh outcome, so a token whose refresh failed keeps reporting `"expired"` until a refresh succeeds. `expiresAt` is preserved for every stored OAuth credential, so the existing fields are unchanged.
 
 ### auth_login
 

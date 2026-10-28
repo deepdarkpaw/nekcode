@@ -7,7 +7,7 @@
  */
 
 import { join } from "node:path";
-import type { AuthEvent, AuthPrompt, Provider } from "@earendil-works/pi-ai";
+import type { AuthEvent, AuthPrompt, Credential, Provider } from "@earendil-works/pi-ai";
 import { readStoredCredential } from "../../../core/auth-storage.ts";
 import type { GuiContext } from "./context.ts";
 import { NEK_STRUCTURED_KINDS, type RpcAuthEventRecord, type RpcAuthProviderStatus } from "./protocol.ts";
@@ -46,16 +46,23 @@ export function authStatus(ctx: GuiContext): RpcAuthProviderStatus[] {
 	const authPath = join(ctx.agentDir, "auth.json");
 	return ctx.modelRuntime.getProviders().map((provider) => {
 		const stored = readStoredCredential(provider.id, authPath);
+		const expires = storedOAuthExpiry(stored);
 		const status: RpcAuthProviderStatus = {
 			provider: provider.id,
 			name: providerDisplayName(provider),
 			kind: credentialKind(ctx, provider, stored?.type),
 			loginMethods: loginMethods(provider),
+			state: expires !== undefined && expires <= Date.now() ? "expired" : "ok",
 		};
-		if (stored?.type !== "oauth") return status;
-		const expires = (stored as { expires?: unknown }).expires;
-		return typeof expires === "number" ? { ...status, expiresAt: new Date(expires).toISOString() } : status;
+		return expires === undefined ? status : { ...status, expiresAt: new Date(expires).toISOString() };
 	});
+}
+
+/** Expiry of a stored OAuth access token, or `undefined` when the credential is not a dated OAuth one. */
+function storedOAuthExpiry(stored: Credential | undefined): number | undefined {
+	if (stored?.type !== "oauth") return undefined;
+	const expires = (stored as { expires?: unknown }).expires;
+	return typeof expires === "number" ? expires : undefined;
 }
 
 /** A provider notification as the GUI record, with read-only link lists made plain. */
