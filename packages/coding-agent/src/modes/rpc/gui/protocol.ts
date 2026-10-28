@@ -212,6 +212,18 @@ export interface RpcSessionSnapshot {
 	leafId: string | null;
 	/** Same shape as `get_messages` (an AgentMessage as JSON) on the current leaf branch. */
 	messages: unknown[];
+	/** The live process holding the session lock; absent when unlocked or when the lock predates the field. */
+	lockedBy?: RpcSessionLockOwner;
+}
+
+/** Process holding a session lock. */
+export interface RpcSessionLockOwner {
+	pid: number;
+	hostname: string;
+	/** How that process runs sessions: the terminal UI, an RPC process, or a one-shot run. */
+	kind: "tui" | "rpc" | "print" | "json";
+	/** When it took the lock (ISO 8601). */
+	startedAt: string;
 }
 
 export interface RpcAuthProviderStatus {

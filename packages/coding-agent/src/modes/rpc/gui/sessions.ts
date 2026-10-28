@@ -6,7 +6,7 @@
  */
 
 import { existsSync, rmSync, statSync } from "node:fs";
-import { isSessionLocked, sessionLockPath } from "../../../core/durable/lock.ts";
+import { isSessionLocked, readSessionLockOwner, sessionLockPath } from "../../../core/durable/lock.ts";
 import { sidecarPath } from "../../../core/durable/session-sidecar.ts";
 import { projectSnapshot, readSessionSnapshot } from "../../../core/durable/session-snapshot.ts";
 import {
@@ -118,7 +118,12 @@ function readEntries(path: string): FileEntry[] {
 	return loadEntriesFromFile(path, { repair: false });
 }
 
-/** A read-only snapshot: entries, leaf, and the messages on the leaf branch. Never takes the session lock. */
+/**
+ * A read-only snapshot: entries, leaf, and the messages on the leaf branch. Never takes the session lock.
+ *
+ * `lockedBy` names the live process that does hold the lock, so a client can tell which nek process is using the
+ * session. It is omitted when the lock is absent, stale, or was written before locks described their holder.
+ */
 export function readSessionSnapshotFor(sessionPath: string): RpcSessionSnapshot {
 	const path = resolvePath(sessionPath);
 	if (!existsSync(path)) throw new Error(`Session not found: ${path}`);
@@ -130,7 +135,14 @@ export function readSessionSnapshotFor(sessionPath: string): RpcSessionSnapshot 
 	const entries = fileEntries.filter((entry): entry is SessionEntry => entry.type !== "session");
 	const leafId = entries.length === 0 ? null : entries[entries.length - 1].id;
 	const { messages } = buildSessionContext(entries, leafId);
-	return { session: toSessionSummary(info), entries, leafId, messages };
+	const owner = readSessionLockOwner(path);
+	return {
+		session: toSessionSummary(info),
+		entries,
+		leafId,
+		messages,
+		...(owner === undefined ? {} : { lockedBy: { ...owner, startedAt: new Date(owner.startedAt).toISOString() } }),
+	};
 }
 
 /** Import a JSONL or database session into a new session of `cwd` and return the new session path. */

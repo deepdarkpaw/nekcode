@@ -1,9 +1,44 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname } from "node:path";
 
+/** How the process that holds a session is driven; recorded so other processes can describe the holder. */
+export type SessionLockKind = "tui" | "rpc" | "print" | "json";
+
 /** Contents of a session lock file. */
-type LockOwner = { readonly pid: number; readonly token: string; readonly createdAt: number };
+type LockOwner = {
+	readonly pid: number;
+	readonly token: string;
+	readonly createdAt: number;
+	/** Hostname of the owning process; absent in locks written before the field existed. */
+	readonly hostname?: string;
+	/** How the owning process runs sessions; absent in locks written before the field existed. */
+	readonly kind?: SessionLockKind;
+};
+
+/** What another process can report about a live lock: its pid, host, kind, and start time. */
+export interface SessionLockOwnerInfo {
+	readonly pid: number;
+	readonly hostname: string;
+	readonly kind: SessionLockKind;
+	/** Epoch milliseconds when the lock was created. */
+	readonly startedAt: number;
+}
+
+/** Kinds a lock file may record, for validation of what is read back. */
+const LOCK_KINDS: ReadonlySet<string> = new Set<SessionLockKind>(["tui", "rpc", "print", "json"]);
+
+/** How this process runs sessions; `undefined` until the entry point declares it. */
+let processLockKind: SessionLockKind | undefined;
+
+/**
+ * Declare how this process runs sessions, so the lock files it writes identify it. The entry point calls this
+ * once, before any session is opened; without it the lock is written exactly as before.
+ */
+export function setSessionLockKind(kind: SessionLockKind): void {
+	processLockKind = kind;
+}
 
 /** A lock file younger than this whose owner cannot be read is assumed to be mid-creation by its owner. */
 const UNREADABLE_LOCK_GRACE_MS = 5_000;
@@ -39,7 +74,13 @@ export interface SessionLock {
  */
 export function acquireSessionLock(path: string): SessionLock {
 	mkdirSync(dirname(path), { recursive: true });
-	const owner: LockOwner = { pid: process.pid, token: randomUUID(), createdAt: Date.now() };
+	const owner: LockOwner = {
+		pid: process.pid,
+		token: randomUUID(),
+		createdAt: Date.now(),
+		hostname: hostname(),
+		...(processLockKind === undefined ? {} : { kind: processLockKind }),
+	};
 	for (let attempt = 0; attempt < 2; attempt++) {
 		if (tryCreate(path, owner)) return ownedLock(path, owner);
 		const current = readOwner(path);
@@ -90,7 +131,18 @@ function readOwner(path: string): LockOwner | undefined {
 			"createdAt" in parsed &&
 			typeof parsed.createdAt === "number"
 		) {
-			return { pid: parsed.pid, token: parsed.token, createdAt: parsed.createdAt };
+			const hostname = "hostname" in parsed && typeof parsed.hostname === "string" ? parsed.hostname : undefined;
+			const kind =
+				"kind" in parsed && typeof parsed.kind === "string" && LOCK_KINDS.has(parsed.kind)
+					? (parsed.kind as SessionLockKind)
+					: undefined;
+			return {
+				pid: parsed.pid,
+				token: parsed.token,
+				createdAt: parsed.createdAt,
+				...(hostname === undefined ? {} : { hostname }),
+				...(kind === undefined ? {} : { kind }),
+			};
 		}
 		return undefined;
 	} catch {
@@ -141,4 +193,17 @@ export function isSessionLocked(path: string): boolean {
 	const lockPath = sessionLockPath(path);
 	if (!existsSync(lockPath)) return false;
 	return !isStale(lockPath, readOwner(lockPath));
+}
+
+/**
+ * Holder of the live lock of the session at `path`, for a client that wants to say which process is using it.
+ * `undefined` when no live lock exists, and also when the lock was written before the holder described itself.
+ */
+export function readSessionLockOwner(path: string): SessionLockOwnerInfo | undefined {
+	const lockPath = sessionLockPath(path);
+	if (!existsSync(lockPath)) return undefined;
+	const owner = readOwner(lockPath);
+	if (owner === undefined || isStale(lockPath, owner)) return undefined;
+	if (owner.hostname === undefined || owner.kind === undefined) return undefined;
+	return { pid: owner.pid, hostname: owner.hostname, kind: owner.kind, startedAt: owner.createdAt };
 }

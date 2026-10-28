@@ -44,6 +44,7 @@ import {
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
+import { type SessionLockKind, setSessionLockKind } from "./core/durable/lock.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
@@ -126,6 +127,11 @@ function resolveAppMode(parsed: Args, stdinIsTTY: boolean, stdoutIsTTY: boolean)
 
 function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc"> {
 	return appMode === "json" ? "json" : "text";
+}
+
+/** How a session lock file names this process, so another nek can say who holds a session. */
+function toLockKind(appMode: AppMode): SessionLockKind {
+	return appMode === "interactive" ? "tui" : appMode;
 }
 
 function isPlainRuntimeMetadataCommand(parsed: Args): boolean {
@@ -649,6 +655,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
+	setSessionLockKind(toLockKind(appMode));
 	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
 		takeOverStdout();
@@ -908,6 +915,7 @@ export async function main(args: string[], options?: MainOptions) {
 		stdinContent = await readPipedStdin();
 		if (stdinContent !== undefined && appMode === "interactive") {
 			appMode = "print";
+			setSessionLockKind(toLockKind(appMode));
 		}
 	}
 	time("readPipedStdin");

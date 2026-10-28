@@ -43,6 +43,7 @@ export {
 	type RpcProviderDraft,
 	type RpcReloadResult,
 	type RpcRemoteModel,
+	type RpcSessionLockOwner,
 	type RpcSessionSnapshot,
 	type RpcSessionSummary,
 	type RpcStructuredUiRequest,

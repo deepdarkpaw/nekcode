@@ -943,7 +943,9 @@ Read a session without opening it as a session and without taking its lock.
 {"type": "read_session_snapshot", "sessionPath": "...sqlite"}
 ```
 
-Response data: `session` (as in `list_sessions`), `entries` (same shape as `get_entries`), `leafId`, and `messages` (same shape as `get_messages` on the leaf branch).
+Response data: `session` (as in `list_sessions`), `entries` (same shape as `get_entries`), `leafId`, `messages` (same shape as `get_messages` on the leaf branch), and `lockedBy` while a live process holds the session lock.
+
+`lockedBy` names that process: `pid`, `hostname`, `kind` (`"tui"` for the terminal UI, `"rpc"`, or a one-shot run as `"print"` or `"json"`), and `startedAt` (ISO 8601). It is omitted while the session is unlocked, when the lock is stale, and for a lock written before nek recorded the holder, so `session.locked` remains the field that says whether a session is in use.
 
 ### import_session
 
