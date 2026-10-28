@@ -414,11 +414,17 @@ export class RpcClient {
 	}
 
 	/**
-	 * Get session entries in append order, optionally only those after the `since` entry id.
+	 * Get session entries in append order.
+	 *
+	 * A string keeps the `since` cursor behaviour. An object pages instead: `limit` caps the page and
+	 * `beforeEntryId` ends it at an older entry. `hasMore` says older entries exist before the page.
 	 */
-	async getEntries(since?: string): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
-		const response = await this.send({ type: "get_entries", since });
-		return this.getData<{ entries: SessionEntry[]; leafId: string | null }>(response);
+	async getEntries(
+		sinceOrOptions?: string | { since?: string; limit?: number; beforeEntryId?: string },
+	): Promise<{ entries: SessionEntry[]; leafId: string | null; hasMore: boolean }> {
+		const options = typeof sinceOrOptions === "string" ? { since: sinceOrOptions } : (sinceOrOptions ?? {});
+		const response = await this.send({ type: "get_entries", ...options });
+		return this.getData<{ entries: SessionEntry[]; leafId: string | null; hasMore: boolean }>(response);
 	}
 
 	/**

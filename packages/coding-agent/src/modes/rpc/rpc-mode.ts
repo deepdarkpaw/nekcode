@@ -29,6 +29,7 @@ import {
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent } from "../json-event.ts";
+import { pageEntries } from "./entry-page.ts";
 import { cancelAuthLogins } from "./gui/auth.ts";
 import { createGuiContext, type GuiContext } from "./gui/context.ts";
 import { createGuiDeps, handleGuiCommand } from "./gui/handlers.ts";
@@ -637,7 +638,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					}
 					entries = entries.slice(sinceIndex + 1);
 				}
-				return success(id, "get_entries", { entries, leafId: sessionManager.getLeafId() });
+				const page = pageEntries(entries, { limit: command.limit, beforeEntryId: command.beforeEntryId });
+				return success(id, "get_entries", {
+					entries: page.entries,
+					leafId: sessionManager.getLeafId(),
+					hasMore: page.hasMore,
+				});
 			}
 
 			case "get_tree": {

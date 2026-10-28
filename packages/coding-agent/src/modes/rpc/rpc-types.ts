@@ -102,7 +102,7 @@ export type RpcCommand =
 	| { id?: string; type: "fork"; entryId: string }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
-	| { id?: string; type: "get_entries"; since?: string }
+	| { id?: string; type: "get_entries"; since?: string; limit?: number; beforeEntryId?: string }
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
@@ -265,7 +265,7 @@ export type RpcResponse =
 			type: "response";
 			command: "get_entries";
 			success: true;
-			data: { entries: SessionEntry[]; leafId: string | null };
+			data: { entries: SessionEntry[]; leafId: string | null; hasMore: boolean };
 	  }
 	| {
 			id?: string;

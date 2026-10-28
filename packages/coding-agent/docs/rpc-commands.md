@@ -699,6 +699,16 @@ With a cursor:
 {"type": "get_entries", "since": "abc123"}
 ```
 
+One page, newest first:
+```json
+{"type": "get_entries", "limit": 50}
+```
+
+The page older than an entry:
+```json
+{"type": "get_entries", "limit": 50, "beforeEntryId": "abc123"}
+```
+
 Response:
 ```json
 {
@@ -709,12 +719,15 @@ Response:
     "entries": [
       {"type": "message", "id": "def456", "parentId": "abc123", "timestamp": "...", "message": {"role": "user", "...": "..."}}
     ],
-    "leafId": "def456"
+    "leafId": "def456",
+    "hasMore": false
   }
 }
 ```
 
 `leafId` is the id of the current leaf entry (`null` for an empty session), so a client can tell in one round trip whether the active branch moved. If `since` does not match any entry id, the response is `success: false`.
+
+`limit` and `beforeEntryId` page the same list without changing what it means: a page is the newest `limit` entries older than `beforeEntryId`, so `{"limit": 50}` is the last 50 entries and `{"limit": 50, "beforeEntryId": "<first entry of that page>"}` is the 50 before them. `beforeEntryId` alone returns every older entry, and `hasMore` says whether entries older than the page exist, so a client walks history back from the leaf. Without both parameters, the response is the full list with `hasMore: false`, exactly as before; `since` still applies first, so the page is taken from the entries after that cursor. A `limit` that is not a positive integer, or a `beforeEntryId` that matches no entry, is `success: false`.
 
 ### get_tree
 
