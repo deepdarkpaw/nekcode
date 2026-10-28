@@ -41,6 +41,7 @@ export {
 	type RpcProjectTrust,
 	type RpcProjectTrustResource,
 	type RpcProviderDraft,
+	type RpcProviderOverrides,
 	type RpcReloadResult,
 	type RpcRemoteModel,
 	type RpcSessionLockOwner,

@@ -21,6 +21,7 @@ import type {
 	RpcCatalogModel,
 	RpcFetchModelsResult,
 	RpcProviderDraft,
+	RpcProviderOverrides,
 	RpcRemoteModel,
 	RpcTestProviderResult,
 	RpcThinkingLevel,
@@ -88,8 +89,8 @@ interface ResolvedEndpoint {
 	baseUrl: string;
 	apiKey?: string;
 	headers: Record<string, string>;
-	/** Whether the API key becomes an Authorization header (OpenAI-compatible APIs). */
-	authHeader: boolean;
+	/** Whether the API key becomes an Authorization header; absent keeps the saved setting (on for a list request). */
+	authHeader: boolean | undefined;
 }
 
 function resolveDraft(draft: RpcProviderDraft): ResolvedEndpoint {
@@ -105,29 +106,51 @@ function resolveDraft(draft: RpcProviderDraft): ResolvedEndpoint {
 	return { ...endpoint, apiKey: resolveConfigValueOrThrow(draft.apiKey, "API key") };
 }
 
-async function resolveProviderEndpoint(ctx: GuiContext, providerId: string): Promise<ResolvedEndpoint> {
+/** The key of an override: absent keeps the saved one, an empty string drops it. */
+function resolveOverrideApiKey(stored: string | undefined, override: string | undefined): string | undefined {
+	if (override === undefined) return stored;
+	if (override === "") return undefined;
+	return resolveConfigValueOrThrow(override, "API key");
+}
+
+/**
+ * The endpoint of a saved provider with overrides applied. The saved values include what models.json resolves,
+ * such as its header values and its API key, so a request overrides exactly the fields the client edited.
+ */
+async function resolveProviderEndpoint(
+	ctx: GuiContext,
+	providerId: string,
+	overrides?: RpcProviderOverrides,
+): Promise<ResolvedEndpoint> {
 	const provider = ctx.modelRuntime.getProvider(providerId);
 	if (!provider) throw new Error(`Unknown provider: ${providerId}`);
-	const api = provider.getModels()[0]?.api;
+	const api = overrides?.api ?? provider.getModels()[0]?.api;
 	if (api === undefined) throw new Error(`Provider ${providerId} does not declare a model API`);
 	const auth = await ctx.modelRuntime.getAuth(providerId);
-	if (!auth) throw new Error(`Provider ${providerId} has no configured credentials`);
-	const baseUrl = auth.auth.baseUrl ?? provider.baseUrl;
+	const apiKey = resolveOverrideApiKey(auth?.auth.apiKey, overrides?.apiKey);
+	if (auth === undefined && apiKey === undefined) {
+		throw new Error(`Provider ${providerId} has no configured credentials`);
+	}
+	const baseUrl = overrides?.baseUrl ?? auth?.auth.baseUrl ?? provider.baseUrl;
 	if (baseUrl === undefined) throw new Error(`Provider ${providerId} does not declare a base URL`);
+	if (!URL.canParse(baseUrl)) throw new Error(`Invalid base URL: ${baseUrl}`);
 	const endpoint: ResolvedEndpoint = {
 		api,
 		baseUrl,
-		headers: { ...(auth.auth.headers as Record<string, string> | undefined) },
-		authHeader: true,
+		headers: {
+			...((auth?.auth.headers as Record<string, string> | undefined) ?? {}),
+			...(resolveHeadersOrThrow(overrides?.headers, "Provider") ?? {}),
+		},
+		authHeader: overrides?.authHeader,
 	};
-	return auth.auth.apiKey === undefined ? endpoint : { ...endpoint, apiKey: auth.auth.apiKey };
+	return apiKey === undefined ? endpoint : { ...endpoint, apiKey };
 }
 
 /** Request headers of a model list: the API's own auth header plus any configured headers. */
 function listHeaders(endpoint: ResolvedEndpoint): Record<string, string> {
 	const headers: Record<string, string> = { Accept: "application/json", ...endpoint.headers };
 	const hasAuthorization = Object.keys(headers).some((name) => name.toLowerCase() === "authorization");
-	if (endpoint.apiKey !== undefined && !hasAuthorization && endpoint.authHeader) {
+	if (endpoint.apiKey !== undefined && !hasAuthorization && (endpoint.authHeader ?? true)) {
 		if (endpoint.api === "anthropic-messages") headers["x-api-key"] = endpoint.apiKey;
 		else if (endpoint.api === "google-generative-ai") headers["x-goog-api-key"] = endpoint.apiKey;
 		else headers.Authorization = `Bearer ${endpoint.apiKey}`;
@@ -351,14 +374,19 @@ async function fetchModels(api: string, endpoint: ResolvedEndpoint): Promise<Rpc
 	return { ok: true, endpoint: url, models };
 }
 
-/** Discover the models an endpoint serves, either from a configured provider or from a draft. */
+/** Discover the models an endpoint serves: a saved provider (with overrides), or an unsaved draft. */
 export async function fetchProviderModels(
 	ctx: GuiContext,
-	command: { provider?: string; draft?: RpcProviderDraft },
+	command: { provider?: string; draft?: RpcProviderDraft; overrides?: RpcProviderOverrides },
 ): Promise<RpcFetchModelsResult> {
-	if (command.draft) return await fetchModels(command.draft.api, resolveDraft(command.draft));
+	if (command.draft) {
+		if (command.overrides !== undefined) {
+			throw new Error("fetch_provider_models takes overrides with a saved provider, not with a draft");
+		}
+		return await fetchModels(command.draft.api, resolveDraft(command.draft));
+	}
 	if (command.provider === undefined) throw new Error("fetch_provider_models needs a provider or a draft");
-	const endpoint = await resolveProviderEndpoint(ctx, command.provider);
+	const endpoint = await resolveProviderEndpoint(ctx, command.provider, command.overrides);
 	return await fetchModels(endpoint.api, endpoint);
 }
 
@@ -421,6 +449,50 @@ function synthesizeModel(provider: string, modelId: string, api: string, baseUrl
 	};
 }
 
+/** A models.json model entry for a test request: the catalog values when nek knows the model, else a small default. */
+function testModelEntry(modelId: string, known: Model<Api> | undefined): Record<string, unknown> {
+	return {
+		id: modelId,
+		name: known?.name ?? modelId,
+		contextWindow: known?.contextWindow ?? 128_000,
+		maxTokens: known?.maxTokens ?? 4096,
+		reasoning: known?.reasoning ?? false,
+		input: known?.input ?? ["text"],
+		cost: known?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	};
+}
+
+/**
+ * Write a temporary models.json provider, load a throwaway runtime for it, and send one minimal request.
+ * `storedApiKey` is a credential of the temporary provider, for keys that must not be resolved a second time.
+ */
+async function testTemporaryProvider(options: {
+	provider: Record<string, unknown>;
+	storedApiKey?: string;
+	modelId: string;
+}): Promise<RpcTestProviderResult> {
+	const directory = mkdtempSync(join(tmpdir(), "nek-gui-test-"));
+	const modelsPath = join(directory, "models.json");
+	writeFileSync(modelsPath, JSON.stringify({ providers: { [DRAFT_PROVIDER_ID]: options.provider } }));
+	try {
+		const credentials =
+			options.storedApiKey === undefined
+				? AuthStorage.inMemory()
+				: AuthStorage.inMemory({ [DRAFT_PROVIDER_ID]: { type: "api_key", key: options.storedApiKey } });
+		const runtime = await ModelRuntime.create({
+			credentials,
+			modelsPath,
+			modelsStore: new InMemoryCodingAgentModelsStore(),
+			refreshOnCreate: false,
+		});
+		const model = runtime.getModel(DRAFT_PROVIDER_ID, options.modelId);
+		if (!model) return { ok: false, message: `Test endpoint did not produce model ${options.modelId}` };
+		return await runTest(runtime, model);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
+
 /** Test a model of a configured provider through the live runtime, so its auth and base URL apply. */
 async function testConfiguredProvider(
 	ctx: GuiContext,
@@ -444,49 +516,58 @@ async function testConfiguredProvider(
  */
 async function testDraft(draft: RpcProviderDraft, modelId: string): Promise<RpcTestProviderResult> {
 	if (!URL.canParse(draft.baseUrl)) throw new Error(`Invalid base URL: ${draft.baseUrl}`);
-	const directory = mkdtempSync(join(tmpdir(), "nek-gui-test-"));
-	const modelsPath = join(directory, "models.json");
 	const provider: Record<string, unknown> = {
 		name: "GUI test endpoint",
 		baseUrl: draft.baseUrl,
 		api: draft.api,
-		models: [
-			{
-				id: modelId,
-				name: modelId,
-				contextWindow: 128_000,
-				maxTokens: 4096,
-				reasoning: false,
-				input: ["text"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			},
-		],
+		models: [testModelEntry(modelId, undefined)],
 	};
 	if (draft.apiKey !== undefined && draft.apiKey !== "") provider.apiKey = draft.apiKey;
 	if (draft.headers !== undefined) provider.headers = draft.headers;
 	if (draft.authHeader !== undefined) provider.authHeader = draft.authHeader;
-	writeFileSync(modelsPath, JSON.stringify({ providers: { [DRAFT_PROVIDER_ID]: provider } }));
-	try {
-		const runtime = await ModelRuntime.create({
-			credentials: AuthStorage.inMemory(),
-			modelsPath,
-			modelsStore: new InMemoryCodingAgentModelsStore(),
-			refreshOnCreate: false,
-		});
-		const model = runtime.getModel(DRAFT_PROVIDER_ID, modelId);
-		if (!model) return { ok: false, message: `Draft endpoint did not produce model ${modelId}` };
-		return await runTest(runtime, model);
-	} finally {
-		rmSync(directory, { recursive: true, force: true });
-	}
+	return await testTemporaryProvider({ provider, modelId });
 }
 
-/** Send one minimal request to a provider or draft endpoint. */
+/**
+ * Test a saved provider with overrides: the merged endpoint becomes a throwaway models.json provider, so an edited
+ * base URL, API, header, or key is what the request sends. The saved key is already resolved, so it enters as a
+ * stored credential instead of a models.json value that would be read as `$ENV` or `!command` a second time.
+ */
+async function testProviderWithOverrides(
+	ctx: GuiContext,
+	providerId: string,
+	modelId: string,
+	overrides: RpcProviderOverrides,
+): Promise<RpcTestProviderResult> {
+	const endpoint = await resolveProviderEndpoint(ctx, providerId, overrides);
+	const provider: Record<string, unknown> = {
+		name: "GUI test endpoint",
+		baseUrl: endpoint.baseUrl,
+		api: endpoint.api,
+		headers: endpoint.headers,
+		models: [testModelEntry(modelId, ctx.modelRuntime.getModel(providerId, modelId))],
+	};
+	if (endpoint.authHeader !== undefined) provider.authHeader = endpoint.authHeader;
+	return await testTemporaryProvider({ provider, modelId, storedApiKey: endpoint.apiKey });
+}
+
+/** Send one minimal request to a configured provider, a saved provider with overrides, or a draft endpoint. */
 export async function testProvider(
 	ctx: GuiContext,
-	command: { modelId: string; provider?: string; draft?: RpcProviderDraft },
+	command: {
+		modelId: string;
+		provider?: string;
+		draft?: RpcProviderDraft;
+		overrides?: RpcProviderOverrides;
+	},
 ): Promise<RpcTestProviderResult> {
-	if (command.draft) return await testDraft(command.draft, command.modelId);
+	if (command.draft) {
+		if (command.overrides !== undefined) {
+			throw new Error("test_provider takes overrides with a saved provider, not with a draft");
+		}
+		return await testDraft(command.draft, command.modelId);
+	}
 	if (command.provider === undefined) throw new Error("test_provider needs a provider or a draft");
-	return await testConfiguredProvider(ctx, command.provider, command.modelId);
+	if (command.overrides === undefined) return await testConfiguredProvider(ctx, command.provider, command.modelId);
+	return await testProviderWithOverrides(ctx, command.provider, command.modelId, command.overrides);
 }

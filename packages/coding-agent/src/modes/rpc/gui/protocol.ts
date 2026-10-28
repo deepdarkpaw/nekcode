@@ -67,6 +67,18 @@ export interface RpcProviderDraft {
 	authHeader?: boolean;
 }
 
+/** Per-request edits of a saved provider: every field replaces the saved value, absent fields keep theirs. */
+export interface RpcProviderOverrides {
+	api?: RpcEndpointApi;
+	baseUrl?: string;
+	/** Literal, `$ENV`/`${ENV}`, or `!command`, resolved like a models.json value; `""` tests without a key. */
+	apiKey?: string;
+	/** Added to the saved headers, replacing entries of the same name. */
+	headers?: Record<string, string>;
+	/** Whether the key becomes an `Authorization` header; the saved provider's own setting applies when absent. */
+	authHeader?: boolean;
+}
+
 export type RpcGuiCommand =
 	// ---- runtime [session + control] ----
 	| { id?: string; type: "get_info" }
@@ -100,8 +112,23 @@ export type RpcGuiCommand =
 	| { id?: string; type: "auth_logout"; provider: string }
 	// ---- models [session + control] ----
 	| { id?: string; type: "get_model_catalog"; provider?: string; ids?: string[] }
-	| { id?: string; type: "fetch_provider_models"; provider?: string; draft?: RpcProviderDraft }
-	| { id?: string; type: "test_provider"; modelId: string; provider?: string; draft?: RpcProviderDraft }
+	| {
+			id?: string;
+			type: "fetch_provider_models";
+			provider?: string;
+			draft?: RpcProviderDraft;
+			/** Edits of the saved `provider` to test before saving them. */
+			overrides?: RpcProviderOverrides;
+	  }
+	| {
+			id?: string;
+			type: "test_provider";
+			modelId: string;
+			provider?: string;
+			draft?: RpcProviderDraft;
+			/** Edits of the saved `provider` to test before saving them. */
+			overrides?: RpcProviderOverrides;
+	  }
 	// ---- project trust [session + control] ----
 	| { id?: string; type: "get_project_trust"; cwd: string }
 	| { id?: string; type: "set_project_trust"; cwd: string; trusted: boolean }

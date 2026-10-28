@@ -1055,6 +1055,18 @@ List the models an endpoint serves, either from a configured provider or from a 
 
 `draft` has `api` (`openai-completions`, `openai-responses`, `anthropic-messages`, or `google-generative-ai`), `baseUrl`, optional `apiKey` (literal, `$ENV`, or `!command`), optional `headers`, and optional `authHeader`.
 
+A saved provider is asked for the same list by id, and `overrides` edits its configuration before the request, so a settings page can test edits before saving them:
+
+```json
+{
+  "type": "fetch_provider_models",
+  "provider": "my-endpoint",
+  "overrides": {"baseUrl": "https://staging.example.com/v1", "headers": {"X-Debug": "1"}}
+}
+```
+
+`overrides` has the same fields as a draft, all optional: `api`, `baseUrl`, `apiKey` (literal, `$ENV`, or `!command`; `""` sends no key), `headers` (added to the saved headers, replacing entries of the same name), and `authHeader`. Each field replaces the saved value, and absent fields keep it, so the request uses the saved provider's resolved API key and headers unless they are overridden. An unknown `provider` is a command error: `Unknown provider: <id>`. Passing `overrides` with `draft` is refused, because a draft carries its whole configuration already.
+
 The request matches what nek sends for that API: an OpenAI-compatible base URL is asked for `<base>/models` with a bearer token, an Anthropic base URL for `<base>/v1/models` with `x-api-key` and `anthropic-version`, and a Gemini base URL (which already carries its version) for `<base>/models` with `x-goog-api-key`. Discovery follows `after_id` (Anthropic) and `pageToken` (Gemini) pagination, up to 20 pages and 2000 models, within 15 seconds. The `httpProxy` setting and `$ENV`/`!command` keys resolve exactly as they do for real requests.
 
 Response data is `{"ok": true, "endpoint": "<url>", "models": [...]}` or `{"ok": false, "endpoint": "<url>", "status": 401, "message": "..."}`. A failed discovery is data, not a command error, so a client can map `401`, `403`, and `404` in its UI. Each model has `id`, optional `name`, `contextWindow`, `maxTokens`, `reasoning`, `thinkingLevels`, and `input`.
@@ -1068,6 +1080,17 @@ Send one minimal completion to verify an endpoint and model.
 ```
 
 Pass `draft` instead of `provider` to test an unsaved endpoint. The request uses the provider's resolved auth or the draft's configuration, with a 30 second timeout. Response data is `{"ok": true, "latencyMs": 812}` or `{"ok": false, "status": 401, "message": "..."}`.
+
+`overrides` works as it does for `fetch_provider_models`, so an edited base URL, header, or key can be tried before it is saved:
+
+```json
+{
+  "type": "test_provider",
+  "provider": "my-endpoint",
+  "modelId": "my-model",
+  "overrides": {"apiKey": "$STAGING_KEY"}
+}
+```
 
 ### get_project_trust
 
