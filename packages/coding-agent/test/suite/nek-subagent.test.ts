@@ -22,7 +22,7 @@ import * as childSession from "../../src/extensions/nek/services/child-session.t
 import { SubagentRegistry } from "../../src/extensions/nek/services/subagent-registry.ts";
 import { createSubagentToolDefinition } from "../../src/extensions/nek/tools/subagent.ts";
 import type { SubagentRecord, SubagentToolData } from "../../src/extensions/nek/types.ts";
-import { createHarness, getMessageText, type Harness, type HarnessOptions } from "./harness.ts";
+import { createHarness, createTestUiContext, getMessageText, type Harness, type HarnessOptions } from "./harness.ts";
 
 type Reply = (
 	context: { messages: Message[] },
@@ -220,6 +220,9 @@ describe("nek subagents", () => {
 
 	it("foreground subagent returns the child's final text without the child's tool output", async () => {
 		const { harness, router } = await createNekHarness();
+		const rpcEvents: string[] = [];
+		harness.session.resourceLoader.getExtensions().runtime.emitRpcEvent = (name) => rpcEvents.push(name);
+		await harness.session.bindExtensions({ mode: "rpc", uiContext: createTestUiContext() });
 		writeFileSync(join(harness.tempDir, "secret-marker.txt"), "x");
 		router.parent.push(
 			reply(subagentCall({ subagent_type: "explorer" })),
@@ -243,6 +246,7 @@ describe("nek subagents", () => {
 			model: `${harness.getModel().provider}/${harness.getModel().id}`,
 		});
 		expect(subagentNotices(harness)).toHaveLength(0);
+		expect(rpcEvents).toContain("nek.subagent");
 	});
 
 	it("defaults to a read-only explorer inheriting the parent's model and thinking", async () => {
