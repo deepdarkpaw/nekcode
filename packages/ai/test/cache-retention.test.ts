@@ -505,7 +505,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 		});
 
 		it.each([
-			MODELS.opencode["deepseek-v4-flash"],
+			MODELS.opencode["deepseek-v4.1-flash"],
 			MODELS.opencode["deepseek-v4-pro"],
 			MODELS.opencode["kimi-k2.5"],
 			MODELS.opencode["kimi-k2.6"],
@@ -532,10 +532,12 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 				// Expected to fail
 			}
 
-			expect(model.compat?.supportsLongCacheRetention).toBe(false);
+			const supportsLongCacheRetention = model.compat?.supportsLongCacheRetention !== false;
 			expect(capturedPayload).toBeDefined();
-			expect(capturedPayload?.prompt_cache_key).toBeUndefined();
-			expect(capturedPayload?.prompt_cache_retention).toBeUndefined();
+			expect(capturedPayload?.prompt_cache_key).toBe(
+				supportsLongCacheRetention ? "session-opencode-long-cache-unsupported" : undefined,
+			);
+			expect(capturedPayload?.prompt_cache_retention).toBe(supportsLongCacheRetention ? "24h" : undefined);
 		});
 
 		it.each([MODELS.cerebras["gpt-oss-120b"], MODELS.cerebras["qwen-3.8-27b"]] as const)(
