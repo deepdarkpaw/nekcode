@@ -27,6 +27,12 @@ describe("RPC extension surfaces", () => {
 		await expect(
 			harness.session.extensionRunner.callRpcHandler("nek.get_subagent_transcript", { id: "missing" }),
 		).rejects.toThrow("Unknown subagent");
+		await expect(
+			harness.session.extensionRunner.callRpcHandler("nek.stop_subagent", { id: "missing" }),
+		).rejects.toThrow("Unknown subagent");
+		await expect(
+			harness.session.extensionRunner.callRpcHandler("nek.get_plan", { path: "missing-plan.md" }),
+		).rejects.toThrow("Unknown plan path");
 		harness.cleanup();
 	});
 
@@ -70,6 +76,14 @@ describe("RPC extension surfaces", () => {
 		expect(status).toMatchObject({ servers: [expect.objectContaining({ name: "docs", transport: "stdio" })] });
 		const reconnected = await harness.session.extensionRunner.callRpcHandler("mcp.reconnect", { name: "docs" });
 		expect(reconnected).toMatchObject({ server: { name: "docs", state: "connected", tools: [{ name: "search" }] } });
+		const tested = await harness.session.extensionRunner.callRpcHandler("mcp.test", { name: "docs" });
+		expect(tested).toMatchObject({ ok: true, tools: [{ name: "search" }] });
+		const reconnectedAgain = await harness.session.extensionRunner.callRpcHandler("mcp.reconnect", { name: "docs" });
+		expect(reconnectedAgain).toMatchObject({ server: { name: "docs" } });
+		const loggedIn = await harness.session.extensionRunner.callRpcHandler("mcp.login", { name: "docs" });
+		expect(loggedIn).toMatchObject({ server: { name: "docs" } });
+		const loggedOut = await harness.session.extensionRunner.callRpcHandler("mcp.logout", { name: "docs" });
+		expect(loggedOut).toMatchObject({ server: { name: "docs" } });
 		expect(records).toContain("mcp.status_changed");
 		harness.cleanup();
 	});

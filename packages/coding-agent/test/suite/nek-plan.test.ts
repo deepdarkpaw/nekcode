@@ -561,7 +561,13 @@ describe("nek plan mode", () => {
 		expect(harness.faux.state.callCount).toBe(1);
 		await harness.session.bindExtensions({
 			mode: "rpc",
-			uiContext: { ...createUiContext(record), select: async () => "Redis" },
+			uiContext: {
+				...createUiContext(record),
+				structured: async <T>(kind: string) =>
+					(kind === "nek.ask_question"
+						? { answers: [{ questionId: "store", selected: ["redis"] }] }
+						: { action: "implement" }) as T,
+			},
 		});
 		harness.setResponses([
 			(context) => {
@@ -586,7 +592,7 @@ describe("nek plan mode", () => {
 			answers: [{ questionId: "store", optionIds: ["redis"] }],
 		});
 		expect(currentState(harness)).toMatchObject({
-			mode: "plan",
+			mode: "agent",
 			planStatus: "ready",
 			activePlan: currentPlan(harness)?.path,
 			plans: expect.arrayContaining([expect.objectContaining({ markdown: "# Cache\n\nUse Redis." })]),
