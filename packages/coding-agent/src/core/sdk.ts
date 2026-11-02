@@ -89,6 +89,8 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Whether an interrupted durable run resumes when the session opens. Defaults to true for SDK callers. */
+	resumeInterruptedWork?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -444,6 +446,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		resumeInterruptedWork: options.resumeInterruptedWork,
 	});
 	await session.waitForReadState();
 

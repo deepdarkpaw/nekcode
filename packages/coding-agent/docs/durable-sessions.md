@@ -1,25 +1,20 @@
-# Durable Sessions and Crash Recovery
+# Durable Sessions and Recovery
 
-nekcode runs every turn on a durable engine ([`@earendil-works/pi-durable`](../../durable/README.md)). Each step of a turn is committed to the session database before the next one starts: the user input, streamed text, each tool call and its result, queued messages, compactions. If the process dies (crash, `kill`, closed terminal, power loss), reopening the session continues the interrupted turn instead of losing it.
+nekcode runs every turn on a durable engine ([`@earendil-works/pi-durable`](../../durable/README.md)). Each step of a turn is committed to the session database before the next one starts: the user input, streamed text, each tool call and its result, queued messages, and compactions.
 
-## Resume an interrupted turn
+## CLI restart policy
 
-Reopen the session as usual, for example with `nek -c` or `/resume`. The interrupted work continues by itself:
+Closing the CLI terminates the active work. When `nek -c`, `--resume`, or `/resume` opens a session, it restores the transcript but does **not** automatically send another model request. Any run left behind by a killed process or closed terminal is aborted during startup; queued steering/follow-up inputs and unfinished compactions are discarded. Send a new message to start a new run.
 
-| Interrupted during | After reopening |
-|---|---|
-| Model streaming | The partial answer stays in the history as an aborted answer, and the request is sent again. |
-| A read-only tool (`read`, `grep`, `find`, `ls`, `ast_grep`, `web_search`) | The tool runs again. |
-| Any other tool (`bash`, `edit`, `write`, MCP and extension tools) | The call's result keeps its partial output and says it was interrupted, and the turn continues; the model decides whether to run it again. The tool is not rerun automatically, because its side effects may already have happened. |
-| A foreground subagent | The same child session is reopened and continues its own interrupted turn; its result returns to the parent. |
-| A question or mode-switch dialog | The dialog opens again. |
-| Queued steering or follow-up messages | They are still queued and are delivered in order. |
-| `/compact` | The compaction runs again. |
-| An `agent_before_settle` extension handler | Settlement runs again. |
+This policy prevents a terminal restart from silently repeating model requests or tools. SDK callers retain durable crash recovery by default (`resumeInterruptedWork: true`); the CLI passes `resumeInterruptedWork: false`.
 
-Interrupted work resumes after extensions receive `session_start`, so extension state is restored before a replayed tool runs.
+After a CLI restart:
 
-Extension tools declare whether they may run twice with `replay: "safe"` (see [Extensions](extensions.md#custom-tools)). A replay-safe tool can keep values for its rerun with `ctx.getToolCallMemo(toolCallId)`: values stored with `set()` are returned by `get()` when the same call runs again after a crash. The subagent tool uses this to find the child it started.
+- A partial model answer remains in history as an aborted answer.
+- An interrupted tool is not run again automatically.
+- The session is idle and does not show `Working` until a new prompt is submitted.
+
+Extension tools can still declare whether they may run twice with `replay: "safe"` (see [Extensions](extensions.md#custom-tools)) for SDK callers that opt into durable crash recovery.
 
 ## Storage
 

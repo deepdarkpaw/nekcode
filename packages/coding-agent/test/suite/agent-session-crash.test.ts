@@ -11,7 +11,7 @@ import { emitSessionShutdownEvent } from "../../src/core/extensions/runner.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/config.ts";
 import { createNekExtension } from "../../src/extensions/nek/index.ts";
-import { testTool, textResult } from "../durable/support.ts";
+import { testTool, textResult, untilAborted } from "../durable/support.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 const sourceResolverUrl = pathToFileURL(
@@ -100,6 +100,114 @@ afterEach(async () => {
 		rmSync(harness.tempDir, { recursive: true, force: true });
 	}
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
+
+describe("CLI session reopen without automatic recovery", { timeout: 120_000 }, () => {
+	it.each([
+		["stream", "partial"],
+		["safe-tool", "tool"],
+		["unsafe-tool", "tool"],
+		["queue", "queued"],
+		["compact", "summarizing"],
+		["before-settle", "before-settle"],
+		["trigger", "custom"],
+		["subagent", "child-request"],
+	])("opens idle after a process is killed during %s", async (scenario, mark) => {
+		const path = sessionPath();
+		await killChild(await startChild(path, scenario, mark));
+		const toolRuns = vi.fn(async () => textResult("must not replay"));
+		const settlement = vi.fn(() => ({ continue: true }));
+		const harness = await reopen(path, {
+			resumeInterruptedWork: false,
+			tools: [testTool("probe_safe", toolRuns, { replay: "safe" }), testTool("probe_unsafe", toolRuns)],
+			responses: [fauxAssistantMessage("only after new input")],
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_before_settle", settlement);
+				},
+			],
+		});
+		await harness.session.bindExtensions({ mode: "tui" });
+		await withTimeout(harness.session.waitForIdle(), 30_000, "discard interrupted work");
+
+		expect(harness.faux.state.callCount).toBe(0);
+		expect(toolRuns).not.toHaveBeenCalled();
+		expect(settlement).not.toHaveBeenCalled();
+		expect(harness.session.isIdle).toBe(true);
+		expect(harness.session.isStreaming).toBe(false);
+		expect(harness.session.isCompacting).toBe(false);
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.eventsOfType("agent_start")).toEqual([]);
+		if (scenario === "stream") {
+			const partial = harness.session.messages.findLast((message) => message.role === "assistant");
+			expect(partial).toMatchObject({ stopReason: "aborted" });
+			expect(JSON.stringify(partial?.content)).toContain("word");
+		}
+		if (scenario === "queue") {
+			expect(JSON.stringify(harness.session.messages)).not.toMatch(/steer-1|follow-1/);
+		}
+
+		// Cancellation is persisted: even a later SDK open with recovery enabled cannot restart the old work.
+		await harness.session.dispose();
+		const reopened = await reopen(path, { responses: [fauxAssistantMessage("new response")] });
+		await reopened.session.bindExtensions({ mode: "print" });
+		await reopened.session.waitForIdle();
+		expect(reopened.faux.state.callCount).toBe(0);
+		await reopened.session.prompt("new request");
+		expect(reopened.faux.state.callCount).toBe(1);
+		expect(reopened.session.getLastAssistantText()).toBe("new response");
+	});
+
+	it("also remains idle after a clean shutdown during a response", async () => {
+		const path = sessionPath();
+		const first = await reopen(path, {
+			resumeInterruptedWork: false,
+			responses: [(_context, options) => untilAborted(options?.signal)],
+		});
+		const prompt = first.session.prompt("start");
+		await vi.waitFor(() => expect(first.faux.state.callCount).toBe(1));
+		await first.session.dispose();
+		await prompt;
+
+		const reopened = await reopen(path, {
+			resumeInterruptedWork: false,
+			responses: [fauxAssistantMessage("must not resume")],
+		});
+		await reopened.session.bindExtensions({ mode: "tui" });
+		await reopened.session.waitForIdle();
+		expect(reopened.faux.state.callCount).toBe(0);
+		expect(reopened.session.isIdle).toBe(true);
+		expect(reopened.session.messages.findLast((message) => message.role === "assistant")).toMatchObject({
+			stopReason: "aborted",
+		});
+	});
+
+	it("accepts explicit input after a killed run without first binding extensions", async () => {
+		const path = sessionPath();
+		await killChild(await startChild(path, "queue", "queued"));
+		const harness = await reopen(path, {
+			resumeInterruptedWork: false,
+			responses: [fauxAssistantMessage("new response")],
+		});
+		await harness.session.prompt("explicit new input");
+		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.session.getLastAssistantText()).toBe("new response");
+		expect(JSON.stringify(harness.session.messages)).not.toMatch(/steer-1|follow-1/);
+		expect(harness.session.isIdle).toBe(true);
+	});
+
+	it("accepts the first prompt and later prompts with recovery disabled", async () => {
+		const harness = await reopen(sessionPath(), {
+			resumeInterruptedWork: false,
+			responses: [fauxAssistantMessage("first"), fauxAssistantMessage("second")],
+		});
+		await harness.session.prompt("start");
+		await harness.session.bindExtensions({ mode: "tui" });
+		await harness.session.prompt("next");
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.session.getLastAssistantText()).toBe("second");
+		expect(harness.session.isIdle).toBe(true);
+	});
 });
 
 describe("AgentSession crash recovery through SessionManager reopen", { timeout: 120_000 }, () => {

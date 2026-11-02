@@ -122,6 +122,8 @@ export interface HarnessOptions {
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
 	withConfiguredAuth?: boolean;
 	modelsJson?: Record<string, unknown>;
+	/** Whether an interrupted durable run resumes when the harness opens its session. */
+	resumeInterruptedWork?: boolean;
 	sessionManager?: SessionManager;
 }
 
@@ -225,6 +227,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		allowedToolNames: options.allowedToolNames,
 		excludedToolNames: options.excludedToolNames,
 		extensionRunnerRef,
+		resumeInterruptedWork: options.resumeInterruptedWork,
 	});
 
 	const events: AgentSessionEvent[] = [];

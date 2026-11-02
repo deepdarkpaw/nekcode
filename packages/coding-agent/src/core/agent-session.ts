@@ -306,6 +306,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Whether an interrupted durable run should resume when this session opens. Defaults to true for SDK callers. */
+	resumeInterruptedWork?: boolean;
 }
 
 export interface ExtensionBindings {
@@ -396,11 +398,13 @@ export class AgentSession {
 	readonly settingsManager: SettingsManager;
 	/**
 	 * Durable engine, opened asynchronously because construction remains API-compatible and synchronous. A stored
-	 * session opens it at construction so interrupted work resumes; a new session opens it on first use, so a session
+	 * session opens it at construction to handle interrupted work; a new session opens it on first use, so a session
 	 * nobody wrote to leaves no file behind (as the JSONL format did).
 	 */
 	private _enginePromise?: Promise<DurableEngine>;
 	private _engine?: DurableEngine;
+	/** CLI sessions discard work left by a prior process; SDK callers retain durable recovery by default. */
+	private readonly _resumeInterruptedWork: boolean;
 	/** Deliveries started by void extension APIs (`pi.sendMessage`, `pi.sendUserMessage`) that idle waits must await. */
 	private readonly _pendingDeliveries = new Set<Promise<unknown>>();
 	/** Admission of those deliveries (written, or submitted); extension binding awaits these, not whole runs. */
@@ -551,6 +555,7 @@ export class AgentSession {
 		this._modelRuntime = config.modelRuntime;
 		this._convertToLlm = config.convertToLlm;
 		this._cacheWarmer = config.cacheWarmer;
+		this._resumeInterruptedWork = config.resumeInterruptedWork ?? true;
 		if (this._cacheWarmer) {
 			this._cacheWarmer.onWarmed = (entry) => this._emit({ type: "entry_appended", entry });
 		}
@@ -575,7 +580,7 @@ export class AgentSession {
 		// records (tools loaded by tool_search, for example); explicit tool options win over the transcript.
 		if (this._usesDefaultTools || this._initialActiveToolNames === undefined) this._restoreToolsFromTranscript();
 		const sessionFile = this.sessionManager.getSessionFile();
-		// Existing sessions open at once; their interrupted work resumes once extensions are bound (see _engineOrThrow).
+		// Existing sessions open at once: CLI cancels interrupted work; SDK recovery waits for extension binding.
 		if (sessionFile === undefined || existsSync(sessionFile)) {
 			this._enginePromise = this._openDurableEngine();
 			this._enginePromise.catch(() => {});
@@ -785,7 +790,7 @@ export class AgentSession {
 			thinkingLevel: this.thinkingLevel,
 			// Pi's automatic compaction runs in this session (post-run, pre-prompt, before a run's next request).
 			autoCompaction: false,
-			// Interrupted work resumes in _engineOrThrow, after session_start when extensions are bound.
+			// Keep scheduling paused until startup cancellation or SDK recovery after session_start.
 			resume: false,
 			hooks,
 			// A configured compaction.model follows this session's auth rules for summaries (see _getCompactionSummarizer).
@@ -794,14 +799,26 @@ export class AgentSession {
 			},
 			onReport: report,
 		});
+		if (!this._resumeInterruptedWork) {
+			try {
+				// Finish cancellation before host event handlers can request a continuation or new input is admitted.
+				await engine.discardInterruptedWork();
+				await this.sessionManager.refresh();
+				this._refreshFinalizedContext();
+			} catch (error) {
+				await engine.close();
+				throw error;
+			}
+		}
 		this._engine = engine;
 		engine.subscribe((event) => this._handleDurableEvent(event));
 		return engine;
 	}
 
-	/** Wait for transcript restoration without starting interrupted durable work. */
-	waitForReadState(): Promise<void> {
-		return this._readStateReady;
+	/** Wait for transcript restoration and CLI startup cancellation, without resuming interrupted work. */
+	async waitForReadState(): Promise<void> {
+		await this._readStateReady;
+		if (!this._resumeInterruptedWork) await this._enginePromise;
 	}
 
 	/** Rebuild from the current branch, after any earlier restoration has finished. */
@@ -811,12 +828,14 @@ export class AgentSession {
 		return this._readStateReady;
 	}
 
-	/** Resume the engine's interrupted work, then the host's: a pending settlement or manual compaction. */
+	/** Start scheduling; only SDK sessions that allow recovery resume the host's pending work. */
 	private async _resumeEngine(engine: DurableEngine): Promise<DurableEngine> {
 		await this._readStateReady;
 		engine.resume();
-		await this._resumeSettlement(engine);
-		await this._resumeManualCompaction(engine);
+		if (this._resumeInterruptedWork) {
+			await this._resumeSettlement(engine);
+			await this._resumeManualCompaction(engine);
+		}
 		return engine;
 	}
 
@@ -836,8 +855,8 @@ export class AgentSession {
 	}
 
 	/**
-	 * The engine, opened and resumed. The first use resumes interrupted work: binding extensions (after session_start)
-	 * or any operation on the session, so replayed extension tools run with their extension's state restored.
+	 * The engine, opened and prepared. The first use either resumes interrupted work or discards it according to the
+	 * session's startup policy, after session_start has restored extension state.
 	 */
 	private _engineOrThrow(): Promise<DurableEngine> {
 		if (this._engineReady !== undefined) return this._engineReady;
@@ -3496,7 +3515,7 @@ export class AgentSession {
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
-		await this._readStateReady;
+		await this.waitForReadState();
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		// session_start handlers may send messages through void APIs; they are written before binding completes.
 		await this._settleAdmissions();

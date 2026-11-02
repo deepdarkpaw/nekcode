@@ -448,6 +448,25 @@ export class DurableEngine {
 		await this.#drain();
 	}
 
+	/**
+	 * Cancel work left by the previous process before enabling scheduling. Unlike `Conversation.abort()`, this marks
+	 * every task (including background work) before any task can run, so even replay-safe tools cannot execute again.
+	 * Call only on a newly opened engine, before subscribing host lifecycle handlers or admitting new input.
+	 */
+	async discardInterruptedWork(): Promise<void> {
+		if (this.#resumed) throw new Error("Cannot discard interrupted work after the engine resumed");
+		const context = BACKGROUND_CONTEXT;
+		const inspection = await this.harness.inspect(context);
+		for (const task of inspection.tasks) await this.harness.abortTask(task.record.id, context);
+		for (const submission of inspection.submissions) {
+			if (submission.status === "queued") await this.harness.abortSubmission(submission.id, context);
+		}
+		await this.finishSettlement([]);
+		await this.clearCompactionPending();
+		this.resume();
+		await this.waitForIdle();
+	}
+
 	/** Resolve when the conversation and every resumed background task are idle, with all events delivered. */
 	async waitForIdle(): Promise<void> {
 		for (;;) {
