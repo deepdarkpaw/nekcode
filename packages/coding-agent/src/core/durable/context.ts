@@ -1,6 +1,13 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Message, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
-import { CompactionEntry, type ContextView, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
+import type { Message } from "@earendil-works/pi-ai";
+import {
+	CompactionEntry,
+	type ContextView,
+	type EntryId,
+	type EntryRecord,
+	leadWithSystemBy,
+	orderToolResultsBy,
+} from "@earendil-works/pi-durable";
 import { type CompactionRecord, compactionDetails, compactionSummaryText, storedAgentMessage } from "./entries.ts";
 
 /**
@@ -17,9 +24,6 @@ export type AgentContext = {
 	/** The model messages `messages` stand for, in the same order as durable's model context. */
 	readonly llm: Message[];
 };
-
-/** Text durable puts in a tool result it synthesizes for a call whose result is missing (durable `context.ts`). */
-const MISSING_RESULT_TEXT = "Tool result unavailable: history ends before this call completed.";
 
 /**
  * Rebuild pi messages for a durable context, entry by entry, through `cutoff` when given.
@@ -38,7 +42,11 @@ export function agentContext(view: ContextView, records: readonly CompactionReco
 		if (cutoff !== undefined && entry.id > cutoff) return;
 		items.push(...entryItems(entry, view.contributions[index] ?? [], records));
 	});
-	const ordered = leadWithSystem(orderToolResults(items));
+	const messageOf = (item: ContextItem) => item.llm;
+	const ordered = leadWithSystemBy(
+		orderToolResultsBy(items, messageOf, (llm) => ({ agent: llm, llm })),
+		messageOf,
+	);
 	return {
 		messages: ordered.map((item) => item.agent),
 		llm: ordered.flatMap((item) => (item.llm === undefined ? [] : [item.llm])),
@@ -86,59 +94,6 @@ function entryItems(
 /** Pi lists these messages in context although they never reach the model. */
 function isContextOnly(message: AgentMessage): boolean {
 	return message.role === "bashExecution" && message.excludeFromContext === true;
-}
-
-/** Durable's `orderToolResults()` applied to items keyed by their model message. */
-function orderToolResults(items: readonly ContextItem[]): ContextItem[] {
-	const ordered: ContextItem[] = [];
-	for (let index = 0; index < items.length; index++) {
-		const item = items[index]!;
-		const message = item.llm;
-		if (message?.role === "toolResult") continue;
-		ordered.push(item);
-		if (message?.role !== "assistant") continue;
-		const calls = message.content.filter((content): content is ToolCall => content.type === "toolCall");
-		if (calls.length === 0) continue;
-		const results = new Map<string, ContextItem>();
-		for (let next = index + 1; next < items.length && items[next]!.llm?.role !== "assistant"; next++) {
-			const candidate = items[next]!;
-			if (candidate.llm?.role === "toolResult" && !results.has(candidate.llm.toolCallId)) {
-				results.set(candidate.llm.toolCallId, candidate);
-			}
-		}
-		for (const call of calls) {
-			const result = results.get(call.id);
-			if (result !== undefined) ordered.push(result);
-			else {
-				const missing = missingResult(call, message.timestamp);
-				ordered.push({ agent: missing, llm: missing });
-			}
-		}
-	}
-	return ordered;
-}
-
-/**
- * Durable's `leadWithSystem()` applied to items keyed by their model message: a system message that only user
- * messages precede moves to the front (upstream earendil-works/pi#10542). Items without a model message do not count.
- */
-function leadWithSystem(items: ContextItem[]): ContextItem[] {
-	const index = items.findIndex((item) => item.llm !== undefined && item.llm.role !== "user");
-	if (index < 0 || items[index]!.llm?.role !== "system") return items;
-	if (!items.slice(0, index).some((item) => item.llm !== undefined)) return items;
-	return [items[index]!, ...items.slice(0, index), ...items.slice(index + 1)];
-}
-
-function missingResult(call: ToolCall, timestamp: number): ToolResultMessage {
-	return {
-		role: "toolResult",
-		toolCallId: call.id,
-		toolName: call.name,
-		content: [{ type: "text", text: MISSING_RESULT_TEXT }],
-		isError: true,
-		details: { reason: "missing_result" },
-		timestamp,
-	};
 }
 
 /**

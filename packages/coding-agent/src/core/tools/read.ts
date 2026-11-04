@@ -269,7 +269,7 @@ export function createReadToolDefinition(
 				const allLines = textContent.split("\n");
 				const timestamp = ops.stat ? (await ops.stat(absolutePath)).mtimeMs : Date.now();
 				const outline =
-					offset === undefined && limit === undefined
+					offset === undefined && limit === undefined && textContent.length > 10_000
 						? await buildReadOutline(absolutePath, textContent, {
 								cacheKey: `${absolutePath}:${timestamp}:${textContent.length}`,
 							})

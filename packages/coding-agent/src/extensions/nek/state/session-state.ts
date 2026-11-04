@@ -74,7 +74,8 @@ export function replayBranch(entries: readonly SessionEntry[]): NekSessionState 
 	return state;
 }
 
-function applyPlanArtifact(state: NekSessionState, artifact: PlanData): void {
+/** Apply an owned artifact snapshot identically during live updates and branch replay; no IO or notifications. */
+export function applyPlanArtifact(state: NekSessionState, artifact: PlanData): void {
 	const snapshot = clonePlanData(artifact);
 	const index = state.plans.findIndex((item) => item.plan.path === snapshot.plan.path);
 	state.plans =

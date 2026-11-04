@@ -226,7 +226,7 @@ async function* createUnfinishedToolCallEvents(): AsyncIterable<ResponseStreamEv
 }
 
 // llama.cpp omits output_index from every event and sends both done events after all deltas.
-async function* createToolCallsWithoutOutputIndexEvents(): AsyncIterable<ResponseStreamEvent> {
+async function* createToolCallsWithoutOutputIndexEvents(outputIndex?: number): AsyncIterable<ResponseStreamEvent> {
 	const call = (n: string) => ({ type: "function_call", id: `fc_${n}`, call_id: `call_${n}`, name: "bash" });
 	const events = [
 		{ type: "response.output_item.added", item: { ...call("a"), arguments: "" } },
@@ -237,7 +237,7 @@ async function* createToolCallsWithoutOutputIndexEvents(): AsyncIterable<Respons
 		{ type: "response.output_item.done", item: { ...call("b"), arguments: '{"command":"echo b"}' } },
 		{ type: "response.completed", response: { id: "resp_no_output_index", status: "completed" } },
 	];
-	for (const event of events) yield event as unknown as ResponseStreamEvent;
+	for (const event of events) yield { ...event, output_index: outputIndex } as unknown as ResponseStreamEvent;
 }
 
 describe("OpenAI Responses terminal event handling", () => {
@@ -266,18 +266,23 @@ describe("OpenAI Responses terminal event handling", () => {
 	});
 
 	// https://github.com/earendil-works/pi/issues/9974
-	it("rejects parallel tool calls without output_index instead of running mixed-up calls", async () => {
-		const model = createModel();
+	it.each([undefined, 0])(
+		"rejects parallel tool calls with reused output_index=%s before mixing arguments",
+		async (outputIndex) => {
+			const model = createModel();
 
-		await expect(
-			processResponsesStream(
-				createToolCallsWithoutOutputIndexEvents(),
-				createOutput(model),
-				new AssistantMessageEventStream(),
-				model,
-			),
-		).rejects.toThrow("OpenAI Responses stream completed with an unfinished tool call: bash (call_a|fc_a)");
-	});
+			await expect(
+				processResponsesStream(
+					createToolCallsWithoutOutputIndexEvents(outputIndex),
+					createOutput(model),
+					new AssistantMessageEventStream(),
+					model,
+				),
+			).rejects.toThrow(
+				`OpenAI Responses stream reused output_index ${outputIndex} before the previous item completed`,
+			);
+		},
+	);
 
 	it("forwards parsed provider stream events in order", async () => {
 		const model = createModel();

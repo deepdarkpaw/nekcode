@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSy
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { getEffortThinkingLevelMap, type ModelsDevReasoningOption } from "./models-dev-reasoning-options.ts";
+import { getOpenCodeBaseUrl, OPENCODE_BASE_PATHS, refreshOpenCodeModelData } from "./opencode-endpoints.ts";
 import { buildOpenRouterCatalog, type OpenRouterCatalog, type OpenRouterModelListItem } from "./openrouter-catalog.ts";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
@@ -52,8 +53,10 @@ function readGeneratorOptions(args: string[]): {
 	jsonOnly: boolean;
 	jsonOutputDir: string | undefined;
 	pretty: boolean;
+	refreshOpenCodeEndpoints: boolean;
 } {
 	let strict = false;
+	let refreshOpenCodeEndpoints = false;
 	let dataOnly = false;
 	let jsonOnly = false;
 	let jsonOutputDir: string | undefined;
@@ -61,6 +64,10 @@ function readGeneratorOptions(args: string[]): {
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
+		if (arg === "--refresh-opencode-endpoints") {
+			refreshOpenCodeEndpoints = true;
+			continue;
+		}
 		if (arg === "--strict") {
 			strict = true;
 			continue;
@@ -88,7 +95,7 @@ function readGeneratorOptions(args: string[]): {
 
 	if (jsonOnly && !jsonOutputDir) throw new Error("--json-only requires --json-output");
 	if (dataOnly && (jsonOnly || jsonOutputDir)) throw new Error("--data-only cannot be combined with JSON catalog output");
-	return { strict, dataOnly, jsonOnly, jsonOutputDir, pretty };
+	return { strict, dataOnly, jsonOnly, jsonOutputDir, pretty, refreshOpenCodeEndpoints };
 }
 
 const generatorOptions = readGeneratorOptions(process.argv.slice(2));
@@ -465,6 +472,7 @@ const XAI_RESPONSES_COMPAT: OpenAIResponsesCompat = {
 
 const OPENCODE_OPENAI_COMPLETIONS_LONG_CACHE_RETENTION_UNSUPPORTED_MODELS = new Set([
 	"opencode:deepseek-v4-flash",
+	"opencode:deepseek-v4.1-flash",
 	"opencode:deepseek-v4-pro",
 	"opencode:kimi-k2.5",
 	"opencode:kimi-k2.6",
@@ -2177,8 +2185,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		// - @ai-sdk/google → google-generative-ai
 		// - null/undefined/@ai-sdk/openai-compatible → openai-completions
 		const opencodeVariants = [
-			{ key: "opencode", provider: "opencode", basePath: "https://opencode.ai/zen" },
-			{ key: "opencode-go", provider: "opencode-go", basePath: "https://opencode.ai/zen/go" },
+			{ key: "opencode", provider: "opencode", basePath: OPENCODE_BASE_PATHS.opencode },
+			{ key: "opencode-go", provider: "opencode-go", basePath: OPENCODE_BASE_PATHS["opencode-go"] },
 		] as const;
 
 		for (const variant of opencodeVariants) {
@@ -2196,23 +2204,23 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 				if (npm === "@ai-sdk/openai") {
 					api = "openai-responses";
-					baseUrl = `${variant.basePath}/v1`;
+					baseUrl = getOpenCodeBaseUrl(variant.basePath, api);
 					compat = { sessionAffinityFormat: "openai-nosession" };
 				} else if (npm === "@ai-sdk/anthropic") {
 					api = "anthropic-messages";
 					// Anthropic SDK appends /v1/messages to baseURL
-					baseUrl = variant.basePath;
+					baseUrl = getOpenCodeBaseUrl(variant.basePath, api);
 				} else if (npm === "@ai-sdk/google") {
 					api = "google-generative-ai";
-					baseUrl = `${variant.basePath}/v1`;
+					baseUrl = getOpenCodeBaseUrl(variant.basePath, api);
 				} else if (npm === "@ai-sdk/alibaba") {
 					api = "openai-completions";
-					baseUrl = `${variant.basePath}/v1`;
+					baseUrl = getOpenCodeBaseUrl(variant.basePath, api);
 					compat = { cacheControlFormat: "anthropic" };
 				} else {
 					// null, undefined, or @ai-sdk/openai-compatible
 					api = "openai-completions";
-					baseUrl = `${variant.basePath}/v1`;
+					baseUrl = getOpenCodeBaseUrl(variant.basePath, api);
 				}
 
 				if (variant.provider === "opencode" && modelId === "grok-build-0.1") {
@@ -2233,13 +2241,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				// Switch them to openai-completions so requests use Bearer auth
 				// and the standard /v1/chat/completions endpoint.
 				if (variant.provider === "opencode-go") {
-					if (modelId === "minimax-m2.7") {
-						api = "openai-completions";
-						baseUrl = `${variant.basePath}/v1`;
-					}
 					if (modelId === "qwen3.5-plus" || modelId === "qwen3.6-plus") {
 						api = "openai-completions";
-						baseUrl = `${variant.basePath}/v1`;
+						baseUrl = getOpenCodeBaseUrl(variant.basePath, api);
 						// Qwen/DashScope uses enable_thinking at the top level.
 						compat = { ...(compat ?? {}), thinkingFormat: "qwen" };
 					}
@@ -2681,6 +2685,10 @@ const CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS: ClassifierModel<"cloudflare-worke
 ];
 
 async function generateModels() {
+	if (generatorOptions.refreshOpenCodeEndpoints) {
+		refreshOpenCodeModelData(packageRoot);
+		return;
+	}
 	// Fetch models from all upstream catalogs.
 	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras, and others
 	// OpenRouter: its tool-capable routed catalog

@@ -406,6 +406,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 	}
 
+	protected override getExitRestorePrefix(): string {
+		const prefix = super.getExitRestorePrefix();
+		return this.altScreenActive
+			? `${END_SYNCHRONIZED_OUTPUT}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${prefix}`
+			: prefix;
+	}
+
+	protected override getExitRestoreSuffix(): string {
+		return `${super.getExitRestoreSuffix()}${this.altScreenActive ? `${EXIT_ALT_SCREEN}\x1b[?25h` : ""}`;
+	}
+
 	private deleteKittyImages(): string {
 		return this.imageProtocol === "kitty" ? deleteAllKittyImages() : "";
 	}

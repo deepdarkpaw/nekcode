@@ -133,18 +133,19 @@ export {
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";
-import type { ToolName } from "../tool-names.ts";
-import { type AstGrepToolOptions, createAstGrepTool, createAstGrepToolDefinition } from "./ast-grep.ts";
-import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
-import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
-import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
-import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
-import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
-import { createPowerShellTool, createPowerShellToolDefinition, type PowerShellToolOptions } from "./powershell.ts";
-import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
+import { BUILTIN_TOOL_NAMES, type ToolName } from "../tool-names.ts";
+import { type AstGrepToolOptions, createAstGrepToolDefinition } from "./ast-grep.ts";
+import { type BashToolOptions, createBashToolDefinition } from "./bash.ts";
+import { createEditToolDefinition, type EditToolOptions } from "./edit.ts";
+import { createFindToolDefinition, type FindToolOptions } from "./find.ts";
+import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
+import { createLsToolDefinition, type LsToolOptions } from "./ls.ts";
+import { createPowerShellToolDefinition, type PowerShellToolOptions } from "./powershell.ts";
+import { createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createReadStateStore, type ReadStateStore } from "./read-state.ts";
-import { createWebSearchTool, createWebSearchToolDefinition, type WebSearchToolOptions } from "./web-search.ts";
-import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
+import { wrapToolDefinition, wrapToolDefinitions } from "./tool-definition-wrapper.ts";
+import { createWebSearchToolDefinition, type WebSearchToolOptions } from "./web-search.ts";
+import { createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
@@ -202,106 +203,45 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 }
 
 export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptions): Tool {
-	const readState = resolveReadState(options);
-	switch (toolName) {
-		case "read":
-			return createReadTool(cwd, { ...options?.read, readState });
-		case "bash":
-			return createBashTool(cwd, { ...options?.bash, readState });
-		case "powershell":
-			return createPowerShellTool(cwd, { ...options?.powershell, readState });
-		case "edit":
-			return createEditTool(cwd, { ...options?.edit, readState });
-		case "write":
-			return createWriteTool(cwd, { ...options?.write, readState });
-		case "grep":
-			return createGrepTool(cwd, options?.grep);
-		case "find":
-			return createFindTool(cwd, options?.find);
-		case "ls":
-			return createLsTool(cwd, options?.ls);
-		case "ast_grep":
-			return createAstGrepTool(cwd, options?.ast_grep);
-		case "web_search":
-			return createWebSearchTool(options?.web_search);
-		default:
-			throw new Error(`Unknown tool name: ${toolName}`);
-	}
+	return wrapToolDefinition(createToolDefinition(toolName, cwd, options));
+}
+
+const CODING_TOOL_NAMES: readonly ToolName[] = ["read", "bash", "edit", "write", "web_search"];
+const READ_ONLY_TOOL_NAMES: readonly ToolName[] = ["read", "grep", "find", "ls", "ast_grep", "web_search"];
+
+/** Resolve one read state per set, not one per tool. */
+function createDefinitions(names: readonly ToolName[], cwd: string, options?: ToolsOptions): ToolDef[] {
+	const shared = { ...options, readState: resolveReadState(options) };
+	return names.map((name) => createToolDefinition(name, cwd, shared));
 }
 
 export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
-	const readState = resolveReadState(options);
-	return [
-		createReadToolDefinition(cwd, { ...options?.read, readState }),
-		createBashToolDefinition(cwd, { ...options?.bash, readState }),
-		createEditToolDefinition(cwd, { ...options?.edit, readState }),
-		createWriteToolDefinition(cwd, { ...options?.write, readState }),
-		createWebSearchToolDefinition(options?.web_search),
-	];
+	return createDefinitions(CODING_TOOL_NAMES, cwd, options);
 }
 
 export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
-	return [
-		createReadToolDefinition(cwd, { ...options?.read, readState: resolveReadState(options) }),
-		createGrepToolDefinition(cwd, options?.grep),
-		createFindToolDefinition(cwd, options?.find),
-		createLsToolDefinition(cwd, options?.ls),
-		createAstGrepToolDefinition(cwd, options?.ast_grep),
-		createWebSearchToolDefinition(options?.web_search),
-	];
+	return createDefinitions(READ_ONLY_TOOL_NAMES, cwd, options);
 }
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
-	const readState = resolveReadState(options);
-	return {
-		read: createReadToolDefinition(cwd, { ...options?.read, readState }),
-		bash: createBashToolDefinition(cwd, { ...options?.bash, readState }),
-		powershell: createPowerShellToolDefinition(cwd, { ...options?.powershell, readState }),
-		edit: createEditToolDefinition(cwd, { ...options?.edit, readState }),
-		write: createWriteToolDefinition(cwd, { ...options?.write, readState }),
-		grep: createGrepToolDefinition(cwd, options?.grep),
-		find: createFindToolDefinition(cwd, options?.find),
-		ls: createLsToolDefinition(cwd, options?.ls),
-		ast_grep: createAstGrepToolDefinition(cwd, options?.ast_grep),
-		web_search: createWebSearchToolDefinition(options?.web_search),
-	};
+	return Object.fromEntries(
+		createDefinitions(BUILTIN_TOOL_NAMES, cwd, options).map((tool) => [tool.name, tool]),
+	) as Record<ToolName, ToolDef>;
 }
 
 export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
-	const readState = resolveReadState(options);
-	return [
-		createReadTool(cwd, { ...options?.read, readState }),
-		createBashTool(cwd, { ...options?.bash, readState }),
-		createEditTool(cwd, { ...options?.edit, readState }),
-		createWriteTool(cwd, { ...options?.write, readState }),
-		createWebSearchTool(options?.web_search),
-	];
+	return wrapToolDefinitions(createCodingToolDefinitions(cwd, options));
 }
 
 export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[] {
-	const readState = resolveReadState(options);
-	return [
-		createReadTool(cwd, { ...options?.read, readState }),
-		createGrepTool(cwd, options?.grep),
-		createFindTool(cwd, options?.find),
-		createLsTool(cwd, options?.ls),
-		createAstGrepTool(cwd, options?.ast_grep),
-		createWebSearchTool(options?.web_search),
-	];
+	return wrapToolDefinitions(createReadOnlyToolDefinitions(cwd, options));
 }
 
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
-	const readState = resolveReadState(options);
-	return {
-		read: createReadTool(cwd, { ...options?.read, readState }),
-		bash: createBashTool(cwd, { ...options?.bash, readState }),
-		powershell: createPowerShellTool(cwd, { ...options?.powershell, readState }),
-		edit: createEditTool(cwd, { ...options?.edit, readState }),
-		write: createWriteTool(cwd, { ...options?.write, readState }),
-		grep: createGrepTool(cwd, options?.grep),
-		find: createFindTool(cwd, options?.find),
-		ls: createLsTool(cwd, options?.ls),
-		ast_grep: createAstGrepTool(cwd, options?.ast_grep),
-		web_search: createWebSearchTool(options?.web_search),
-	};
+	return Object.fromEntries(
+		Object.entries(createAllToolDefinitions(cwd, options)).map(([name, definition]) => [
+			name,
+			wrapToolDefinition(definition),
+		]),
+	) as Record<ToolName, Tool>;
 }

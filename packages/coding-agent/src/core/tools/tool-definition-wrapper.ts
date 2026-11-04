@@ -7,6 +7,10 @@ export function wrapToolDefinition<TDetails = unknown>(
 	ctxFactory?: () => ExtensionContext,
 ): AgentTool<any, TDetails> {
 	return {
+		// Shell AgentTools historically expose this metadata; keep other AgentTools' minimal shape unchanged.
+		...(definition.name === "bash" || definition.name === "powershell"
+			? { promptSnippet: definition.promptSnippet, promptGuidelines: definition.promptGuidelines }
+			: {}),
 		name: definition.name,
 		label: definition.label,
 		description: definition.description,

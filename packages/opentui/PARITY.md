@@ -9,6 +9,8 @@ Every item names its source, owner, and how it is verified.
 - `H:<spec>` means a harness run in a real ConPTY (`conpty_probe.py`, exact output bytes, screens replayed with `@xterm/headless`); the spec names are listed in the acceptance report.
 - `[x]` means the item is implemented and verified.
 
+Shared logic: pure derivations used by both frontends live in `packages/coding-agent/src/modes/interactive/` and OpenTUI imports them one way: `resource-display.ts` (resource groups, paths, diagnostics), `session-statistics.ts` (`/session` totals, provider count), `pending-input.ts` (queue collect/restore, compaction queue), `session-events.ts` (render items, streaming tool sync, compaction rebuild plans, finish errors), and `session-notices.ts` (notice thresholds and text). Containers, focus, theme, layout, and render side effects stay in each mode. The `*-parity.test.ts` files in `test/native/` drive both modes with the same input and compare the results.
+
 Source abbreviations (coding-agent paths are relative to `packages/coding-agent/src/`):
 
 | Abbreviation | Path |
@@ -49,7 +51,7 @@ Source abbreviations (coding-agent paths are relative to `packages/coding-agent/
 | [x] | Thinking blocks; hidden label (`setHiddenThinkingLabel`); per-block visibility override | `c/assistant-message.ts:58-73`, `im:2197` | native | `T:thinking visibility, hidden label, and tool expansion update rendered messages` |
 | [ ] | Mermaid rendering per `mermaid-rendering` setting | `c/mermaid.ts`, `im:467` | native | open: transformer is passed to every message component; no test yet |
 | [x] | LaTeX/markdown transformers from extensions (`getMarkdownTransformers`) | `im:2042` | native | `T:extension markdown transformers apply to assistant messages` |
-| [x] | Tool rows: pending/success/error backgrounds, args streaming, partial results, expand/collapse | `c/tool-execution.ts`, `im:3390-3431` | native | `T:a typed prompt streams …`, `T:renders every message kind on load` (aborted row) |
+| [x] | Tool rows: pending/success/error backgrounds, args streaming, partial results, expand/collapse | `c/tool-execution.ts`, `im:3390-3431` | native | `T:a typed prompt streams …`, `T:renders every message kind on load` (aborted row), `T:streams arguments, starts execution, updates output and removes a finished tool` (same trace as the pi-tui mode) |
 | [x] | Built-in tool renderers (read, bash, edit diff, write, grep, find, ls, ast_grep) | `core/tools/renderers/*` | native | `T:a typed prompt streams …` (read row); same `withBuiltInRenderers` as the built-in TUI |
 | [x] | Web Search tool row in blue (`mdLink`) | `core/tools/renderers/web-search.ts:12` | native | `T:tokens map to theme colors; links and Web Search use the mdLink blue`; the row uses the built-in renderer |
 | [x] | Custom tool `renderCall`/`renderResult` components from extensions | `ext:534-540` | native | `T:extension tool renderCall/renderResult components render in the tool row` |
@@ -60,19 +62,19 @@ Source abbreviations (coding-agent paths are relative to `packages/coding-agent/
 | [x] | Custom messages (`display`), extension message renderers | `c/custom-message.ts`, `im:3661` | native | `T:renders every message kind on load` |
 | [x] | Custom entries (`addCustomEntryToChat`) | `c/custom-entry.ts`, `im:3623` | native | `T:custom entries render through registered entry renderers` |
 | [x] | Skill invocation message | `c/skill-invocation-message.ts` | native | `T:renders every message kind on load` |
-| [ ] | Entry-appended handling incl. boundary compaction rebuild | `im:3230-3273` | native | open: ported verbatim; no boundary-compaction test yet |
-| [x] | Aborted/error assistant messages mark pending tools as failed | `im:3345-3384` | native | `T:renders every message kind on load` ("Operation aborted") |
-| [ ] | Cache-miss, cache-warming, compaction-cost, thinking-drop notices | `im:3870-3960` | native | open: ported; notices are off by default (`showCacheMissNotices`), no test yet |
+| [x] | Entry-appended handling incl. boundary compaction rebuild | `im:3230-3273`, `session-events.ts` | native | `T:rebuilds around a compaction boundary and suppresses already rendered appended entries` (same trace as the pi-tui mode) |
+| [x] | Aborted/error assistant messages mark pending tools as failed | `im:3345-3384` | native | `T:renders every message kind on load` ("Operation aborted"), `T:assistant completion: *` (stop/error/aborted, same trace as the pi-tui mode) |
+| [ ] | Cache-miss, cache-warming, compaction-cost, thinking-drop notices | `im:3870-3960`, `session-notices.ts` | native | open: thresholds, cost text, model-switch precedence, and thinking-drop counting are shared and covered by `session-event-logic.test.ts` (coding-agent); rendered notices are not asserted in OpenTUI (off by default, `showCacheMissNotices`) |
 | [ ] | Project-not-trusted warning in transcript | `im:3981` | native | open: ported; needs a project with trust-requiring resources |
 | [x] | "Session compacted N times" status on load | `im:3972` | native | `T:renders every message kind on load` |
 | [x] | Session history render on load/switch (`renderInitialMessages`, `populateHistory`) | `im:3964`, `im:3754` | native | `T:renders every message kind on load` |
 | [x] | `showStatus` replaces consecutive status lines; `showWarning`/`showError` | `im:3603`, `im:4377-4383` | native | `T:notify levels, warnings, and errors go to the transcript; status lines collapse` |
 | [ ] | Managed tool (fd/rg) download status lines | `im:3584`, `im:1007` | native | open: M: first run without fd (tests run offline) |
 | [x] | Startup header (logo, compact/expanded key hints from keybindings, onboarding) | `im:943-1001` | native | `T:lays out header, editor, and footer with the editor focused` (keys from `keyHint`/`keyText`) |
-| [x] | Loaded resources listing (context files, skills, prompts, extensions, themes, diagnostics) | `im:1618` | native | `T:loaded resources list context files`; H:checklist (`[Context]` lists both AGENTS.md files) |
+| [x] | Loaded resources listing (context files, skills, prompts, extensions, themes, diagnostics) | `im:1618` | native | `T:loaded resources list context files`, `T:preserves listing and diagnostics with expanded=*` (byte-identical to the pi-tui listing); H:checklist (`[Context]` lists both AGENTS.md files) |
 | [x] | Extension errors in transcript (`showExtensionError`) | `im:2855` | native | `T:extension errors show in the transcript` |
-| [ ] | Retry indicator with countdown (`auto_retry_start/end`) | `c/status-indicator.ts:50`, `im:3517` | native | open: ported; no retry test yet |
-| [ ] | Compaction indicator and abort (`compaction_start/end`) | `im:3452-3516` | native | open: `T:/compact runs session compaction and reports its result` (indicator cleared, editor refocused); escape abort of a running compaction not tested |
+| [ ] | Retry indicator with countdown (`auto_retry_start/end`) | `c/status-indicator.ts:50`, `im:3517` | native | open: `T:keeps retry failure wording and cleanup order` covers the failed retry; the countdown is not tested |
+| [ ] | Compaction indicator and abort (`compaction_start/end`) | `im:3452-3516` | native | open: `T:/compact runs session compaction and reports its result` (indicator cleared, editor refocused), `T:cancels and flushes once: *` (manual/threshold/overflow wording, one queue flush); escape abort of a running compaction not tested |
 | [ ] | Summarization retry events | `im:3545-3573` | native | open: ported; no test yet |
 | [ ] | Highlight grammar lazy load re-render | `im:1041` | native | open: M: code block highlights after start |
 | [ ] | Wide/emoji width parity between pi-tui and OpenTUI | `src/bridge/ansi.ts` | native | open: `T:wide characters count two cells`; OpenTUI and pi-tui width tables differ for some emoji (documented) |
@@ -93,9 +95,9 @@ Source abbreviations (coding-agent paths are relative to `packages/coding-agent/
 | [x] | Built-in/extension command conflict diagnostics | `im:650` | native | `T:built-in command conflicts are reported in the loaded resources` |
 | [ ] | Border color: thinking level, bash mode, plan mode | `im:4264`, `c/custom-editor.ts:46` | native | open: `T:editor border follows bash mode`; thinking-level and plan-mode colors not asserted (faux model has no reasoning; plan mode needs the nek extension in the fixture) |
 | [x] | Bash mode (`!`/`!!`) submit path, "already running" warning | `im:3133-3149` | native | `T:bash mode runs the command and shows the output block` |
-| [x] | Submit while streaming steers; while compacting queues | `im:3151-3172` | native | `T:submitting while streaming queues a steering message` |
+| [x] | Submit while streaming steers; while compacting queues | `im:3151-3172`, `pending-input.ts` | native | `T:submitting while streaming queues a steering message`, `T:keeps history/editor/status order when input is queued during compaction`, `T:same delivery order for case *` |
 | [x] | Follow-up queue (`app.message.followUp`) and dequeue (`app.message.dequeue`) | `im:4223`, `im:4255` | native | `T:follow-up queue and dequeue use their keybindings` |
-| [x] | Pending messages display | `im:4425` | native | `T:submitting while streaming queues a steering message` |
+| [x] | Pending messages display | `im:4425` | native | `T:submitting while streaming queues a steering message`, `T:restores duplicate inputs and draft in the same order and always routes abort`, `T:restores the same queue when * fails` |
 | [ ] | External editor (`app.editor.external`) via `external-editor.ts` | `im:4350` | native | open: M: ctrl+g opens $EDITOR (renderer suspended via `runExternal`) |
 | [ ] | Clipboard image paste (`app.clipboard.pasteImage`) with text fallback | `im:2962` | native | open: M: paste screenshot |
 | [ ] | Right-click paste | `im:530`, `alt:1001` | native | open: M: right click |
@@ -189,7 +191,7 @@ Source abbreviations (coding-agent paths are relative to `packages/coding-agent/
 | [ ] | `/share` | `im:6218` | commands | open: creates a real GitHub gist (needs `gh` auth and network); not run |
 | [ ] | `/copy` | `im:2922` | commands | open: `T:/copy without a reply reports it; ...`; copying a reply writes the system clipboard, not run in tests |
 | [x] | `/name [name]` | `im:6260` | commands | `T:/copy without a reply reports it; /name sets the session name; /session shows stats` |
-| [x] | `/session` | `im:6284` | commands | `T:/copy without a reply reports it; /name sets the session name; /session shows stats` |
+| [x] | `/session` | `im:6284`, `session-statistics.ts` | commands | `T:/copy without a reply reports it; /name sets the session name; /session shows stats`, `T:does not drop the first of * cost groups` |
 | [x] | `/changelog` | `im:6357` | commands | `T:/changelog renders the What's New block` |
 | [x] | `/hotkeys` (from configured keybindings) | `im:6392` | commands | `T:matches the interactive mode's table, including extension shortcuts` |
 | [x] | `/fork` | `im:5208`, `c/user-message-selector.ts` | commands | `T:/fork puts the selected message in the editor of a new session`, `T:/fork routes keys to the message list` |
@@ -223,7 +225,7 @@ Source abbreviations (coding-agent paths are relative to `packages/coding-agent/
 | [ ] | Missing session cwd prompt | `main.ts:547` | commands | open: needs a stored session whose cwd was deleted; not run |
 | [ ] | Deprecation warnings acknowledgement | `main.ts:908` | commands | open: needs a legacy extension layout; not run |
 | [x] | Startup notices: changelog, diagnostics, migrated providers, models.json error, model fallback, crash notice | `im:783`, `im:1094-1121` | commands | `T:startup diagnostics show once the mode is ready` |
-| [ ] | Model catalog refresh and provider count | `im:1068-1075`, `im:4959` | commands | open: refresh verified in H:checklist (`Model catalogs refreshed.`); provider count not asserted |
+| [ ] | Model catalog refresh and provider count | `im:1068-1075`, `im:4959` | commands | open: refresh verified in H:checklist (`Model catalogs refreshed.`); the count is shared (`countAvailableProviders`, covered by `session-event-logic.test.ts`), the OpenTUI footer value is not asserted |
 | [ ] | Implicit project trust save after reload | `im:4998` | commands | open: needs `autoTrustOnReloadCwd` from a trust prompt; not tested |
 
 ## 8. Removal and docs (phase 7)

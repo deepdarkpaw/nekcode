@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.ts";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 
 export type ProjectTrustDecision = boolean | null;
@@ -45,9 +45,9 @@ function normalizeCwd(cwd: string): string {
 function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreEntry | null {
 	let currentDir = normalizeCwd(cwd);
 	while (true) {
-		const value = data[currentDir];
-		if (value === true || value === false) {
-			return { path: currentDir, decision: value };
+		for (const key of Object.keys(data).filter((path) => pathsEqual(path, currentDir))) {
+			const value = data[key];
+			if (value === true || value === false) return { path: key, decision: value };
 		}
 
 		const parentDir = dirname(currentDir);
@@ -195,7 +195,7 @@ export function hasTrustRequiringProjectResources(cwd: string): boolean {
 
 	while (true) {
 		const agentsSkillsDir = join(currentDir, ".agents", "skills");
-		if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
+		if (!pathsEqual(agentsSkillsDir, userAgentsSkillsDir) && existsSync(agentsSkillsDir)) {
 			return true;
 		}
 
@@ -234,11 +234,8 @@ export class ProjectTrustStore {
 			const data = readTrustFile(this.trustPath);
 			for (const { path, decision } of decisions) {
 				const key = normalizeCwd(path);
-				if (decision === null) {
-					delete data[key];
-				} else {
-					data[key] = decision;
-				}
+				for (const existing of Object.keys(data).filter((path) => pathsEqual(path, key))) delete data[existing];
+				if (decision !== null) data[key] = decision;
 			}
 			writeTrustFile(this.trustPath, data);
 		});

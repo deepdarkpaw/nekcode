@@ -2,7 +2,15 @@ import { copyJson } from "../json.ts";
 import type { JsonValue } from "../types.ts";
 import { applyImmutableTrusted } from "./apply-immutable-trusted.ts";
 import type { Draft } from "./draft.ts";
-import { applyImmutable, type NonEmptyPath, type Op, overlap, type Path, RESERVED_SEGMENTS } from "./index.ts";
+import {
+	applyImmutable,
+	type NonEmptyPath,
+	type Op,
+	overlap,
+	ownedSlice,
+	type Path,
+	RESERVED_SEGMENTS,
+} from "./index.ts";
 
 export type { Draft, JsonValue, Op };
 
@@ -2014,13 +2022,13 @@ function emitChangedValue(
 		// Slice/equality stays on V8's rope fast path; startsWith scans the entire
 		// accumulated prefix on every append.
 		if (after.length > before.length && after.slice(0, before.length) === before) {
-			operations.push(["a", path, after.slice(before.length)]);
+			operations.push(["a", path, ownedSlice(after, before.length)]);
 			return true;
 		}
 		const shared = overlap(before, after, 65_536);
 		if (shared > 0) {
 			operations.push(["t", path, before.length - shared]);
-			if (after.length > shared) operations.push(["a", path, after.slice(shared)]);
+			if (after.length > shared) operations.push(["a", path, ownedSlice(after, shared)]);
 			return true;
 		}
 	}

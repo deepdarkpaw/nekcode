@@ -1,6 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
+import { isAbsolute, join, resolve as nodeResolvePath, posix, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnProcessSync } from "./child-process.ts";
 
@@ -31,6 +31,28 @@ export function canonicalizePath(path: string): string {
 	} catch {
 		return path;
 	}
+}
+
+/** Comparison only: preserve actual spelling for display and filesystem access. */
+export function getPathComparisonKey(path: string): string {
+	const api = process.platform === "win32" ? win32 : posix;
+	const resolved = api.resolve(path);
+	return api === win32 ? resolved.toLowerCase() : resolved;
+}
+
+/** Whether two resolved paths identify the same location on the current platform. */
+export function pathsEqual(left: string, right: string): boolean {
+	return getPathComparisonKey(left) === getPathComparisonKey(right);
+}
+
+/** Whether child is parent or a descendant, respecting path-segment boundaries. */
+export function isPathWithin(parent: string, child: string): boolean {
+	const parentKey = getPathComparisonKey(parent);
+	const childKey = getPathComparisonKey(child);
+	const pathSep = process.platform === "win32" ? win32.sep : posix.sep;
+	return (
+		childKey === parentKey || childKey.startsWith(parentKey.endsWith(pathSep) ? parentKey : `${parentKey}${pathSep}`)
+	);
 }
 
 export function getFileRevision(path: string): string | undefined {

@@ -111,7 +111,7 @@ async function formatGrepMatches(
 		let fileLines: string[] | undefined;
 		if (context > 0 || fileMatches.some((match) => match.lineText === undefined)) {
 			try {
-				fileLines = (await ops.readFile(filePath)).replace(/\r\n?/g, "\n").split("\n");
+				fileLines = (await ops.readFile(filePath)).replace(/\r\n/g, "\n").split("\n");
 			} catch {
 				// Preserve the match location even if its file disappeared after the search.
 			}
@@ -223,7 +223,7 @@ export function createGrepToolDefinition(
 							return path.basename(filePath);
 						};
 
-						const args: string[] = ["--json", "--line-number", "--color=never", "--hidden"];
+						const args: string[] = ["--no-config", "--json", "--line-number", "--color=never", "--hidden"];
 						if (ignoreCase) args.push("--ignore-case");
 						if (literal) args.push("--fixed-strings");
 						if (glob) args.push("--glob", glob);

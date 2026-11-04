@@ -2,11 +2,15 @@ import type { MarkdownTransformContext, MarkdownTransformer } from "../../../cor
 
 export function createMarkdownTransform(
 	messageType: MarkdownTransformContext["messageType"],
-	isStreaming: boolean,
+	isStreaming: boolean | (() => boolean),
 	transformers: readonly MarkdownTransformer[],
 ): (markdown: string, availableWidth: number) => string {
 	return (markdown, availableWidth) =>
-		applyMarkdownTransformers(markdown, { messageType, isStreaming, availableWidth }, transformers);
+		applyMarkdownTransformers(
+			markdown,
+			{ messageType, isStreaming: typeof isStreaming === "function" ? isStreaming() : isStreaming, availableWidth },
+			transformers,
+		);
 }
 
 function applyMarkdownTransformers(

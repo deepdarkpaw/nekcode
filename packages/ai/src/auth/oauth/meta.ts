@@ -13,6 +13,7 @@
  * user must sign in again.
  */
 
+import { trustedHttpUrl } from "../../utils/trusted-url.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 
@@ -52,18 +53,6 @@ function errorDetail(json: Record<string, unknown> | null): string {
 		if (typeof value === "string" && value.trim()) return `: ${value.trim()}`;
 	}
 	return "";
-}
-
-/** The verification URI is opened in the user's browser; only http(s) URLs are trusted. */
-function trustedHttpUrl(value: unknown): string | null {
-	if (typeof value !== "string" || !value) return null;
-	try {
-		const url = new URL(value);
-		if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-		return url.href;
-	} catch {
-		return null;
-	}
 }
 
 function positiveNumber(value: unknown): number | undefined {

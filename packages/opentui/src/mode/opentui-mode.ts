@@ -28,12 +28,7 @@ import {
 	parseSkillBlock,
 } from "@earendil-works/pi-coding-agent/core/agent-session";
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent/core/agent-session-runtime";
-import {
-	CACHE_TTL_MS,
-	type CacheMiss,
-	collectCacheMisses,
-	detectCacheMiss,
-} from "@earendil-works/pi-coding-agent/core/cache-stats";
+import { type CacheMiss, collectCacheMisses, detectCacheMiss } from "@earendil-works/pi-coding-agent/core/cache-stats";
 import { formatCacheWarmingUsage } from "@earendil-works/pi-coding-agent/core/cache-warmer";
 import { findExtensionStackMatches, recordCrash } from "@earendil-works/pi-coding-agent/core/crash-log";
 import type {
@@ -54,13 +49,9 @@ import {
 } from "@earendil-works/pi-coding-agent/core/footer-data-provider";
 import { configureHttpDispatcher } from "@earendil-works/pi-coding-agent/core/http-dispatcher";
 import { type AppKeybinding, KeybindingsManager } from "@earendil-works/pi-coding-agent/core/keybindings";
-import { createCompactionSummaryMessage, createCustomMessage } from "@earendil-works/pi-coding-agent/core/messages";
+import { createCustomMessage } from "@earendil-works/pi-coding-agent/core/messages";
 import type { ResourceDiagnostic } from "@earendil-works/pi-coding-agent/core/resource-loader";
-import {
-	type SessionEntry,
-	sessionEntryToContextMessages,
-	type UsageEntry,
-} from "@earendil-works/pi-coding-agent/core/session-manager";
+import type { SessionEntry, UsageEntry } from "@earendil-works/pi-coding-agent/core/session-manager";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent/core/settings-manager";
 import { BUILTIN_SLASH_COMMANDS } from "@earendil-works/pi-coding-agent/core/slash-commands";
 import type { SourceInfo } from "@earendil-works/pi-coding-agent/core/source-info";
@@ -78,7 +69,7 @@ import { CustomEditor } from "@earendil-works/pi-coding-agent/modes/interactive/
 import { CustomEntryComponent } from "@earendil-works/pi-coding-agent/modes/interactive/components/custom-entry";
 import { CustomMessageComponent } from "@earendil-works/pi-coding-agent/modes/interactive/components/custom-message";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent/modes/interactive/components/dynamic-border";
-import { FooterComponent, formatTokens } from "@earendil-works/pi-coding-agent/modes/interactive/components/footer";
+import { FooterComponent } from "@earendil-works/pi-coding-agent/modes/interactive/components/footer";
 import {
 	formatKeyText,
 	keyDisplayText,
@@ -112,6 +103,30 @@ import {
 	type MentionTarget,
 	withMentionCompletions,
 } from "@earendil-works/pi-coding-agent/modes/interactive/mention-autocomplete";
+import * as PendingInput from "@earendil-works/pi-coding-agent/modes/interactive/pending-input";
+import {
+	assistantFinishError,
+	buildRenderSessionItems,
+	type CompactionCostNotice,
+	finishPendingTools,
+	isCompactionCostNotice,
+	isCustomSessionEntry,
+	isUsageSessionEntry,
+	planBoundaryCompaction,
+	planCompletedCompaction,
+	type RenderSessionItem,
+	renderCompactionPlan,
+	syncStreamingTools,
+} from "@earendil-works/pi-coding-agent/modes/interactive/session-events";
+import {
+	ANTHROPIC_SUBSCRIPTION_AUTH_WARNING,
+	cacheMissNotice,
+	formatCompactionCostNotice,
+	isAnthropicSubscriptionAuthKey,
+	retryFailureNotice,
+	thinkingDropNotice,
+} from "@earendil-works/pi-coding-agent/modes/interactive/session-notices";
+import { countAvailableProviders } from "@earendil-works/pi-coding-agent/modes/interactive/session-statistics";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -199,20 +214,10 @@ const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
 const TERMINAL_PROGRESS_ACTIVE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR = "\x1b]9;4;0\x07";
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
-const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
-	"Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage. Disable this warning in /settings.";
 
 type DisposableComponent = Component & { dispose?(): void };
 
-type CompactionQueuedMessage = { text: string; mode: "steer" | "followUp" };
-
-type CompactionCostNotice = {
-	type: "compaction_cost";
-	kind: "compaction" | "branch_summary";
-	usage: NonNullable<Extract<SessionEntry, { type: "compaction" }>["usage"]>;
-};
-
-type RenderSessionItem = AgentMessage | Extract<SessionEntry, { type: "custom" | "usage" }> | CompactionCostNotice;
+type CompactionQueuedMessage = PendingInput.CompactionQueuedMessage;
 
 interface WorkingStatusEditor extends EditorComponent {
 	readonly embedWorkingStatus: boolean;
@@ -228,42 +233,10 @@ function isWorkingStatusEditor(editor: EditorComponent): editor is WorkingStatus
 	);
 }
 
-function isCustomSessionEntry(item: RenderSessionItem): item is Extract<SessionEntry, { type: "custom" }> {
-	return "type" in item && item.type === "custom";
-}
-
-function isCompactionCostNotice(item: RenderSessionItem): item is CompactionCostNotice {
-	return "type" in item && item.type === "compaction_cost";
-}
-
-function isUsageSessionEntry(item: RenderSessionItem): item is Extract<SessionEntry, { type: "usage" }> {
-	return "type" in item && item.type === "usage";
-}
-
 function isDeadTerminalError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || !("code" in error)) return false;
 	const code = (error as NodeJS.ErrnoException).code;
 	return code !== undefined && DEAD_TERMINAL_ERROR_CODES.has(code);
-}
-
-function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
-	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
-}
-
-function countDroppedThinkingBlocks(message: AssistantMessage): number {
-	let count = 0;
-	for (const diagnostic of message.diagnostics ?? []) {
-		if (diagnostic.type !== "anthropic_input_transformations") continue;
-		const transformations = diagnostic.details?.transformations;
-		if (!Array.isArray(transformations)) continue;
-		count += transformations.filter(
-			(transformation) =>
-				typeof transformation === "object" &&
-				transformation !== null &&
-				(transformation as Record<string, unknown>).type === "thinking_dropped",
-		).length;
-	}
-	return count;
 }
 
 function errorText(error: unknown): string {
@@ -1650,32 +1623,16 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 	// --- Queues ----------------------------------------------------------------------------------
 
 	private getAllQueuedMessages(): { steering: string[]; followUp: string[] } {
-		return {
-			steering: [
-				...this.session.getSteeringMessages(),
-				...this.compactionQueuedMessages
-					.filter((message) => message.mode === "steer")
-					.map((message) => message.text),
-			],
-			followUp: [
-				...this.session.getFollowUpMessages(),
-				...this.compactionQueuedMessages
-					.filter((message) => message.mode === "followUp")
-					.map((message) => message.text),
-			],
-		};
+		return PendingInput.collectPendingMessages(
+			{ steering: this.session.getSteeringMessages(), followUp: this.session.getFollowUpMessages() },
+			this.compactionQueuedMessages,
+		);
 	}
 
 	private clearAllQueues(): { steering: string[]; followUp: string[] } {
-		const { steering, followUp } = this.session.clearQueue();
-		const compactionSteering = this.compactionQueuedMessages
-			.filter((message) => message.mode === "steer")
-			.map((message) => message.text);
-		const compactionFollowUp = this.compactionQueuedMessages
-			.filter((message) => message.mode === "followUp")
-			.map((message) => message.text);
+		const messages = PendingInput.collectPendingMessages(this.session.clearQueue(), this.compactionQueuedMessages);
 		this.compactionQueuedMessages = [];
-		return { steering: [...steering, ...compactionSteering], followUp: [...followUp, ...compactionFollowUp] };
+		return messages;
 	}
 
 	private updatePendingMessagesDisplay(): void {
@@ -1703,73 +1660,37 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 	}
 
 	restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
-		const { steering, followUp } = this.clearAllQueues();
-		const allQueued = [...steering, ...followUp];
-		if (allQueued.length > 0) {
-			const currentText = options?.currentText ?? this.currentEditor.getText();
-			this.currentEditor.setText([allQueued.join("\n\n"), currentText].filter((text) => text.trim()).join("\n\n"));
-		}
+		const count = PendingInput.restorePendingInput(this.clearAllQueues(), this.currentEditor, options?.currentText);
 		this.updatePendingMessagesDisplay();
 		if (options?.abort) void this.session.abort();
-		return allQueued.length;
+		return count;
 	}
 
 	private queueCompactionMessage(text: string, mode: "steer" | "followUp"): void {
-		this.compactionQueuedMessages.push({ text, mode });
-		this.currentEditor.addToHistory?.(text);
-		this.currentEditor.setText("");
+		PendingInput.enqueueCompactionInput(this.compactionQueuedMessages, { text, mode }, this.currentEditor);
 		this.updatePendingMessagesDisplay();
 		this.showStatus("Queued message for after compaction");
 	}
 
 	private isExtensionCommand(text: string): boolean {
-		if (!text.startsWith("/")) return false;
-		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		return !!this.session.extensionRunner.getCommand(commandName);
+		const name = PendingInput.extensionCommandName(text);
+		return name !== undefined && !!this.session.extensionRunner.getCommand(name);
 	}
 
 	async flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {
-		if (this.compactionQueuedMessages.length === 0) return;
-		const queuedMessages = [...this.compactionQueuedMessages];
-		this.compactionQueuedMessages = [];
-		this.updatePendingMessagesDisplay();
-		const restoreQueue = (error: unknown) => {
-			this.session.clearQueue();
-			this.compactionQueuedMessages = queuedMessages;
-			this.updatePendingMessagesDisplay();
-			this.showError(`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${errorText(error)}`);
-		};
-		const queueMessage = async (message: CompactionQueuedMessage) => {
-			if (this.isExtensionCommand(message.text)) await this.session.prompt(message.text);
-			else if (message.mode === "followUp") await this.session.followUp(message.text);
-			else await this.session.steer(message.text);
-		};
-		try {
-			if (options?.willRetry) {
-				// A retry is pending: queue the messages for the retry turn.
-				for (const message of queuedMessages) await queueMessage(message);
-				this.updatePendingMessagesDisplay();
-				return;
-			}
-			const firstPromptIndex = queuedMessages.findIndex((message) => !this.isExtensionCommand(message.text));
-			if (firstPromptIndex === -1) {
-				for (const message of queuedMessages) await this.session.prompt(message.text);
-				return;
-			}
-			const firstPrompt = queuedMessages[firstPromptIndex];
-			if (!firstPrompt) return;
-			for (const message of queuedMessages.slice(0, firstPromptIndex)) await this.session.prompt(message.text);
-			// Start a prompt when idle, or queue it into a run still finishing compaction.
-			const promptPromise = this.session
-				.prompt(firstPrompt.text, { streamingBehavior: firstPrompt.mode })
-				.catch((error: unknown) => restoreQueue(error));
-			for (const message of queuedMessages.slice(firstPromptIndex + 1)) await queueMessage(message);
-			this.updatePendingMessagesDisplay();
-			void promptPromise;
-		} catch (error) {
-			restoreQueue(error);
-		}
+		return PendingInput.flushCompactionInput(
+			{
+				getMessages: () => this.compactionQueuedMessages,
+				setMessages: (messages) => {
+					this.compactionQueuedMessages = messages;
+				},
+				session: this.session,
+				isCommand: (text) => this.isExtensionCommand(text),
+				changed: () => this.updatePendingMessagesDisplay(),
+				failed: (message) => this.showError(message),
+			},
+			options,
+		);
 	}
 
 	// --- Session events --------------------------------------------------------------------------
@@ -1822,17 +1743,11 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
-					for (const content of this.streamingMessage.content) {
-						if (content.type !== "toolCall") continue;
-						const existing = this.pendingTools.get(content.id);
-						if (existing) {
-							existing.updateArgs(content.arguments);
-							continue;
-						}
+					syncStreamingTools(this.streamingMessage, this.pendingTools, (content) => {
 						const component = this.createToolComponent(content.name, content.id, content.arguments);
 						chat.addChild(component);
-						this.pendingTools.set(content.id, component);
-					}
+						return component;
+					});
 				}
 				break;
 			case "message_end":
@@ -1899,7 +1814,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 				this.releaseRetryEscape = undefined;
 				this.clearStatusIndicator("retry");
 				if (!event.success) {
-					this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
+					this.showError(retryFailureNotice(event.attempt, event.finalError));
 				}
 				break;
 			case "summarization_retry_scheduled":
@@ -1933,19 +1848,17 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 				createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp),
 			);
 		} else if (entry.type === "compaction") {
-			const entries = this.sessionManager.buildContextEntries();
-			if (entries[0]?.id !== entry.id) return;
+			const plan = planBoundaryCompaction(entry, this.sessionManager.buildContextEntries(), () =>
+				this.sessionManager.getBranch(),
+			);
+			if (!plan) return;
 			this.transcript.clear();
-			const branch = this.sessionManager.getBranch();
-			const compactionIndex = branch.findIndex((candidate) => candidate.id === entry.id);
-			const entriesAfterCompaction = new Set(branch.slice(compactionIndex + 1).map((candidate) => candidate.id));
-			const retainedEntries = entries.slice(1);
-			this.renderSessionEntries(retainedEntries.filter((candidate) => !entriesAfterCompaction.has(candidate.id)));
-			this.addMessageToChat(createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp));
-			if (entry.usage)
-				this.addCompactionCostNotice({ type: "compaction_cost", kind: "compaction", usage: entry.usage });
-			this.renderSessionEntries(retainedEntries.filter((candidate) => entriesAfterCompaction.has(candidate.id)));
-			for (const entryId of entriesAfterCompaction) this.entriesRenderedByBoundaryCompaction.add(entryId);
+			renderCompactionPlan(plan, {
+				entries: (entries) => this.renderSessionEntries(entries),
+				message: (message) => this.addMessageToChat(message),
+				cost: (notice) => this.addCompactionCostNotice(notice),
+			});
+			for (const entryId of plan.rememberIds) this.entriesRenderedByBoundaryCompaction.add(entryId);
 		}
 	}
 
@@ -1958,18 +1871,17 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 			if (event.reason === "manual") this.showError("Compaction cancelled");
 			else this.showStatus("Auto-compaction cancelled");
 		} else if (event.result) {
-			const entries = this.sessionManager.buildContextEntries();
-			if (entries[0]?.type !== "compaction")
-				throw new Error("Completed compaction is missing from the session context");
-			this.transcript.clear();
-			// The latest compaction is prepended for model context; show it at its chronological position.
-			this.renderSessionEntries(entries.slice(1));
-			this.addMessageToChat(
-				createCompactionSummaryMessage(event.result.summary, event.result.tokensBefore, new Date().toISOString()),
+			const plan = planCompletedCompaction(
+				this.sessionManager.buildContextEntries(),
+				event.result,
+				new Date().toISOString(),
 			);
-			if (event.result.usage) {
-				this.addCompactionCostNotice({ type: "compaction_cost", kind: "compaction", usage: event.result.usage });
-			}
+			this.transcript.clear();
+			renderCompactionPlan(plan, {
+				entries: (entries) => this.renderSessionEntries(entries),
+				message: (message) => this.addMessageToChat(message),
+				cost: (notice) => this.addCompactionCostNotice(notice),
+			});
 		} else if (event.errorMessage) {
 			if (event.reason === "manual") {
 				this.showError(event.errorMessage);
@@ -1985,25 +1897,11 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		const component = this.streamingComponent;
 		if (!component) return;
 		this.streamingMessage = message;
-		let errorMessage: string | undefined;
-		if (message.stopReason === "aborted") {
-			const retryAttempt = this.session.retryAttempt;
-			errorMessage =
-				retryAttempt > 0
-					? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-					: "Operation aborted";
-			message.errorMessage = errorMessage;
-		}
+		const errorMessage = assistantFinishError(message, this.session.retryAttempt);
+		if (message.stopReason === "aborted") message.errorMessage = errorMessage;
 		component.updateContent(message, false);
-		if (message.stopReason === "aborted" || message.stopReason === "error") {
-			const text = errorMessage ?? (message.errorMessage || "Error");
-			for (const tool of this.pendingTools.values()) {
-				tool.updateResult({ content: [{ type: "text", text }], isError: true });
-			}
-			this.pendingTools.clear();
-		} else {
-			// Args are complete: edit tools compute their diffs now.
-			for (const tool of this.pendingTools.values()) tool.setArgsComplete();
+		finishPendingTools(this.pendingTools, errorMessage);
+		if (errorMessage === undefined) {
 			this.maybeShowThinkingDropNotice(message);
 			this.maybeShowCacheMissNotice(message);
 		}
@@ -2240,15 +2138,7 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 		entries: SessionEntry[],
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
-		const items = entries.flatMap((entry): RenderSessionItem[] => {
-			if (entry.type === "custom" || (entry.type === "usage" && entry.kind === "cache_warm")) return [entry];
-			const messages = sessionEntryToContextMessages(entry);
-			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage && messages.length > 0) {
-				return [...messages, { type: "compaction_cost", kind: entry.type, usage: entry.usage }];
-			}
-			return messages;
-		});
-		this.renderSessionItems(items, options);
+		this.renderSessionItems(buildRenderSessionItems(entries), options);
 	}
 
 	private addCacheWarmingUsage(entry: UsageEntry): void {
@@ -2260,36 +2150,16 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 	/** Billing usage of a compaction or branch summary (derived from the persisted summary usage). */
 	private addCompactionCostNotice(notice: CompactionCostNotice): void {
 		if (!this.settingsManager.getShowCacheMissNotices()) return;
-		const { usage } = notice;
-		const tokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-		const cost = usage.cost.total >= 0.01 ? ` (~$${usage.cost.total.toFixed(2)})` : "";
-		const label = notice.kind === "compaction" ? "Compaction" : "Branch summary";
 		this.transcript.chat.addChild(new Spacer(1));
-		this.transcript.chat.addChild(
-			new Text(theme.fg("warning", `${label}: ${formatTokens(tokens)} tokens billed${cost}`), 1, 0),
-		);
+		this.transcript.chat.addChild(new Text(theme.fg("warning", formatCompactionCostNotice(notice)), 1, 0));
 	}
 
 	private maybeShowThinkingDropNotice(message: AssistantMessage): void {
 		if (!this.settingsManager.getShowCacheMissNotices()) return;
-		const droppedCount = countDroppedThinkingBlocks(message);
-		if (droppedCount === 0) return;
-		let previousDroppedCount = 0;
-		// message_end arrives before the message is persisted: the branch's last assistant message is the previous one.
-		const branch = this.sessionManager.getBranch();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
-			if (entry?.type === "message" && entry.message.role === "assistant") {
-				previousDroppedCount = countDroppedThinkingBlocks(entry.message);
-				break;
-			}
-		}
-		if (droppedCount <= previousDroppedCount) return;
-		const noun = droppedCount === 1 ? "thinking block" : "thinking blocks";
+		const notice = thinkingDropNotice(message, () => this.sessionManager.getBranch());
+		if (!notice) return;
 		this.transcript.chat.addChild(new Spacer(1));
-		this.transcript.chat.addChild(
-			new Text(theme.fg("warning", `Anthropic dropped ${droppedCount} ${noun} (details in session)`), 1, 0),
-		);
+		this.transcript.chat.addChild(new Text(theme.fg("warning", notice), 1, 0));
 	}
 
 	private maybeShowCacheMissNotice(message: AssistantMessage): void {
@@ -2299,14 +2169,10 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 	}
 
 	private addCacheMissNotice(miss: CacheMiss): void {
-		if (miss.missedTokens < 20_000 && miss.missedCost < 0.1) return;
-		const cost = miss.missedCost >= 0.01 ? ` (~$${miss.missedCost.toFixed(2)})` : "";
-		const reBilled = `${formatTokens(miss.missedTokens)} tokens re-billed${cost}`;
-		let label = "Cache miss";
-		if (miss.modelChanged) label = "Cache miss after model switch";
-		else if (miss.idleMs >= CACHE_TTL_MS) label = `Cache miss after ${Math.round(miss.idleMs / 60_000)}m idle`;
+		const notice = cacheMissNotice(miss);
+		if (!notice) return;
 		this.transcript.chat.addChild(new Spacer(1));
-		this.transcript.chat.addChild(new Text(theme.fg("warning", `${label}: ${reBilled}`), 1, 0));
+		this.transcript.chat.addChild(new Text(theme.fg("warning", notice), 1, 0));
 	}
 
 	/** Render the current session branch (`renderInitialMessages` in the interactive mode). */
@@ -2675,11 +2541,9 @@ export class OpenTuiMode implements InteractiveModeLike, ModeContext {
 	}
 
 	private updateAvailableProviderCount(): void {
-		const models =
-			this.session.scopedModels.length > 0
-				? this.session.scopedModels.map((scoped) => scoped.model)
-				: this.session.modelRuntime.getAvailableSnapshot();
-		this.footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
+		this.footerDataProvider.setAvailableProviderCount(
+			countAvailableProviders(this.session.scopedModels, () => this.session.modelRuntime.getAvailableSnapshot()),
+		);
 	}
 
 	private updateEditorBorderColor(): void {

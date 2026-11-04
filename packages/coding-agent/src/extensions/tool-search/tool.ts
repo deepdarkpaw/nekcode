@@ -18,6 +18,7 @@ export const DEFAULT_TOOL_SEARCH_LIMIT = 8;
 export interface ToolSearchDocument {
 	name: string;
 	text: string;
+	namespaceText?: string;
 }
 
 export interface ToolSearchMatch {
@@ -60,15 +61,22 @@ function stem(term: string): string {
 	return term;
 }
 
-/** Lowercase terms, split camelCase and punctuation, remove stop words, and fold plurals. */
+const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+
+/** Unicode word segmentation, identifier boundaries, and English stop words/plurals. */
 export function tokenize(text: string): string[] {
-	return text
+	const normalized = text
+		.normalize("NFC")
 		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
 		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
 		.toLowerCase()
-		.split(/[^a-z0-9]+/)
-		.filter((term) => term.length > 0 && !STOP_WORDS.has(term))
-		.map(stem);
+		.replace(/[^\p{L}\p{M}\p{N}]+/gu, " ");
+	const words = /^[a-z0-9 ]*$/.test(normalized)
+		? normalized.split(" ")
+		: Array.from(wordSegmenter.segment(normalized), (segment) => (segment.isWordLike ? segment.segment : ""));
+	return words
+		.filter((word) => word.length > 0 && !STOP_WORDS.has(word))
+		.map((word) => (/^[a-z0-9]+$/.test(word) ? stem(word) : word));
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -96,13 +104,27 @@ export function createToolSearchDocument(
 	tool: Pick<ToolInfo, "name" | "description" | "parameters">,
 	namespace?: ToolNamespace,
 ): ToolSearchDocument {
-	const parts = [tool.name, tool.name.replaceAll("_", " "), tool.description];
+	const parts = [tool.description];
 	schemaText(tool.parameters, parts);
-	if (namespace) parts.push(namespace.name, namespace.description ?? "");
-	return { name: tool.name, text: parts.filter((part) => part.trim()).join(" ") };
+	const namespaceText = namespace ? [namespace.name, namespace.description ?? ""].join(" ") : "";
+	return { name: tool.name, text: parts.filter((part) => part.trim()).join(" "), namespaceText };
 }
 
-/** Okapi BM25 ranker. Ties retain registration order. */
+/** Separate tool names and namespace metadata from length-normalized descriptions. */
+function indexDocument(document: ToolSearchDocument) {
+	const textCounts = new Map<string, number>();
+	for (const term of tokenize(document.text)) textCounts.set(term, (textCounts.get(term) ?? 0) + 1);
+	return {
+		name: document.name,
+		nameTerms: new Set(tokenize(document.name)),
+		localNameTerms: new Set(tokenize(document.name.split("__").at(-1) ?? document.name)),
+		namespaceTerms: new Set(tokenize(document.namespaceText ?? "")),
+		textCounts,
+		textLength: [...textCounts.values()].reduce((sum, count) => sum + count, 0),
+	};
+}
+
+/** Exact names outrank coverage; coverage outranks field-weighted BM25. Ties retain registration order. */
 export class Bm25Ranker implements ToolRanker {
 	private readonly k1: number;
 	private readonly b: number;
@@ -113,33 +135,53 @@ export class Bm25Ranker implements ToolRanker {
 	}
 
 	rank(query: string, documents: readonly ToolSearchDocument[], limit: number): ToolSearchMatch[] {
-		const queryTerms = [...new Set(tokenize(query))];
-		if (queryTerms.length === 0 || documents.length === 0 || limit <= 0) return [];
-		const termCounts = documents.map((document) => {
-			const counts = new Map<string, number>();
-			for (const term of tokenize(document.text)) counts.set(term, (counts.get(term) ?? 0) + 1);
-			return counts;
-		});
-		const lengths = termCounts.map((counts) => [...counts.values()].reduce((sum, count) => sum + count, 0));
-		const averageLength = lengths.reduce((sum, length) => sum + length, 0) / documents.length || 1;
+		const terms = new Set(tokenize(query));
+		if (terms.size === 0 || documents.length === 0 || limit <= 0) return [];
+		const indexed = documents.map(indexDocument);
+		const averageLength = indexed.reduce((sum, doc) => sum + doc.textLength, 0) / indexed.length || 1;
 		const idf = new Map(
-			queryTerms.map((term) => {
-				const frequency = termCounts.filter((counts) => counts.has(term)).length;
-				return [term, Math.log(1 + (documents.length - frequency + 0.5) / (frequency + 0.5))] as const;
+			[...terms].map((term) => {
+				const frequency = indexed.filter(
+					(doc) => doc.nameTerms.has(term) || doc.textCounts.has(term) || doc.namespaceTerms.has(term),
+				).length;
+				return [term, Math.log(1 + (indexed.length - frequency + 0.5) / (frequency + 0.5))] as const;
 			}),
 		);
-		const matches: ToolSearchMatch[] = [];
-		documents.forEach((document, index) => {
+		const bonus = [...idf.values()].reduce((sum, value) => sum + value, 0);
+		const normalizeName = (name: string) =>
+			name
+				.trim()
+				.toLowerCase()
+				.replace(/[^a-z0-9_]/g, "_");
+		const exactQuery = normalizeName(query);
+		const matches: (ToolSearchMatch & { exact: boolean; covered: number })[] = [];
+		for (const doc of indexed) {
+			const norm = this.k1 * (1 - this.b + (this.b * doc.textLength) / averageLength);
 			let score = 0;
-			for (const term of queryTerms) {
-				const count = termCounts[index].get(term);
-				if (!count) continue;
-				const norm = this.k1 * (1 - this.b + (this.b * lengths[index]) / averageLength);
-				score += (idf.get(term) ?? 0) * ((count * (this.k1 + 1)) / (count + norm));
+			let covered = 0;
+			for (const term of terms) {
+				const count = doc.textCounts.get(term) ?? 0;
+				const weight =
+					(doc.nameTerms.has(term) ? 3 : 0) +
+					(doc.namespaceTerms.has(term) ? 0.5 : 0) +
+					(count === 0 ? 0 : (count * (this.k1 + 1)) / (count + norm));
+				if (weight > 0) covered++;
+				score += (idf.get(term) ?? 0) * weight;
 			}
-			if (score > 0) matches.push({ name: document.name, score });
-		});
-		return matches.sort((a, b) => b.score - a.score).slice(0, limit);
+			if (score <= 0) continue;
+			if (doc.localNameTerms.size && [...doc.localNameTerms].every((term) => terms.has(term))) score += bonus;
+			const name = normalizeName(doc.name);
+			matches.push({
+				name: doc.name,
+				score,
+				covered,
+				exact: name === exactQuery || name.endsWith(`__${exactQuery}`),
+			});
+		}
+		return matches
+			.sort((a, b) => Number(b.exact) - Number(a.exact) || b.covered - a.covered || b.score - a.score)
+			.slice(0, limit)
+			.map(({ name, score }) => ({ name, score }));
 	}
 }
 

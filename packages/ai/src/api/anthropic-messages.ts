@@ -33,11 +33,12 @@ import type {
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
-import { parseJsonWithRepair, parseStreamingJson, parseToolCallArguments } from "../utils/json-parse.ts";
+import { parseJsonWithRepair } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import {
 	getCurrentTools,
@@ -597,8 +598,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
-			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
-			const blocks = output.content as Block[];
+			type Block = ThinkingContent | TextContent | ToolCall;
+			const blocks = output.content;
+			const blockIndices = new Map<number, number>();
+			const toolArguments = new Map<number, ToolCallArgumentsStream>();
 
 			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
 				await options?.onProviderStreamEvent?.(event, model);
@@ -637,18 +640,18 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						const block: Block = {
 							type: "text",
 							text: event.content_block.text ?? "",
-							index: event.index,
 						};
 						output.content.push(block);
+						blockIndices.set(event.index, output.content.length - 1);
 						stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
 					} else if (event.content_block.type === "thinking") {
 						const block: Block = {
 							type: "thinking",
 							thinking: event.content_block.thinking ?? "",
 							thinkingSignature: event.content_block.signature ?? "",
-							index: event.index,
 						};
 						output.content.push(block);
+						blockIndices.set(event.index, output.content.length - 1);
 						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
 					} else if (event.content_block.type === "redacted_thinking") {
 						const block: Block = {
@@ -656,9 +659,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							thinking: "[Reasoning redacted]",
 							thinkingSignature: event.content_block.data,
 							redacted: true,
-							index: event.index,
 						};
 						output.content.push(block);
+						blockIndices.set(event.index, output.content.length - 1);
 						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
 					} else if (event.content_block.type === "tool_use") {
 						const block: Block = {
@@ -668,15 +671,15 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								? fromClaudeCodeName(event.content_block.name, currentTools)
 								: event.content_block.name,
 							arguments: (event.content_block.input as Record<string, any>) ?? {},
-							partialJson: "",
-							index: event.index,
 						};
 						output.content.push(block);
+						blockIndices.set(event.index, output.content.length - 1);
+						toolArguments.set(event.index, new ToolCallArgumentsStream());
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
 					}
 				} else if (event.type === "content_block_delta") {
 					if (event.delta.type === "text_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
+						const index = blockIndices.get(event.index) ?? -1;
 						const block = blocks[index];
 						if (block && block.type === "text") {
 							block.text += event.delta.text;
@@ -688,7 +691,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							});
 						}
 					} else if (event.delta.type === "thinking_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
+						const index = blockIndices.get(event.index) ?? -1;
 						const block = blocks[index];
 						if (block && block.type === "thinking") {
 							block.thinking += event.delta.thinking;
@@ -700,11 +703,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							});
 						}
 					} else if (event.delta.type === "input_json_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
+						const index = blockIndices.get(event.index) ?? -1;
 						const block = blocks[index];
 						if (block && block.type === "toolCall") {
-							block.partialJson += event.delta.partial_json;
-							block.arguments = parseStreamingJson(block.partialJson);
+							block.arguments = toolArguments.get(event.index)!.append(event.delta.partial_json);
 							stream.push({
 								type: "toolcall_delta",
 								contentIndex: index,
@@ -713,7 +715,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							});
 						}
 					} else if (event.delta.type === "signature_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
+						const index = blockIndices.get(event.index) ?? -1;
 						const block = blocks[index];
 						if (block && block.type === "thinking") {
 							block.thinkingSignature = block.thinkingSignature || "";
@@ -721,10 +723,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						}
 					}
 				} else if (event.type === "content_block_stop") {
-					const index = blocks.findIndex((b) => b.index === event.index);
+					const index = blockIndices.get(event.index) ?? -1;
 					const block = blocks[index];
 					if (block) {
-						delete (block as any).index;
+						blockIndices.delete(event.index);
 						if (block.type === "text") {
 							stream.push({
 								type: "text_end",
@@ -740,10 +742,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								partial: output,
 							});
 						} else if (block.type === "toolCall") {
-							Object.assign(block, parseToolCallArguments(block.partialJson));
-							// Finalize in-place and strip the scratch buffer so replay only
-							// carries parsed arguments.
-							delete (block as { partialJson?: string }).partialJson;
+							Object.assign(block, toolArguments.get(event.index)!.finish());
+							toolArguments.delete(event.index);
 							stream.push({
 								type: "toolcall_end",
 								contentIndex: index,
@@ -1159,7 +1159,8 @@ function buildParams(
 			display: options?.thinkingDisplay ?? "summarized",
 			block_binding: { prefix_mismatch_behavior: "drop_block" },
 		};
-		params.output_config = { effort: "high" };
+		// Per-message markers choose effort; the cached top-level value must respect organization caps.
+		params.output_config = { effort: "low" };
 	} else if (model.reasoning) {
 		if (options?.thinkingEnabled) {
 			// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
@@ -1312,7 +1313,6 @@ function convertMessages(
 				});
 			}
 		} else if (msg.role === "assistant") {
-			flushPendingSystemMessages();
 			const blocks: ContentBlockParam[] = [];
 
 			for (const block of msg.content) {
@@ -1367,6 +1367,7 @@ function convertMessages(
 				}
 			}
 			if (blocks.length === 0) continue;
+			flushPendingSystemMessages();
 			const messageIndex = params.length;
 			params.push({
 				role: "assistant",
@@ -1506,11 +1507,18 @@ function convertTools(
 	return tools.map((tool, index) => {
 		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools, isAnthropicStrictUnsupportedKeyword);
 		const parameters = getJsonSchemaToolParameters(tool, strict);
-		const schema = parameters as { properties?: unknown; required?: string[] };
+		const schema = parameters as {
+			properties?: unknown;
+			required?: string[];
+			$defs?: unknown;
+			definitions?: unknown;
+		};
 		const legacyInputSchema = {
 			type: "object" as const,
 			properties: schema.properties ?? {},
 			required: schema.required ?? [],
+			...(schema.$defs === undefined ? {} : { $defs: schema.$defs }),
+			...(schema.definitions === undefined ? {} : { definitions: schema.definitions }),
 		};
 		const inputSchema =
 			strict === true

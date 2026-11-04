@@ -77,6 +77,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 		sessionAffinityFormat: model.compat?.sessionAffinityFormat ?? detectSessionAffinityFormat(model),
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
 		supportsStrictMode: model.compat?.supportsStrictMode ?? false,
+		supportsStrictParameter: model.compat?.supportsStrictParameter ?? true,
 		supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		supportsAdditionalTools: model.compat?.supportsAdditionalTools ?? false,
 		supportsToolSearch: model.compat?.supportsToolSearch ?? false,
@@ -304,6 +305,7 @@ function buildParams(
 		supportsToolSearch: compat.supportsToolSearch,
 		toolOptions: {
 			supportsStrictMode: compat.supportsStrictMode,
+			supportsStrictParameter: compat.supportsStrictParameter,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
 		},
 	});
@@ -336,6 +338,7 @@ function buildParams(
 	if (transcriptTools.requestTools.length > 0) {
 		params.tools = convertResponsesTools(transcriptTools.requestTools, {
 			supportsStrictMode: compat.supportsStrictMode,
+			supportsStrictParameter: compat.supportsStrictParameter,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
 		});
 	}

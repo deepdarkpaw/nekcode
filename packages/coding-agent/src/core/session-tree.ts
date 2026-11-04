@@ -37,6 +37,19 @@ import {
 	type UsageEntry,
 } from "./session-entries.ts";
 
+/** Newly committed projection, including canonical corrections to entries a host already appended. */
+export interface SessionEntryDelta {
+	readonly header?: SessionHeader;
+	readonly entries: readonly SessionEntry[];
+}
+
+export interface SessionSyncChanges {
+	readonly entries: readonly SessionEntry[];
+	readonly added: readonly SessionEntry[];
+	readonly replaced: readonly SessionEntry[];
+	readonly contextChanged: boolean;
+}
+
 /**
  * In-memory session tree shared by the session managers: entries with id and parentId, a leaf pointer, labels, and
  * every append, traversal, and branching operation. Subclasses own storage: where a session lives, how appended
@@ -50,6 +63,8 @@ export abstract class SessionTree {
 	protected persist: boolean;
 	protected flushed: boolean = false;
 	protected fileEntries: FileEntry[] = [];
+	/** Committed prefix; any suffix contains host appends awaiting their durable records. */
+	protected projectionPosition = 0;
 	protected byId: Map<string, SessionEntry> = new Map();
 	protected labelsById: Map<string, string> = new Map();
 	protected labelTimestampsById: Map<string, string> = new Map();
@@ -85,6 +100,7 @@ export abstract class SessionTree {
 			parentSession: options?.parentSession,
 		};
 		this.fileEntries = [header];
+		this.projectionPosition = 0;
 		this.byId.clear();
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
@@ -117,6 +133,7 @@ export abstract class SessionTree {
 	}
 
 	protected _buildIndex(): void {
+		this.projectionPosition = 0;
 		this.byId.clear();
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
@@ -125,16 +142,70 @@ export abstract class SessionTree {
 			if (entry.type === "session") continue;
 			this.byId.set(entry.id, entry);
 			this.leafId = entry.id;
-			if (entry.type === "label") {
-				if (entry.label) {
-					this.labelsById.set(entry.targetId, entry.label);
-					this.labelTimestampsById.set(entry.targetId, entry.timestamp);
-				} else {
-					this.labelsById.delete(entry.targetId);
-					this.labelTimestampsById.delete(entry.targetId);
-				}
-			}
+			this._indexLabel(entry);
 		}
+	}
+
+	private _indexLabel(entry: FileEntry): void {
+		if (entry.type !== "label") return;
+		if (entry.label) {
+			this.labelsById.set(entry.targetId, entry.label);
+			this.labelTimestampsById.set(entry.targetId, entry.timestamp);
+		} else {
+			this.labelsById.delete(entry.targetId);
+			this.labelTimestampsById.delete(entry.targetId);
+		}
+	}
+
+	/** Reconcile only the new committed prefix. Unrelated branches never choose a new leaf. */
+	protected _applyEntryDelta(delta: SessionEntryDelta): SessionSyncChanges {
+		const beforeLeaf = this.leafId;
+		if (this.projectionPosition === 0 && delta.entries.length > 0 && !delta.header)
+			throw new Error("Durable session entries have no header");
+		if (delta.header) {
+			const current = this.fileEntries[0];
+			if (current?.type !== "session" || current.id !== delta.header.id)
+				throw new Error("Durable session header disagrees with the loaded session");
+			this.fileEntries[0] = delta.header;
+			if (this.projectionPosition === 0) this.projectionPosition = 1;
+		}
+		const entries: SessionEntry[] = [];
+		const added: SessionEntry[] = [];
+		const replaced: SessionEntry[] = [];
+		for (const persisted of delta.entries) {
+			const current = this.byId.get(persisted.id);
+			let entry = persisted;
+			if (current) {
+				const pending = this.fileEntries[this.projectionPosition];
+				if (pending?.type === "session" || pending?.id !== persisted.id)
+					throw new Error(`Session projection order disagrees with storage: ${persisted.id}`);
+				if (JSON.stringify(current) === JSON.stringify(persisted)) entry = current;
+				else replaced.push(entry);
+				this.fileEntries[this.projectionPosition] = entry;
+			} else {
+				this.fileEntries.splice(this.projectionPosition, 0, entry);
+				added.push(entry);
+				if (entry.parentId === this.leafId) this.leafId = entry.id;
+			}
+			this.projectionPosition++;
+			this.byId.set(entry.id, entry);
+			this._indexLabel(entry);
+			entries.push(entry);
+		}
+		/** Reapply only pending labels, never all historical labels. */
+		if (entries.some((entry) => entry.type === "label")) {
+			for (let index = this.projectionPosition; index < this.fileEntries.length; index++)
+				this._indexLabel(this.fileEntries[index]!);
+		}
+		const changedOnBranch = replaced.some((entry) => {
+			let current = this.leafId;
+			while (current !== null) {
+				if (current === entry.id) return true;
+				current = this.byId.get(current)?.parentId ?? null;
+			}
+			return false;
+		});
+		return { entries, added, replaced, contextChanged: beforeLeaf !== this.leafId || changedOnBranch };
 	}
 
 	isPersisted(): boolean {

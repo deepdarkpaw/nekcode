@@ -105,7 +105,8 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		if (USE_PROCESS_GROUPS && pid !== undefined) {
 			installExitHook();
 			liveProcessGroups.add(pid);
-			child.once("exit", () => liveProcessGroups.delete(pid));
+			// Descendants may outlive the server while still holding its pipes.
+			child.once("close", () => liveProcessGroups.delete(pid));
 		}
 		child.stdout?.on("data", (chunk: Buffer | string) => this.handleStdout(chunk));
 		child.stdout?.on("error", (error) => this.emitError(error));
@@ -157,7 +158,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 			this.emitClose();
 			return;
 		}
-		if (child.exitCode !== null || child.signalCode !== null) {
+		if (!USE_PROCESS_GROUPS && (child.exitCode !== null || child.signalCode !== null)) {
 			child.stdin?.end();
 			return;
 		}

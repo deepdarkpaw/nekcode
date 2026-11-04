@@ -849,6 +849,8 @@ export interface OpenAIResponsesCompat {
 	supportsLongCacheRetention?: boolean;
 	/** Whether the provider supports strict JSON-schema function tools. Defaults are API-specific; generated OpenAI models enable it explicitly. */
 	supportsStrictMode?: boolean;
+	/** Whether the endpoint accepts the function-tool strict field. Default: true, even when strict validation is unsupported. Set false only for endpoints rejecting the field; they must preserve non-strict optional parameters themselves. */
+	supportsStrictParameter?: boolean;
 	/** Whether to emit OpenAI custom tools with Lark/regex grammar formats. When false, grammar-constrained tools fall back to normal function tools. Default: false; the generated model catalog enables it for capable models. */
 	supportsOpenAIGrammarTools?: boolean;
 	/** Whether the model supports message-anchored `additional_tools` input items. Default: false. */

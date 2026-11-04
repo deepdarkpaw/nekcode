@@ -119,11 +119,23 @@ describe("constrained tool sampling", () => {
 			supportsStrictMode: false,
 		})[0];
 		expect(fallback).toMatchObject({ type: "function", name: "sample_tool" });
-		expect("strict" in (fallback as object)).toBe(false);
+		expect(fallback).toMatchObject({ strict: false });
 
 		expect(convertResponsesTools([makeTool({ constrainedSampling: false })])).toEqual(
 			convertResponsesTools([makeTool()]),
 		);
+	});
+
+	it("distinguishes unsupported validation from a rejected strict parameter", () => {
+		const ordinary = makeTool({ parameters: Type.Object({ id: Type.Optional(Type.String()) }) });
+		expect(convertResponsesTools([ordinary], { supportsStrictMode: false })[0]).toMatchObject({ strict: false });
+		expect(convertResponsesTools([ordinary], { strict: null })[0]).toMatchObject({ strict: false });
+		expect(convertResponsesTools([ordinary], { supportsStrictParameter: false })[0]).not.toHaveProperty("strict");
+		expect(() =>
+			convertResponsesTools([makeTool({ constrainedSampling: { type: "json_schema", strict: "require" } })], {
+				supportsStrictParameter: false,
+			}),
+		).toThrow("requires JSON-schema constrained sampling");
 	});
 
 	it("derives strict provider schemas without changing tool definitions", () => {

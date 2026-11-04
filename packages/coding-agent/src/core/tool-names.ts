@@ -4,20 +4,8 @@
  * This module has no imports so settings can resolve the selection without loading the tool implementations.
  */
 
-/** Names of the built-in tools. */
-export type ToolName =
-	| "read"
-	| "bash"
-	| "powershell"
-	| "edit"
-	| "write"
-	| "grep"
-	| "find"
-	| "ls"
-	| "ast_grep"
-	| "web_search";
-
-export const allToolNames: Set<ToolName> = new Set([
+/** Built-in names in factory order; separate from the mutable public lookup set. */
+export const BUILTIN_TOOL_NAMES = [
 	"read",
 	"bash",
 	"powershell",
@@ -28,7 +16,11 @@ export const allToolNames: Set<ToolName> = new Set([
 	"ls",
 	"ast_grep",
 	"web_search",
-]);
+] as const;
+
+/** Names of the built-in tools. */
+export type ToolName = (typeof BUILTIN_TOOL_NAMES)[number];
+export const allToolNames: Set<ToolName> = new Set(BUILTIN_TOOL_NAMES);
 
 /** Built-in tools active in a new session when neither settings nor options select tools. */
 export const DEFAULT_ACTIVE_TOOL_NAMES: readonly ToolName[] = [

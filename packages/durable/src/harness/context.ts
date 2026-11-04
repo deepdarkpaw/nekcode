@@ -127,7 +127,12 @@ function deriveView(head: ContextBounds["head"], range: readonly EntryRecord[]):
 			(message) => message.role !== "assistant" || !EXCLUDED_STOP_REASONS.has(message.stopReason),
 		);
 	});
-	return { head, entries, contributions, messages: leadWithSystem(orderToolResults(contributions.flat())) };
+	return {
+		head,
+		entries,
+		contributions,
+		messages: leadWithSystemBy(orderToolResults(contributions.flat()), (message) => message),
+	};
 }
 
 /**
@@ -136,10 +141,14 @@ function deriveView(head: ContextBounds["head"], range: readonly EntryRecord[]):
  * followed by the baseline system message. Providers treat only a leading system message as the initial prompt and tool
  * set; without it, a later tool change rewrites the request's tool list and invalidates the whole prompt cache.
  */
-function leadWithSystem(messages: Message[]): Message[] {
-	const index = messages.findIndex((message) => message.role !== "user");
-	if (index <= 0 || messages[index]!.role !== "system") return messages;
-	return [messages[index]!, ...messages.slice(0, index), ...messages.slice(index + 1)];
+export function leadWithSystemBy<T>(items: T[], messageOf: (item: T) => Message | undefined): T[] {
+	const index = items.findIndex((item) => {
+		const message = messageOf(item);
+		return message !== undefined && message.role !== "user";
+	});
+	if (index <= 0 || messageOf(items[index]!)?.role !== "system") return items;
+	if (!items.slice(0, index).some((item) => messageOf(item) !== undefined)) return items;
+	return [items[index]!, ...items.slice(0, index), ...items.slice(index + 1)];
 }
 
 /** The raw active entries within captured bounds, without deriving model context. */
@@ -186,24 +195,40 @@ function selectActive(head: ContextBounds["head"], range: readonly EntryRecord[]
  * the next assistant; a missing result is synthesized and unmatched results are dropped.
  */
 export function orderToolResults(messages: readonly Message[]): Message[] {
-	const ordered: Message[] = [];
-	for (let index = 0; index < messages.length; index++) {
-		const message = messages[index]!;
-		if (message.role === "toolResult") continue;
-		ordered.push(message);
-		if (message.role !== "assistant") continue;
+	return orderToolResultsBy(
+		messages,
+		(message) => message,
+		(message) => message,
+	);
+}
+
+/** Apply tool ordering to model messages while retaining each caller's source item and context-only records. */
+export function orderToolResultsBy<T>(
+	items: readonly T[],
+	messageOf: (item: T) => Message | undefined,
+	synthesize: (message: ToolResultMessage) => T,
+): T[] {
+	const ordered: T[] = [];
+	for (let index = 0; index < items.length; index++) {
+		const item = items[index]!;
+		const message = messageOf(item);
+		if (message?.role === "toolResult") continue;
+		ordered.push(item);
+		if (message?.role !== "assistant") continue;
 		const calls = message.content.filter((content): content is ToolCall => content.type === "toolCall");
 		if (calls.length === 0) continue;
 		const results = new Map<string, number>();
-		for (let next = index + 1; next < messages.length && messages[next]!.role !== "assistant"; next++) {
-			const candidate = messages[next]!;
-			if (candidate.role === "toolResult" && !results.has(candidate.toolCallId)) {
+		for (let next = index + 1; next < items.length; next++) {
+			const candidate = messageOf(items[next]!);
+			if (candidate?.role === "assistant") break;
+			if (candidate?.role === "toolResult" && !results.has(candidate.toolCallId))
 				results.set(candidate.toolCallId, next);
-			}
 		}
 		for (const call of calls) {
 			const resultIndex = results.get(call.id);
-			ordered.push(resultIndex === undefined ? missingResult(call, message.timestamp) : messages[resultIndex]!);
+			ordered.push(
+				resultIndex === undefined ? synthesize(missingResult(call, message.timestamp)) : items[resultIndex]!,
+			);
 		}
 	}
 	return ordered;

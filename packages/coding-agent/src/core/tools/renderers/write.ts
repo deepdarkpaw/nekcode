@@ -8,7 +8,12 @@
 
 import { Container, Text } from "@earendil-works/pi-tui";
 import { keyHint } from "../../../modes/interactive/components/keybinding-hints.ts";
-import { getLanguageFromPath, highlightCode, type Theme } from "../../../modes/interactive/theme/theme.ts";
+import {
+	CodeHighlighter,
+	getLanguageFromPath,
+	highlightCode,
+	type Theme,
+} from "../../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/types.ts";
 import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "../render-utils.ts";
 import { formatToolHeader, getToolDisplayName } from "./tool-header.ts";
@@ -22,6 +27,12 @@ type WriteHighlightCache = {
 };
 class WriteCallRenderComponent extends Text {
 	cache?: WriteHighlightCache;
+	readonly highlighter = new CodeHighlighter();
+
+	override invalidate(): void {
+		super.invalidate();
+		this.cache = undefined;
+	}
 
 	constructor() {
 		super("", 0, 0);
@@ -32,11 +43,11 @@ function highlightSingleLine(line: string, lang: string): string {
 	const highlighted = highlightCode(line, lang);
 	return highlighted[0] ?? "";
 }
-function refreshWriteHighlightPrefix(cache: WriteHighlightCache): void {
+function refreshWriteHighlightPrefix(cache: WriteHighlightCache, highlighter: CodeHighlighter): void {
 	const prefixCount = Math.min(WRITE_PARTIAL_FULL_HIGHLIGHT_LINES, cache.normalizedLines.length);
 	if (prefixCount === 0) return;
 	const prefixSource = cache.normalizedLines.slice(0, prefixCount).join("\n");
-	const prefixHighlighted = highlightCode(prefixSource, cache.lang);
+	const prefixHighlighted = highlighter.highlight(prefixSource, cache.lang);
 	for (let i = 0; i < prefixCount; i++) {
 		cache.highlightedLines[i] =
 			prefixHighlighted[i] ?? highlightSingleLine(cache.normalizedLines[i] ?? "", cache.lang);
@@ -59,6 +70,7 @@ function updateWriteHighlightCacheIncremental(
 	cache: WriteHighlightCache | undefined,
 	rawPath: string | null,
 	fileContent: string,
+	highlighter: CodeHighlighter,
 ): WriteHighlightCache | undefined {
 	const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 	if (!lang) return undefined;
@@ -84,10 +96,10 @@ function updateWriteHighlightCacheIncremental(
 		cache.normalizedLines.push(segments[i]);
 		cache.highlightedLines.push(highlightSingleLine(segments[i], cache.lang));
 	}
-	refreshWriteHighlightPrefix(cache);
+	refreshWriteHighlightPrefix(cache, highlighter);
 	return cache;
 }
-function trimTrailingEmptyLines(lines: string[]): string[] {
+function trimTrailingEmptyLines(lines: readonly string[]): string[] {
 	let end = lines.length;
 	while (end > 0 && lines[end - 1] === "") {
 		end--;
@@ -99,6 +111,7 @@ function formatWriteCall(
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	cache: WriteHighlightCache | undefined,
+	highlighter: CodeHighlighter,
 	cwd: string,
 ): string {
 	const rawPath = str(args?.file_path ?? args?.path);
@@ -116,7 +129,7 @@ function formatWriteCall(
 	} else if (fileContent) {
 		const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 		const renderedLines = lang
-			? (cache?.highlightedLines ?? highlightCode(replaceTabs(normalizeDisplayText(fileContent)), lang))
+			? (cache?.highlightedLines ?? highlighter.highlight(replaceTabs(normalizeDisplayText(fileContent)), lang))
 			: normalizeDisplayText(fileContent).split("\n");
 		const lines = trimTrailingEmptyLines(renderedLines);
 		const totalLines = lines.length;
@@ -155,19 +168,17 @@ export const writeRenderers: Pick<ToolDefinition<any, any>, "renderCall" | "rend
 		const fileContent = str(renderArgs?.content);
 		const component =
 			(context.lastComponent as WriteCallRenderComponent | undefined) ?? new WriteCallRenderComponent();
-		if (fileContent !== null) {
-			component.cache = context.argsComplete
-				? rebuildWriteHighlightCacheFull(rawPath, fileContent)
-				: updateWriteHighlightCacheIncremental(component.cache, rawPath, fileContent);
-		} else {
-			component.cache = undefined;
-		}
+		component.cache =
+			fileContent !== null && !context.argsComplete
+				? updateWriteHighlightCacheIncremental(component.cache, rawPath, fileContent, component.highlighter)
+				: undefined;
 		component.setText(
 			formatWriteCall(
 				renderArgs,
 				{ expanded: context.expanded, isPartial: context.isPartial },
 				theme,
 				component.cache,
+				component.highlighter,
 				context.cwd,
 			),
 		);

@@ -47,17 +47,26 @@ function openDatabase(path: string): SyncSqliteConnection {
 }
 
 export function readSessionSnapshot(path: string): SessionSnapshot {
+	return readSnapshotDelta(path, EMPTY_SNAPSHOT_WATER);
+}
+
+/** Two indexed range reads in one SQLite snapshot; document-only commits return no historical rows. */
+export function readSnapshotDelta(path: string, water: SnapshotWater): SessionSnapshot {
 	const db = openDatabase(path);
 	try {
-		const conversations = (db.prepare("SELECT record FROM conversations ORDER BY id").all() as RecordRow[]).map(
-			(row) => JSON.parse(row.record) as ConversationRecord,
-		);
-		const entries = (db.prepare("SELECT record FROM entries ORDER BY id").all() as RecordRow[]).map(
-			(row) => JSON.parse(row.record) as EntryRecord,
-		);
+		db.exec("BEGIN");
+		const conversations = (
+			db
+				.prepare("SELECT record FROM conversations WHERE id > ? ORDER BY id")
+				.all(water.conversationId) as RecordRow[]
+		).map((row) => JSON.parse(row.record) as ConversationRecord);
+		const entries = (
+			db.prepare("SELECT record FROM entries WHERE id > ? ORDER BY id").all(water.entryId) as RecordRow[]
+		).map((row) => JSON.parse(row.record) as EntryRecord);
 		const { next_seq: nextSeq } = db.prepare("SELECT next_seq FROM durable_metadata WHERE singleton = 1").get() as {
 			next_seq: number;
 		};
+		db.exec("COMMIT");
 		return { conversations, entries, nextSeq };
 	} finally {
 		db.close();
@@ -101,6 +110,16 @@ export class Placement {
 		this.tails.set(conversationId, piId);
 	}
 
+	/** Independent write placement; transaction staging must never mutate the committed projection. */
+	copy(): Placement {
+		const copy = new Placement();
+		for (const [id, value] of this.durableIds) copy.durableIds.set(id, value);
+		for (const [id, value] of this.home) copy.home.set(id, value);
+		for (const [id, value] of this.tails) copy.tails.set(id, value);
+		copy.headerWritten = this.headerWritten;
+		return copy;
+	}
+
 	/** The conversation whose newest pi entry is `piId`. */
 	conversationEndingAt(piId: string): ConversationId | undefined {
 		for (const [conversationId, tail] of this.tails) if (tail === piId) return conversationId;
@@ -122,57 +141,93 @@ export type ProjectedSession = {
  * newest pi entry at or before the fork point.
  */
 export function projectSnapshot(snapshot: SessionSnapshot): ProjectedSession {
-	const parents = new Map(snapshot.conversations.map((record) => [record.id, record.parent]));
-	const placement = new Placement();
-	for (const record of snapshot.conversations) placement.tails.set(record.id, null);
-	/** Newest pi entry visible at each durable entry, within the entry's conversation history. */
-	const visibleAt = new Map<EntryId, string | null>();
-	const piIdOf = new Map<EntryId, string>();
-	let header: SessionHeader | undefined;
-	const fileEntries: FileEntry[] = [];
-	let lastTimestamp = new Date(0).toISOString();
-
-	const newestBefore = (conversationId: ConversationId): string | null => {
-		const tail = placement.tails.get(conversationId);
-		if (tail !== undefined && tail !== null) return tail;
-		const parent = parents.get(conversationId);
-		return parent === undefined ? null : (visibleAt.get(parent.at) ?? null);
+	const projection = new SnapshotProjection();
+	const { entries } = projection.fold(snapshot);
+	const header = projection.header;
+	return {
+		header,
+		fileEntries: header === undefined ? entries : [header, ...entries],
+		placement: projection.placement,
 	};
+}
 
-	for (const record of snapshot.entries) {
-		const parentId = newestBefore(record.conversationId);
-		const projected = projectRecord(record, () => ({
-			id: derivedEntryId(record.id),
-			parentId,
-			fallbackTimestamp: lastTimestamp,
-			idOf: (entryId) => piIdOf.get(entryId as EntryId),
-			compactionRecords: [],
-		}));
-		if (projected.type === "header") {
-			if (record.conversationId === ROOT_CONVERSATION_ID) {
-				header ??= projected.header;
-				placement.headerWritten = true;
-			}
-			visibleAt.set(record.id, parentId);
-			continue;
-		}
-		if (projected.type === "hidden") {
-			visibleAt.set(record.id, parentId);
-			continue;
-		}
-		// Within a conversation the pi path is its entry order: an entry's parent is the newest pi entry before it, even
-		// when its stored parentId names an older one (written while the engine appended entries the writer had not
-		// read yet). Imported and branched entries already agree with that order.
-		const entry: SessionEntry =
-			hasStoredEntry(record) && projected.entry.parentId !== parentId
-				? { ...projected.entry, parentId }
-				: projected.entry;
-		piIdOf.set(record.id, entry.id);
-		visibleAt.set(record.id, entry.id);
-		placement.record(entry.id, record.id, record.conversationId);
-		fileEntries.push(entry);
-		if (!hasStoredEntry(record)) lastTimestamp = entry.timestamp;
-		else if (typeof entry.timestamp === "string") lastTimestamp = entry.timestamp;
+/** Committed immutable-row high water, independent of document/progress commit sequences. */
+export type SnapshotWater = { readonly conversationId: number; readonly entryId: number };
+export const EMPTY_SNAPSHOT_WATER: SnapshotWater = { conversationId: 0, entryId: 0 };
+export type ProjectedDelta = { readonly header?: SessionHeader; readonly entries: SessionEntry[] };
+
+/** One fold for initialization and append-only refresh; retained state is indexes, not historical snapshots. */
+export class SnapshotProjection {
+	readonly placement = new Placement();
+	#parents = new Map<ConversationId, ConversationRecord["parent"]>();
+	#hiddenVisibleAt = new Map<EntryId, string | null>();
+	#piIdOf = new Map<EntryId, string>();
+	#header: SessionHeader | undefined;
+	#lastTimestamp = new Date(0).toISOString();
+	#water: SnapshotWater = EMPTY_SNAPSHOT_WATER;
+
+	get header(): SessionHeader | undefined {
+		return this.#header;
 	}
-	return { header, fileEntries: header === undefined ? fileEntries : [header, ...fileEntries], placement };
+	get water(): SnapshotWater {
+		return this.#water;
+	}
+
+	fold(snapshot: Pick<SessionSnapshot, "conversations" | "entries">): ProjectedDelta {
+		let conversationId = this.#water.conversationId;
+		for (const record of snapshot.conversations) {
+			if (this.#parents.has(record.id)) continue;
+			this.#parents.set(record.id, record.parent);
+			this.placement.tails.set(record.id, null);
+			conversationId = Math.max(conversationId, record.id);
+		}
+		const entries: SessionEntry[] = [];
+		const seen = new Set<EntryId>();
+		let entryId = this.#water.entryId;
+		let header: SessionHeader | undefined;
+		for (const record of snapshot.entries) {
+			if (record.id <= this.#water.entryId || seen.has(record.id)) continue;
+			if (record.id <= entryId) throw new Error(`Out-of-order durable entry ${record.id}`);
+			seen.add(record.id);
+			entryId = record.id;
+			const parentId = this.#newestBefore(record.conversationId);
+			const projected = projectRecord(record, () => ({
+				id: derivedEntryId(record.id),
+				parentId,
+				fallbackTimestamp: this.#lastTimestamp,
+				idOf: (id) => this.#piIdOf.get(id as EntryId),
+				compactionRecords: [],
+			}));
+			if (projected.type !== "entry") {
+				if (projected.type === "header" && record.conversationId === ROOT_CONVERSATION_ID) {
+					if (this.#header === undefined) header = this.#header = projected.header;
+					this.placement.headerWritten = true;
+				}
+				this.#hiddenVisibleAt.set(record.id, parentId);
+				continue;
+			}
+			const entry =
+				hasStoredEntry(record) && projected.entry.parentId !== parentId
+					? { ...projected.entry, parentId }
+					: projected.entry;
+			this.#piIdOf.set(record.id, entry.id);
+			this.placement.record(entry.id, record.id, record.conversationId);
+			entries.push(entry);
+			if (typeof entry.timestamp === "string") this.#lastTimestamp = entry.timestamp;
+		}
+		this.#water = { conversationId, entryId };
+		return { header, entries };
+	}
+
+	#newestBefore(conversationId: ConversationId): string | null {
+		if (!this.#parents.has(conversationId)) throw new Error(`Unknown durable conversation ${conversationId}`);
+		const tail = this.placement.tails.get(conversationId);
+		if (tail !== undefined && tail !== null) return tail;
+		const parent = this.#parents.get(conversationId);
+		if (parent === undefined) return null;
+		const visible = this.#piIdOf.get(parent.at) ?? this.#hiddenVisibleAt.get(parent.at);
+		if (visible === undefined)
+			throw new Error(`Missing durable fork point ${parent.at} for conversation ${conversationId}`);
+		return visible;
+	}
 }

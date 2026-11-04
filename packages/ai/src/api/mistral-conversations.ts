@@ -16,9 +16,9 @@ import type {
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
-import { parseStreamingJson, parseToolCallArguments } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { getCurrentTools, resolveTranscript } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
@@ -565,6 +565,7 @@ async function consumeChatStream(
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
 	const toolBlocksByKey = new Map<string | number, number>();
+	const toolArguments = new Map<ToolCall, ToolCallArgumentsStream>();
 
 	const finishCurrentBlock = (block?: typeof currentBlock) => {
 		if (!block) return;
@@ -696,12 +697,12 @@ async function consumeChatStream(
 					: deriveMistralToolCallId(`toolcall:${toolCall.index ?? 0}`, 0);
 			const key = toolCall.index ?? callId;
 			const existingIndex = toolBlocksByKey.get(key);
-			let block: (ToolCall & { partialArgs?: string }) | undefined;
+			let block: ToolCall | undefined;
 
 			if (existingIndex !== undefined) {
 				const existing = output.content[existingIndex];
 				if (existing?.type === "toolCall") {
-					block = existing as ToolCall & { partialArgs?: string };
+					block = existing;
 				}
 			}
 
@@ -711,8 +712,8 @@ async function consumeChatStream(
 					id: callId,
 					name: toolCall.function.name,
 					arguments: {},
-					partialArgs: "",
 				};
+				toolArguments.set(block, new ToolCallArgumentsStream());
 				output.content.push(block);
 				toolBlocksByKey.set(key, output.content.length - 1);
 				stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
@@ -722,8 +723,7 @@ async function consumeChatStream(
 				typeof toolCall.function.arguments === "string"
 					? toolCall.function.arguments
 					: JSON.stringify(toolCall.function.arguments || {});
-			block.partialArgs = (block.partialArgs || "") + argsDelta;
-			block.arguments = parseStreamingJson<ToolCall["arguments"]>(block.partialArgs);
+			block.arguments = toolArguments.get(block)!.append(argsDelta);
 			stream.push({
 				type: "toolcall_delta",
 				contentIndex: toolBlocksByKey.get(key)!,
@@ -737,11 +737,9 @@ async function consumeChatStream(
 	for (const index of toolBlocksByKey.values()) {
 		const block = output.content[index];
 		if (block.type !== "toolCall") continue;
-		const toolBlock = block as ToolCall & { partialArgs?: string };
-		Object.assign(toolBlock, parseToolCallArguments(toolBlock.partialArgs));
-		// Finalize in-place and strip the scratch buffer so replay only
-		// carries parsed arguments.
-		delete toolBlock.partialArgs;
+		const toolBlock = block;
+		Object.assign(toolBlock, toolArguments.get(block)!.finish());
+		toolArguments.delete(block);
 		stream.push({
 			type: "toolcall_end",
 			contentIndex: index,

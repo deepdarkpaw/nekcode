@@ -183,11 +183,17 @@ describe("tool exposure provider declarations", () => {
 			};
 			for (const readonly of [false, true]) {
 				const names = childToolNames(worker, readonly);
+				const previous = harness.session.getActiveToolNames();
+				const expected = [
+					...previous.filter((name) => names.includes(name)),
+					...names.filter((name) => !previous.includes(name)),
+				];
 				harness.session.setActiveToolsByName(names);
-				expect(harness.session.getActiveToolNames()).toEqual(names);
+				expect(harness.session.getActiveToolNames()).toEqual(expected);
+				expect(new Set(expected)).toEqual(new Set(names));
 				harness.setResponses([
 					(context) => {
-						expect(toolNames(context)).toEqual(names);
+						expect(toolNames(context)).toEqual(expected);
 						return fauxAssistantMessage("done");
 					},
 				]);
@@ -231,7 +237,7 @@ describe("tool exposure provider declarations", () => {
 			expect(harness.session.getActiveToolNames()).toEqual(["model_only", "tool_search"]);
 			expect(harness.session.getAllTools().find((tool) => tool.name === "optional_direct")?.exposure).toBe("direct");
 			harness.session.setActiveToolsByName(["optional_direct", "model_only", "deferred_docs", "hidden_secret"]);
-			expect(harness.session.getActiveToolNames()).toEqual(["optional_direct", "model_only", "deferred_docs"]);
+			expect(harness.session.getActiveToolNames()).toEqual(["model_only", "optional_direct", "deferred_docs"]);
 			expect(harness.session.agent.state.tools.find((tool) => tool.name === "optional_direct")?.outputSchema).toBe(
 				outputSchema,
 			);

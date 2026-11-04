@@ -218,7 +218,7 @@ describe("azure-openai-responses base URL normalization", () => {
 			{ apiKey: "test-api-key", azureBaseUrl: "https://my-resource.openai.azure.com" },
 		).result();
 
-		expect(azureMock.lastParams?.tools?.[0]).not.toHaveProperty("strict");
+		expect(azureMock.lastParams?.tools?.[0]).toHaveProperty("strict", false);
 	});
 
 	it("builds correct default URL from AZURE_OPENAI_RESOURCE_NAME", async () => {

@@ -999,6 +999,7 @@ export async function compact(
 			sessionId,
 			checkRequest,
 			settings.content,
+			customInstructions,
 		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -1066,6 +1067,7 @@ async function generateTurnPrefixSummary(
 	sessionId?: string,
 	checkRequest?: SummarizationRequestCheck,
 	contentSettings?: Partial<CompactionContentSettings>,
+	customInstructions?: string,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
@@ -1073,7 +1075,8 @@ async function generateTurnPrefixSummary(
 	); // Smaller budget for turn prefix
 	const llmMessages = convertToLlm(messages);
 	const conversationText = serializeConversation(llmMessages, contentSettings);
-	const promptText = `# Conversation\n${conversationText}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	let promptText = `# Conversation\n${conversationText}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	if (customInstructions) promptText += `\n\nAdditional focus: ${customInstructions}`;
 
 	const context = buildSummarizationContext(promptText);
 	checkRequest?.(model, context, maxTokens);

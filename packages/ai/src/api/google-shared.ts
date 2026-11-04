@@ -369,11 +369,62 @@ function sanitizeForOpenApi(schema: unknown): unknown {
 	return result;
 }
 
+/** Schema name maps contain subschemas, not schema keywords. */
+const JSON_SCHEMA_NAME_MAPS = new Set([
+	"properties",
+	"patternProperties",
+	"$defs",
+	"definitions",
+	"dependentSchemas",
+	"dependencies",
+]);
+const JSON_SCHEMA_SUBSCHEMAS = new Set([
+	"additionalProperties",
+	"unevaluatedProperties",
+	"propertyNames",
+	"items",
+	"prefixItems",
+	"additionalItems",
+	"unevaluatedItems",
+	"contains",
+	"allOf",
+	"anyOf",
+	"oneOf",
+	"not",
+	"if",
+	"then",
+	"else",
+	"contentSchema",
+]);
+
+/** Gemini ignores string/number const; rewrite schema nodes without touching literal defaults or examples. */
+function rewriteConstAsEnum(schema: unknown, isNameMap = false): unknown {
+	if (Array.isArray(schema)) return schema.map((item) => rewriteConstAsEnum(item));
+	if (typeof schema !== "object" || schema === null) return schema;
+	const result: Record<string, unknown> = Object.fromEntries(
+		Object.entries(schema).map(([key, value]) => {
+			if (isNameMap || JSON_SCHEMA_SUBSCHEMAS.has(key)) return [key, rewriteConstAsEnum(value)];
+			if (JSON_SCHEMA_NAME_MAPS.has(key)) return [key, rewriteConstAsEnum(value, true)];
+			return [key, value];
+		}),
+	);
+	if (
+		!isNameMap &&
+		"const" in result &&
+		result.enum === undefined &&
+		(typeof result.const === "string" || typeof result.const === "number")
+	) {
+		result.enum = [result.const];
+		delete result.const;
+	}
+	return result;
+}
+
 /**
  * Convert tools to Gemini function declarations format.
  *
- * By default uses `parametersJsonSchema` which supports full JSON Schema (including
- * anyOf, oneOf, const, etc.). Set `useParameters` to true to use the legacy `parameters`
+ * By default uses `parametersJsonSchema`, with string/number const rewritten as enum.
+ * Set `useParameters` to true to use the legacy `parameters`
  * field instead (OpenAPI 3.03 Schema). This is needed for Cloud Code Assist with Claude
  * models, where the API translates `parameters` into Anthropic's `input_schema`.
  */
@@ -393,7 +444,7 @@ export function convertTools(
 					description: tool.description,
 					...(useParameters
 						? { parameters: sanitizeForOpenApi(parameters as unknown) }
-						: { parametersJsonSchema: parameters }),
+						: { parametersJsonSchema: rewriteConstAsEnum(parameters) }),
 				};
 			}),
 		},

@@ -22,6 +22,7 @@ export {
 	CompactionTask,
 	type SummaryRequest,
 } from "./harness/compaction.ts";
+export { leadWithSystemBy, orderToolResultsBy } from "./harness/context.ts";
 export { defineExtension, defineTool, hook, section, wrapSection, wrapTool } from "./harness/define.ts";
 export {
 	type AgentEvent,

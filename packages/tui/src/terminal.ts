@@ -4,6 +4,7 @@ import { setKittyProtocolActive } from "./keys.ts";
 import { isNativeModifierPressed } from "./native-modifiers.ts";
 import { getNativePlatformHelper } from "./native-platform.ts";
 import { StdinBuffer } from "./stdin-buffer.ts";
+import { replaceControlCharacters } from "./utils.ts";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
@@ -82,6 +83,9 @@ export interface Terminal {
 	 * @param idleMs - Exit early if no input arrives within this time (default: 50ms)
 	 */
 	drainInput(maxMs?: number, idleMs?: number): Promise<void>;
+
+	/** Synchronous process-exit cleanup, in terminal-mode ordering. */
+	restoreOnExit?(before: string, after: string): void;
 
 	// Write output to terminal
 	write(data: string): void;
@@ -467,6 +471,20 @@ export class ProcessTerminal implements Terminal {
 		}
 	}
 
+	/** Flush mode resets synchronously: stdout.write may not drain during process.exit. */
+	restoreOnExit(before: string, after: string): void {
+		let sequence = before;
+		if (this.clearProgressInterval()) sequence += TERMINAL_PROGRESS_CLEAR_SEQUENCE;
+		sequence += "\x1b[?2004l";
+		if (this.keyboardProtocolPushed || this._kittyProtocolActive) sequence += "\x1b[<u";
+		if (this._modifyOtherKeysActive) sequence += "\x1b[>4;0m";
+		try {
+			fs.writeSync(process.stdout.fd, sequence + after);
+		} catch {
+			// The terminal may already be closed while the process exits.
+		}
+	}
+
 	write(data: string): void {
 		process.stdout.write(data);
 		if (this.writeLogPath) {
@@ -519,7 +537,7 @@ export class ProcessTerminal implements Terminal {
 
 	setTitle(title: string): void {
 		// OSC 0;title BEL - set terminal window title
-		process.stdout.write(`\x1b]0;${title}\x07`);
+		process.stdout.write(`\x1b]0;${replaceControlCharacters(title)}\x07`);
 	}
 
 	setProgress(active: boolean): void {

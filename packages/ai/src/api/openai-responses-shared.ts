@@ -32,12 +32,13 @@ import type {
 } from "../types.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
-import { parseStreamingJson, parseToolCallArguments } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { resolveTranscript, resolveTranscriptTools, type TranscriptToolSupport } from "../utils/transcript.ts";
 import {
-	appendGrammarToolInputJsonDelta,
+	appendGrammarToolInputJsonChunk,
+	closeGrammarToolInputJson,
 	type GrammarToolInputJsonBuffer,
 	getGrammarToolInput,
 	getJsonSchemaToolParameters,
@@ -134,6 +135,8 @@ export interface ConvertResponsesMessagesOptions {
 export interface ConvertResponsesToolsOptions {
 	strict?: boolean | null;
 	supportsStrictMode?: boolean;
+	/** False only for endpoints that reject the strict field (not merely strict validation). */
+	supportsStrictParameter?: boolean;
 	supportsOpenAIGrammarTools?: boolean;
 	toolSearchResult?: boolean;
 }
@@ -410,8 +413,10 @@ export function convertResponsesMessages<TApi extends Api>(
 // =============================================================================
 
 export function convertResponsesTools(tools: readonly Tool[], options?: ConvertResponsesToolsOptions): OpenAITool[] {
-	const defaultStrict = options?.strict === undefined ? false : options.strict;
-	const supportsStrictMode = options?.supportsStrictMode ?? true;
+	// Responses auto-normalizes omitted/null strict into required fields. Always opt out explicitly.
+	const supportsStrictParameter = options?.supportsStrictParameter ?? true;
+	const supportsStrictMode = (options?.supportsStrictMode ?? true) && supportsStrictParameter;
+	const defaultStrict = supportsStrictMode ? (options?.strict ?? false) : false;
 	const supportsOpenAIGrammarTools = options?.supportsOpenAIGrammarTools ?? false;
 
 	return tools.map((tool) => {
@@ -441,7 +446,7 @@ export function convertResponsesTools(tools: readonly Tool[], options?: ConvertR
 			parameters: getJsonSchemaToolParameters(tool, strict === true) as Record<string, unknown>,
 			...(options?.toolSearchResult ? { defer_loading: true } : {}),
 		};
-		if (supportsStrictMode) {
+		if (supportsStrictParameter) {
 			functionTool.strict = strict;
 		}
 		return functionTool as OpenAITool;
@@ -452,33 +457,38 @@ export function convertResponsesTools(tools: readonly Tool[], options?: ConvertR
 // Stream processing
 // =============================================================================
 
-type StreamingToolCall = ToolCall & {
-	partialJson?: string;
-	customInput?: {
-		property: string;
-		jsonBuffer: GrammarToolInputJsonBuffer;
-	};
-};
+interface CustomToolInput {
+	property: string;
+	jsonBuffer: GrammarToolInputJsonBuffer;
+}
 
-function getCustomToolCallInput(block: StreamingToolCall): string {
-	const property = block.customInput?.property;
+function getCustomToolCallInput(slot: ToolCallOutputSlot): string {
+	const property = slot.customInput?.property;
 	if (property === undefined) return "";
-	const value = block.arguments[property];
+	const value = slot.block.arguments[property];
 	return typeof value === "string" ? value : "";
 }
 
-function appendCustomToolCallInput(block: StreamingToolCall, nextInput: string, close: boolean): string | undefined {
-	const customInput = block.customInput;
+function appendCustomToolCallInput(slot: ToolCallOutputSlot, nextInput: string, close: boolean): string | undefined {
+	const customInput = slot.customInput;
 	if (!customInput) return undefined;
-	const delta = appendGrammarToolInputJsonDelta(customInput.jsonBuffer, customInput.property, nextInput, close);
-	block.arguments = { [customInput.property]: nextInput };
+	const delta = close
+		? closeGrammarToolInputJson(customInput.jsonBuffer, customInput.property, nextInput)
+		: appendGrammarToolInputJsonChunk(customInput.jsonBuffer, customInput.property, nextInput);
+	slot.block.arguments = { [customInput.property]: customInput.jsonBuffer.input };
 	return delta;
 }
 
 type ResponsesOutputSlot =
 	| { type: "thinking"; block: ThinkingContent; contentIndex: number }
 	| { type: "text"; block: TextContent; contentIndex: number }
-	| { type: "toolCall"; block: StreamingToolCall; contentIndex: number };
+	| {
+			type: "toolCall";
+			block: ToolCall;
+			contentIndex: number;
+			arguments?: ToolCallArgumentsStream;
+			customInput?: CustomToolInput;
+	  };
 
 type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
 
@@ -514,6 +524,11 @@ export async function processResponsesStream<TApi extends Api>(
 		});
 	};
 	const createSlot = (outputIndex: number, item: ResponseOutputItem): ResponsesOutputSlot | undefined => {
+		if (outputSlots.has(outputIndex)) {
+			throw new Error(
+				`OpenAI Responses stream reused output_index ${outputIndex} before the previous item completed`,
+			);
+		}
 		if (item.type === "reasoning") {
 			const block: ThinkingContent = { type: "thinking", thinking: "" };
 			output.content.push(block);
@@ -536,46 +551,46 @@ export async function processResponsesStream<TApi extends Api>(
 			return slot;
 		}
 		if (item.type === "function_call") {
-			const block: StreamingToolCall = {
+			const block: ToolCall = {
 				type: "toolCall",
 				id: `${item.call_id}|${item.id}`,
 				name: item.name,
 				arguments: {},
 				...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
-				partialJson: item.arguments || "",
 			};
 			output.content.push(block);
-			const slot = {
+			const slot: ToolCallOutputSlot = {
 				type: "toolCall",
 				block,
 				contentIndex: output.content.length - 1,
-			} satisfies ResponsesOutputSlot;
+			};
 			outputSlots.set(outputIndex, slot);
+			const argumentsStream = new ToolCallArgumentsStream();
+			argumentsStream.append(item.arguments || "");
+			slot.arguments = argumentsStream;
 			stream.push({ type: "toolcall_start", contentIndex: slot.contentIndex, partial: output });
 			return slot;
 		}
 		if (item.type === "custom_tool_call") {
 			const inputProperty = options?.grammarToolInputProperties?.get(item.name) ?? "input";
 			const input = item.input || "";
-			const block: StreamingToolCall = {
+			const block: ToolCall = {
 				type: "toolCall",
 				id: `${item.call_id}|${item.id}`,
 				name: item.name,
 				arguments: { [inputProperty]: input },
 				...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
-				customInput: {
-					property: inputProperty,
-					jsonBuffer: { input: "", started: false, closed: false },
-				},
 			};
 			output.content.push(block);
-			const slot = {
+			const slot: ToolCallOutputSlot = {
 				type: "toolCall",
 				block,
 				contentIndex: output.content.length - 1,
-			} satisfies ResponsesOutputSlot;
+			};
 			outputSlots.set(outputIndex, slot);
+			slot.customInput = { property: inputProperty, jsonBuffer: { input: "", started: false, closed: false } };
 			stream.push({ type: "toolcall_start", contentIndex: slot.contentIndex, partial: output });
+			if (input) pushToolCallDelta(slot, appendCustomToolCallInput(slot, input, false));
 			return slot;
 		}
 		return undefined;
@@ -706,32 +721,23 @@ export async function processResponsesStream<TApi extends Api>(
 			});
 		} else if (event.type === "response.function_call_arguments.delta") {
 			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || slot.block.partialJson === undefined) continue;
-			slot.block.partialJson += event.delta;
-			slot.block.arguments = parseStreamingJson(slot.block.partialJson);
+			if (!slot?.arguments) continue;
+			slot.block.arguments = slot.arguments.append(event.delta);
 			pushToolCallDelta(slot, event.delta);
 		} else if (event.type === "response.function_call_arguments.done") {
 			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || slot.block.partialJson === undefined) continue;
-			const previousPartialJson = slot.block.partialJson;
-			slot.block.partialJson = event.arguments;
-			slot.block.arguments = parseStreamingJson(slot.block.partialJson);
-
-			if (event.arguments.startsWith(previousPartialJson)) {
-				const delta = event.arguments.slice(previousPartialJson.length);
-				if (delta.length > 0) pushToolCallDelta(slot, delta);
-			}
+			if (!slot?.arguments) continue;
+			const replacement = slot.arguments.replace(event.arguments);
+			slot.block.arguments = replacement.arguments;
+			if (replacement.delta) pushToolCallDelta(slot, replacement.delta);
 		} else if (event.type === "response.custom_tool_call_input.delta") {
 			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || !slot.block.customInput) continue;
-			pushToolCallDelta(
-				slot,
-				appendCustomToolCallInput(slot.block, getCustomToolCallInput(slot.block) + event.delta, false),
-			);
+			if (!slot || !slot.customInput) continue;
+			pushToolCallDelta(slot, appendCustomToolCallInput(slot, event.delta, false));
 		} else if (event.type === "response.custom_tool_call_input.done") {
 			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || !slot.block.customInput) continue;
-			pushToolCallDelta(slot, appendCustomToolCallInput(slot.block, event.input, true));
+			if (!slot || !slot.customInput) continue;
+			pushToolCallDelta(slot, appendCustomToolCallInput(slot, event.input, true));
 		} else if (event.type === "response.output_item.done") {
 			const item = event.item;
 			applyMessagePhaseStopReason(item);
@@ -760,16 +766,10 @@ export async function processResponsesStream<TApi extends Api>(
 					partial: output,
 				});
 				outputSlots.delete(event.output_index);
-			} else if (
-				item.type === "function_call" &&
-				slot?.type === "toolCall" &&
-				slot.block.partialJson !== undefined
-			) {
-				Object.assign(slot.block, parseToolCallArguments(item.arguments || slot.block.partialJson));
+			} else if (item.type === "function_call" && slot?.type === "toolCall" && slot.arguments !== undefined) {
+				if (item.arguments) slot.arguments.replace(item.arguments);
+				Object.assign(slot.block, slot.arguments.finish());
 				if (item.namespace !== undefined) slot.block.namespace = item.namespace;
-				// Finalize in-place and strip the scratch buffer so replay only
-				// carries parsed arguments.
-				delete slot.block.partialJson;
 				stream.push({
 					type: "toolcall_end",
 					contentIndex: slot.contentIndex,
@@ -777,13 +777,10 @@ export async function processResponsesStream<TApi extends Api>(
 					partial: output,
 				});
 				outputSlots.delete(event.output_index);
-			} else if (item.type === "custom_tool_call" && slot?.type === "toolCall" && slot.block.customInput) {
-				pushToolCallDelta(
-					slot,
-					appendCustomToolCallInput(slot.block, item.input ?? getCustomToolCallInput(slot.block), true),
-				);
+			} else if (item.type === "custom_tool_call" && slot?.type === "toolCall" && slot.customInput) {
+				pushToolCallDelta(slot, appendCustomToolCallInput(slot, item.input ?? getCustomToolCallInput(slot), true));
 				if (item.namespace !== undefined) slot.block.namespace = item.namespace;
-				delete slot.block.customInput;
+				delete slot.customInput;
 				stream.push({
 					type: "toolcall_end",
 					contentIndex: slot.contentIndex,
@@ -816,14 +813,11 @@ export async function processResponsesStream<TApi extends Api>(
 	// output_item.done never arrived: their arguments may be cut off or mixed up, e.g. when a
 	// non-compliant server omits output_index. Finished calls have their scratch buffers removed.
 	if (output.stopReason === "toolUse") {
-		for (const block of output.content) {
-			if (block.type !== "toolCall") continue;
-			const toolCall = block as StreamingToolCall;
-			if (toolCall.partialJson !== undefined || toolCall.customInput !== undefined) {
-				throw new Error(
-					`OpenAI Responses stream completed with an unfinished tool call: ${toolCall.name} (${toolCall.id})`,
-				);
-			}
+		for (const slot of outputSlots.values()) {
+			if (slot.type !== "toolCall") continue;
+			throw new Error(
+				`OpenAI Responses stream completed with an unfinished tool call: ${slot.block.name} (${slot.block.id})`,
+			);
 		}
 	}
 }

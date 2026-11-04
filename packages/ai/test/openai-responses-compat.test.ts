@@ -156,6 +156,46 @@ describe("openai-responses provider defaults", () => {
 		});
 	});
 
+	it.each([undefined, false, true])(
+		"preserves optional arguments with supportsStrictMode=%s",
+		async (supportsStrictMode) => {
+			const model: Model<"openai-responses"> = {
+				...getModel("openai", "gpt-5.4"),
+				provider: "test-responses",
+				baseUrl: "https://example.invalid/v1",
+				compat: { supportsStrictMode },
+			};
+			let payload: unknown;
+			vi.spyOn(globalThis, "fetch").mockResolvedValue(
+				new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } }),
+			);
+			const stream = streamOpenAIResponses(
+				model,
+				normalizeContext({
+					messages: [{ role: "user", content: "Plan", timestamp: 0 }],
+					tools: [
+						{
+							name: "create_plan",
+							description: "Create a plan",
+							parameters: Type.Object({
+								plan_id: Type.Optional(Type.String()),
+								overview: Type.String(),
+							}),
+						},
+					],
+				}),
+				{
+					apiKey: "test-key",
+					onPayload: (value) => {
+						payload = value;
+					},
+				},
+			);
+			await stream.result();
+			expect(payload).toMatchObject({ tools: [{ strict: false, parameters: { required: ["overview"] } }] });
+		},
+	);
+
 	it("sets strict mode explicitly for Cloudflare OpenAI Responses tools", async () => {
 		const model = getModel("cloudflare-ai-gateway", "gpt-5.6-sol");
 		let capturedPayload: CapturedResponsesPayload | undefined;

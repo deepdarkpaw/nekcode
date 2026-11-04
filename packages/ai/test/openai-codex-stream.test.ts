@@ -978,7 +978,7 @@ describe("openai-codex streaming", () => {
 		).result();
 
 		expect(requestedTools).toMatchObject([
-			{ type: "function", name: "optional", strict: null },
+			{ type: "function", name: "optional", strict: false },
 			{ type: "function", name: "strict", strict: true },
 		]);
 	});

@@ -121,7 +121,6 @@ import {
 	type BranchSummaryEntry,
 	type ContextEditEntry,
 	getLatestCompactionEntry,
-	type CompactionEntry as SessionCompactionEntry,
 	type SessionEntry,
 	SessionManager,
 } from "./session-manager.ts";
@@ -142,6 +141,15 @@ import { createReadStateStore, type ReadStateStore } from "./tools/read-state.ts
 import { restoreReadState } from "./tools/read-state-replay.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
+
+/** Shared summary inputs; lifecycle/continuation policy stays in the manual and automatic callers. */
+interface CompactionRun {
+	reason: "manual" | "overflow" | "threshold";
+	willRetry: boolean;
+	signal: AbortSignal;
+	customInstructions?: string;
+	state: { fromExtension: boolean; cancelledByExtension: boolean };
+}
 
 // ============================================================================
 // Skill Block Parsing
@@ -425,6 +433,9 @@ export class AgentSession {
 	private _lastToolResults: AgentMessage[] = [];
 	private _cachedMessages: AgentMessage[];
 	private readonly _knownSessionEntryIds = new Set<string>();
+	private _knownSessionEntryPosition = 0;
+	private _knownSessionId = "";
+	private _finalizedContextVersion = -1;
 	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
@@ -572,6 +583,8 @@ export class AgentSession {
 
 		this._cachedMessages = this.sessionManager.buildSessionContext().messages;
 		for (const entry of this.sessionManager.getEntries()) this._knownSessionEntryIds.add(entry.id);
+		this._knownSessionId = this.sessionManager.getSessionId();
+		this._knownSessionEntryPosition = this.sessionManager.getCommittedEntryCount();
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
@@ -777,9 +790,15 @@ export class AgentSession {
 		);
 		this._durableModels = models;
 		const store = this.sessionManager.durableStore();
+		await this.sessionManager.refresh();
+		const selectedLeaf = this.sessionManager.getLeafId();
+		const selected = selectedLeaf === null ? undefined : this.sessionManager.durablePositionOf(selectedLeaf);
+		if (selectedLeaf !== null && !selected)
+			throw new Error(`Selected session entry ${selectedLeaf} has no durable position`);
 		const engine = await DurableEngine.open({
 			path: this.sessionManager.getSessionFile(),
 			store,
+			conversationId: selected?.conversationId,
 			models,
 			settingsManager: this.settingsManager,
 			tools: this.getActiveToolNames().flatMap((name) => {
@@ -803,8 +822,7 @@ export class AgentSession {
 			try {
 				// Finish cancellation before host event handlers can request a continuation or new input is admitted.
 				await engine.discardInterruptedWork();
-				await this.sessionManager.refresh();
-				this._refreshFinalizedContext();
+				await this._syncFinalizedContext();
 			} catch (error) {
 				await engine.close();
 				throw error;
@@ -1206,9 +1224,10 @@ export class AgentSession {
 			this._retryCancelled = false;
 			if (cancelled) event = { type: "auto_retry_end", success: false, attempt, finalError: "Retry cancelled" };
 		}
-		await this.sessionManager.refresh();
-		this._refreshFinalizedContext();
-		for (const entry of this.sessionManager.getEntries()) {
+		await this._syncFinalizedContext();
+		const committed = this.sessionManager.getCommittedEntriesSince(this._knownSessionEntryPosition);
+		this._knownSessionEntryPosition = committed.position;
+		for (const entry of committed.entries) {
 			if (this._knownSessionEntryIds.has(entry.id)) continue;
 			this._knownSessionEntryIds.add(entry.id);
 			if (
@@ -1317,8 +1336,7 @@ export class AgentSession {
 		// Pi's post-run automatic compaction: an overflow or truncated answer compacts and retries; a threshold compaction
 		// continues when work is queued.
 		if (engine !== undefined && !this._agentRunAbortRequested) {
-			await this.sessionManager.refresh();
-			this._refreshFinalizedContext();
+			await this._syncFinalizedContext();
 			const last = this._findLastAssistantMessage();
 			const toolResults = this._lastToolResults;
 			this._lastToolResults = [];
@@ -1450,8 +1468,7 @@ export class AgentSession {
 		this._runEnded = false;
 		this._agentRunAbortRequested = false;
 		this._durableSignal = undefined;
-		await this.sessionManager.refresh();
-		this._refreshFinalizedContext();
+		await this._syncFinalizedContext();
 		this._flushPendingBashMessages();
 		this._cacheWarmer?.onAgentSettled();
 		this._isEmittingAgentSettled = true;
@@ -1600,6 +1617,20 @@ export class AgentSession {
 	// Event Subscription
 	// =========================================================================
 
+	/** Synchronize by committed rows, retaining model-context identity across progress-only events. */
+	private async _syncFinalizedContext(): Promise<void> {
+		const sessionId = this.sessionManager.getSessionId();
+		if (sessionId !== this._knownSessionId) {
+			this._knownSessionId = sessionId;
+			this._knownSessionEntryIds.clear();
+			for (const entry of this.sessionManager.getEntries()) this._knownSessionEntryIds.add(entry.id);
+			this._knownSessionEntryPosition = this.sessionManager.getCommittedEntryCount();
+			this._finalizedContextVersion = -1;
+		}
+		await this.sessionManager.refreshChanges();
+		if (this._finalizedContextVersion !== this.sessionManager.getContextVersion()) this._refreshFinalizedContext();
+	}
+
 	private _refreshFinalizedContext(): void {
 		const projection = this.sessionManager.buildSessionProjection();
 		for (const entry of projection.entries) {
@@ -1607,6 +1638,7 @@ export class AgentSession {
 		}
 		this._cachedMessages = projection.messages;
 		this.agent.state.messages = this._cachedMessages;
+		this._finalizedContextVersion = this.sessionManager.getContextVersion();
 	}
 
 	/** Emit an event to all listeners */
@@ -1805,7 +1837,9 @@ export class AgentSession {
 	}
 
 	private _setActiveTools(toolNames: string[]): void {
-		const validToolNames = [...new Set(toolNames)].filter(
+		const requested = new Set(toolNames);
+		const kept = this.getActiveToolNames().filter((name) => requested.has(name));
+		const validToolNames = [...new Set([...kept, ...requested])].filter(
 			(name) => this._toolRegistry.has(name) && this._getToolExposure(name) !== "hidden",
 		);
 		this.agent.state.tools = validToolNames.flatMap((name) => {
@@ -2201,6 +2235,7 @@ export class AgentSession {
 			await engine.markSettlementPending();
 			// Handlers may change the loadout; the run's first request offers it.
 			await this._emitRunStartEarly();
+			await this._alignEngineBranch(engine);
 			engine.setTools(this._activeAgentTools());
 			await engine.setPrompt(this._promptSections(this._runSystemPromptOptions ?? this._baseSystemPromptOptions));
 			after.push(...this._takeStartingRunMessages());
@@ -2257,6 +2292,18 @@ export class AgentSession {
 		await this._promptWithInput(processed.text, processed.images, options);
 	}
 
+	/** Align admission after startup hooks have persisted their entries, without moving the selected tree leaf. */
+	private async _alignEngineBranch(engine: DurableEngine): Promise<void> {
+		await this.sessionManager.refresh();
+		const leaf = this.sessionManager.getLeafId();
+		if (leaf === null && this.sessionManager.getEntryCount() === 0) return;
+		const position = leaf === null ? undefined : this.sessionManager.durablePositionOf(leaf);
+		if (leaf !== null && !position) throw new Error(`Selected session entry ${leaf} has no durable position`);
+		if (position?.atTip && position.conversationId === engine.conversationId) return;
+		await engine.selectBranch(position, { moveSettlement: true });
+		if (this.model) await engine.setModel(this.model, this.thinkingLevel);
+	}
+
 	private async _promptWithInput(
 		currentText: string,
 		currentImages: ImageContent[] | undefined,
@@ -2310,6 +2357,8 @@ export class AgentSession {
 			await engine.markSettlementPending();
 			// Handlers may change the loadout; the run's first request offers it.
 			await this._emitRunStartEarly();
+			// Align while preparation still holds queued input; ending it first would let input start its own run.
+			await this._alignEngineBranch(engine);
 			messages.push(...this._takeStartingRunMessages());
 			submission = await engine.prompt(content, {
 				systemPrompt: this._promptSections(this._runSystemPromptOptions ?? this._baseSystemPromptOptions),
@@ -2580,13 +2629,13 @@ export class AgentSession {
 		}
 		// Idle: appended and announced at once, as pi did, so code after the call sees it in the transcript. The session
 		// writes it to durable storage in order; the stream's events for that entry are not repeated.
-		this.sessionManager.appendCustomMessageEntry(
+		const entryId = this.sessionManager.appendCustomMessageEntry(
 			appMessage.customType,
 			appMessage.content,
 			appMessage.display,
 			appMessage.details,
 		);
-		for (const entry of this.sessionManager.getEntries()) this._knownSessionEntryIds.add(entry.id);
+		this._knownSessionEntryIds.add(entryId);
 		this._refreshFinalizedContext();
 		this._hostAnnouncedCustom.push(customMessageKey(appMessage));
 		this._emit({ type: "message_start", message: appMessage });
@@ -3102,24 +3151,7 @@ export class AgentSession {
 				const errorMessage = contextOverflow
 					? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
 					: "Truncated response recovery failed after one compact-and-retry attempt.";
-				this._emit({
-					type: "compaction_end",
-					reason: "overflow",
-					result: undefined,
-					aborted: false,
-					willRetry: false,
-					errorMessage,
-				});
-				if (this._extensionRunner.hasHandlers("session_compact_failed")) {
-					await this._extensionRunner.emit({
-						type: "session_compact_failed",
-						reason: "overflow",
-						errorMessage,
-						aborted: false,
-						willRetry: false,
-						fromExtension: false,
-					});
-				}
+				await this._notifyCompactionFailed("overflow", false, errorMessage, false);
 				return false;
 			}
 			// Persistently omit the selected final attempt before post-run recovery compaction.
@@ -3158,6 +3190,117 @@ export class AgentSession {
 		return false;
 	}
 
+	/** Common extension hook and summary request; automatic callers check cancellation before generation. */
+	private async _summarizeCompaction(
+		preparation: NonNullable<ReturnType<typeof prepareCompaction>>,
+		branchEntries: SessionEntry[],
+		summarizer: CompactionSummarizer,
+		run: CompactionRun,
+	): Promise<CompactionResult> {
+		let extensionCompaction: CompactionResult | undefined;
+		if (this._extensionRunner.hasHandlers("session_before_compact")) {
+			const result = (await this._extensionRunner.emit({
+				type: "session_before_compact",
+				preparation,
+				branchEntries,
+				customInstructions: run.customInstructions,
+				reason: run.reason,
+				willRetry: run.willRetry,
+				signal: run.signal,
+			})) as SessionBeforeCompactResult | undefined;
+			if (result?.cancel) {
+				run.state.cancelledByExtension = true;
+				throw new Error("Compaction cancelled");
+			}
+			if (result?.compaction) {
+				extensionCompaction = result.compaction;
+				run.state.fromExtension = true;
+			}
+		}
+		if (run.reason !== "manual") run.signal.throwIfAborted();
+		const { model, apiKey, headers, env, checkRequest } = summarizer;
+		return (
+			extensionCompaction ??
+			(await compact(
+				preparation,
+				model,
+				apiKey,
+				headers,
+				run.customInstructions,
+				run.signal,
+				resolveCompactionThinkingLevel(
+					this.settingsManager.getCompactionThinkingLevel(),
+					model,
+					this.thinkingLevel,
+				),
+				this.agent.streamFunction,
+				env,
+				this.settingsManager.getRetrySettings(),
+				this._summarizationRetryCallbacks({ source: "compaction", reason: run.reason }),
+				undefined,
+				checkRequest,
+			))
+		);
+	}
+
+	/** Persist, refresh, account for usage and notify extensions in the same order for both entry points. */
+	private async _saveCompaction(
+		generated: CompactionResult,
+		run: CompactionRun,
+		afterPersist?: () => Promise<void> | undefined,
+	): Promise<CompactionResult> {
+		const { summary, firstKeptEntryId, tokensBefore, usage, details } = generated;
+		const {
+			reason,
+			willRetry,
+			state: { fromExtension },
+		} = run;
+		const entryId = this.sessionManager.appendCompaction(
+			summary,
+			firstKeptEntryId,
+			tokensBefore,
+			details,
+			fromExtension,
+			usage,
+		);
+		this._knownSessionEntryIds.add(entryId);
+		await this.sessionManager.flush();
+		if (afterPersist) await afterPersist();
+		this._refreshFinalizedContext();
+		const estimatedTokensAfter = _estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
+		const savedCompactionEntry = this.sessionManager.getEntry(entryId);
+		if (savedCompactionEntry?.type === "compaction") {
+			await this._extensionRunner.emit({
+				type: "session_compact",
+				compactionEntry: savedCompactionEntry,
+				fromExtension,
+				reason,
+				willRetry,
+			});
+		}
+		return { summary, firstKeptEntryId, tokensBefore, estimatedTokensAfter, usage, details };
+	}
+
+	/** End a failed compaction before notifying extensions; callers retain their own busy-state and error policy. */
+	private async _notifyCompactionFailed(
+		reason: CompactionRun["reason"],
+		aborted: boolean,
+		errorMessage: string | undefined,
+		fromExtension: boolean,
+	): Promise<void> {
+		this._emit({ type: "compaction_end", reason, result: undefined, aborted, willRetry: false, errorMessage });
+		if (this._extensionRunner.hasHandlers("session_compact_failed")) {
+			await this._extensionRunner.emit({
+				type: "session_compact_failed",
+				reason,
+				errorMessage,
+				aborted,
+				willRetry: false,
+				fromExtension,
+			});
+		}
+	}
+
 	/**
 	 * Threshold or overflow compaction, as pi runs it: pi's cut point, `session_before_compact`, pi's summarizer, and the
 	 * compaction entry. Returns whether the run should continue (a retry, or queued work).
@@ -3167,8 +3310,7 @@ export class AgentSession {
 		const settings = this.settingsManager.getCompactionSettings(model);
 		let abortController: AbortController | undefined;
 		let started = false;
-		let fromExtension = false;
-		let cancelledByExtension = false;
+		const state = { fromExtension: false, cancelledByExtension: false };
 		try {
 			if (!model) return false;
 			const pathEntries = this.sessionManager.getBranch();
@@ -3179,107 +3321,26 @@ export class AgentSession {
 			started = true;
 			this._emit({ type: "compaction_start", reason });
 			abortController.signal.throwIfAborted();
-			const {
-				model: requestModel,
-				apiKey,
-				headers,
-				env,
-				checkRequest,
-			} = await this._getCompactionSummarizer(model, abortController.signal);
+			const summarizer = await this._getCompactionSummarizer(model, abortController.signal);
 			abortController.signal.throwIfAborted();
-			let extensionCompaction: CompactionResult | undefined;
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const extensionResult = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions: undefined,
-					reason,
-					willRetry,
-					signal: abortController.signal,
-				})) as SessionBeforeCompactResult | undefined;
-				if (extensionResult?.cancel) {
-					cancelledByExtension = true;
-					throw new Error("Compaction cancelled");
-				}
-				if (extensionResult?.compaction) {
-					extensionCompaction = extensionResult.compaction;
-					fromExtension = true;
-				}
-			}
+			const run: CompactionRun = { reason, willRetry, signal: abortController.signal, state };
+			const generated = await this._summarizeCompaction(preparation, pathEntries, summarizer, run);
 			abortController.signal.throwIfAborted();
-			const generated =
-				extensionCompaction ??
-				(await compact(
-					preparation,
-					requestModel,
-					apiKey,
-					headers,
-					undefined,
-					abortController.signal,
-					resolveCompactionThinkingLevel(
-						this.settingsManager.getCompactionThinkingLevel(),
-						requestModel,
-						this.thinkingLevel,
-					),
-					this.agent.streamFunction,
-					env,
-					this.settingsManager.getRetrySettings(),
-					this._summarizationRetryCallbacks({ source: "compaction", reason }),
-					undefined,
-					checkRequest,
-				));
-			abortController.signal.throwIfAborted();
-			const { summary, firstKeptEntryId, tokensBefore, usage, details } = generated;
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			for (const entry of this.sessionManager.getEntries()) this._knownSessionEntryIds.add(entry.id);
-			await this.sessionManager.flush();
-			this._refreshFinalizedContext();
-			const estimatedTokensAfter = _estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
-			const savedCompactionEntry = this.sessionManager
-				.getEntries()
-				.find((entry): entry is SessionCompactionEntry => entry.type === "compaction" && entry.summary === summary);
-			if (savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-					reason,
-					willRetry,
-				});
-			}
-			const result: CompactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				estimatedTokensAfter,
-				usage,
-				details,
-			};
+			const result = await this._saveCompaction(generated, run);
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 			if (willRetry) return true;
 			// Auto-compaction can complete while queued work is waiting; continue once so it is delivered.
 			return this._hasHeldWork();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "compaction failed";
-			const aborted = abortController?.signal.aborted === true || cancelledByExtension;
+			const aborted = abortController?.signal.aborted === true || state.cancelledByExtension;
 			if (started) {
 				const errorMessage = aborted
 					? undefined
 					: reason === "overflow"
 						? `Context overflow recovery failed: ${message}`
 						: `Auto-compaction failed: ${message}`;
-				this._emit({ type: "compaction_end", reason, result: undefined, aborted, willRetry: false, errorMessage });
-				if (this._extensionRunner.hasHandlers("session_compact_failed")) {
-					await this._extensionRunner.emit({
-						type: "session_compact_failed",
-						reason,
-						errorMessage,
-						aborted,
-						willRetry: false,
-						fromExtension,
-					});
-				}
+				await this._notifyCompactionFailed(reason, aborted, errorMessage, state.fromExtension);
 			}
 			return false;
 		} finally {
@@ -3312,19 +3373,12 @@ export class AgentSession {
 		this._compactionAbortController = new AbortController();
 		const signal = this._compactionAbortController.signal;
 		this._emit({ type: "compaction_start", reason: "manual" });
-		let fromExtension = false;
-		let cancelledByExtension = false;
+		const state = { fromExtension: false, cancelledByExtension: false };
 		try {
 			const model = this.model;
 			if (!model) throw new Error(formatNoModelSelectedMessage());
 			const settings = this.settingsManager.getCompactionSettings(model);
-			const {
-				model: requestModel,
-				apiKey,
-				headers,
-				env,
-				checkRequest,
-			} = await this._getCompactionSummarizer(model, signal);
+			const summarizer = await this._getCompactionSummarizer(model, signal);
 			const pathEntries = this.sessionManager.getBranch();
 			const preparation = prepareCompaction(pathEntries, settings);
 			if (!preparation) {
@@ -3333,77 +3387,12 @@ export class AgentSession {
 			}
 			await this._engine?.markCompactionPending(customInstructions);
 
-			let extensionCompaction: CompactionResult | undefined;
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const result = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions,
-					reason: "manual",
-					willRetry: false,
-					signal,
-				})) as SessionBeforeCompactResult | undefined;
-				if (result?.cancel) {
-					cancelledByExtension = true;
-					throw new Error("Compaction cancelled");
-				}
-				if (result?.compaction) {
-					extensionCompaction = result.compaction;
-					fromExtension = true;
-				}
-			}
-
-			const generated =
-				extensionCompaction ??
-				(await compact(
-					preparation,
-					requestModel,
-					apiKey,
-					headers,
-					customInstructions,
-					signal,
-					resolveCompactionThinkingLevel(
-						this.settingsManager.getCompactionThinkingLevel(),
-						requestModel,
-						this.thinkingLevel,
-					),
-					this.agent.streamFunction,
-					env,
-					this.settingsManager.getRetrySettings(),
-					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
-					undefined,
-					checkRequest,
-				));
+			const run: CompactionRun = { reason: "manual", willRetry: false, signal, customInstructions, state };
+			const generated = await this._summarizeCompaction(preparation, pathEntries, summarizer, run);
 			if (signal.aborted) throw new Error("Compaction cancelled");
-
-			const { summary, firstKeptEntryId, tokensBefore, usage, details } = generated;
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			for (const entry of this.sessionManager.getEntries()) this._knownSessionEntryIds.add(entry.id);
-			await this.sessionManager.flush();
-			await this._engine?.clearCompactionPending();
-			this._refreshFinalizedContext();
-			const estimatedTokensAfter = _estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
-			const savedCompactionEntry = this.sessionManager
-				.getEntries()
-				.find((entry): entry is SessionCompactionEntry => entry.type === "compaction" && entry.summary === summary);
-			if (savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-					reason: "manual",
-					willRetry: false,
-				});
-			}
-			const compactionResult: CompactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				estimatedTokensAfter,
-				usage,
-				details,
-			};
+			const compactionResult = await this._saveCompaction(generated, run, () =>
+				this._engine?.clearCompactionPending(),
+			);
 			// compaction_end listeners may submit queued prompts, so expose idle state before notifying them.
 			this._compactionAbortController = undefined;
 			this._emit({
@@ -3416,28 +3405,11 @@ export class AgentSession {
 			return compactionResult;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			const aborted = signal.aborted || cancelledByExtension;
+			const aborted = signal.aborted || state.cancelledByExtension;
 			const errorMessage = aborted ? undefined : `Compaction failed: ${message}`;
 			await this._engine?.clearCompactionPending().catch(() => undefined);
 			this._compactionAbortController = undefined;
-			this._emit({
-				type: "compaction_end",
-				reason: "manual",
-				result: undefined,
-				aborted,
-				willRetry: false,
-				errorMessage,
-			});
-			if (this._extensionRunner.hasHandlers("session_compact_failed")) {
-				await this._extensionRunner.emit({
-					type: "session_compact_failed",
-					reason: "manual",
-					errorMessage,
-					aborted,
-					willRetry: false,
-					fromExtension,
-				});
-			}
+			await this._notifyCompactionFailed("manual", aborted, errorMessage, state.fromExtension);
 			throw error;
 		} finally {
 			this._compactionAbortController = undefined;
@@ -4213,6 +4185,7 @@ export class AgentSession {
 					headers,
 					env,
 					signal: this._branchSummaryAbortController.signal,
+					thinkingLevel: this.thinkingLevel,
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,

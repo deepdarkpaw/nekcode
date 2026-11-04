@@ -27,8 +27,8 @@ import type {
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
-import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 
 export interface PiMessagesOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
@@ -188,9 +188,16 @@ function createEventConverter(model: Model<"pi-messages">) {
 		stopReason: "pending",
 		timestamp: Date.now(),
 	};
-	const toolJson = new Map<number, string>();
+	const toolJson = new Map<number, ToolCallArgumentsStream>();
 
 	return (event: PiMessagesEvent): AssistantMessageEvent => {
+		if ("contentIndex" in event) {
+			const index: unknown = event.contentIndex;
+			const limit = event.type.endsWith("_start") ? partial.content.length : partial.content.length - 1;
+			if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > limit) {
+				throw new Error(`Invalid contentIndex ${JSON.stringify(index)} in pi-messages ${event.type} event`);
+			}
+		}
 		switch (event.type) {
 			case "done":
 				Object.assign(partial, {
@@ -249,13 +256,12 @@ function createEventConverter(model: Model<"pi-messages">) {
 					name: event.toolName,
 					arguments: {},
 				};
-				toolJson.set(event.contentIndex, "");
+				toolJson.set(event.contentIndex, new ToolCallArgumentsStream());
 				break;
 			case "toolcall_delta": {
-				const json = `${toolJson.get(event.contentIndex) ?? ""}${event.delta}`;
-				toolJson.set(event.contentIndex, json);
-				(partial.content[event.contentIndex] as ToolCall).arguments =
-					parseStreamingJson<ToolCall["arguments"]>(json);
+				const args = toolJson.get(event.contentIndex);
+				if (!args) throw new Error("toolcall_delta has no open tool call");
+				(partial.content[event.contentIndex] as ToolCall).arguments = args.append(event.delta);
 				break;
 			}
 			case "toolcall_end":

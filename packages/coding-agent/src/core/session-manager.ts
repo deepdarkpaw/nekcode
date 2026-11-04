@@ -1,9 +1,14 @@
 import { existsSync, mkdirSync, statSync } from "fs";
 import { join, resolve } from "path";
 import { APP_NAME, getSessionsDir } from "../config.ts";
-import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { type EntryPlan, planEntry, planHeader } from "./durable/session-format.ts";
-import { projectSnapshot, readSessionSnapshot, readSnapshotHeader } from "./durable/session-snapshot.ts";
+import {
+	projectSnapshot,
+	readSessionSnapshot,
+	readSnapshotHeader,
+	SnapshotProjection,
+} from "./durable/session-snapshot.ts";
 import { DurableSessionStore } from "./durable/session-store.ts";
 import { convertToLlm } from "./messages.ts";
 import {
@@ -34,7 +39,7 @@ import {
 	listAllSessionFiles,
 	listSessionFilesFromDir,
 } from "./session-listing.ts";
-import { SessionTree } from "./session-tree.ts";
+import { type SessionSyncChanges, SessionTree } from "./session-tree.ts";
 
 export {
 	assertValidSessionId,
@@ -148,8 +153,11 @@ function readLocatedHeader(location: SessionLocation): { header: SessionHeader |
 export class SessionManager extends SessionTree {
 	/** In-memory sessions get durable storage only when an engine asks for it. */
 	#memoryStore: DurableSessionStore | undefined;
-	/** Durable entry ID of each pi entry, as of the last read of the store. */
-	#durableIds: ReadonlyMap<string, number> = new Map();
+	/** Committed projection indexes; discarded only at explicit session initialization/switch boundaries. */
+	#projection: SnapshotProjection | undefined;
+	#refreshedLeaf: string | null | undefined;
+	#contextVersion = 0;
+	#projectionError: unknown;
 
 	private constructor(
 		cwd: string,
@@ -177,9 +185,19 @@ export class SessionManager extends SessionTree {
 		return `${fileTimestamp}_${sessionId}.sqlite`;
 	}
 
+	/** Reset only at explicit session lifecycle boundaries, never as a recovery fallback for a broken fold. */
+	#resetProjection(): void {
+		this.#projection = undefined;
+		this.#refreshedLeaf = undefined;
+		this.#projectionError = undefined;
+		this.#contextVersion++;
+		this.projectionPosition = 0;
+	}
+
 	/** A new session; an in-memory session drops the store of the one it replaces (see `durableStore`). */
 	override newSession(options?: NewSessionOptions): string | undefined {
 		this.#memoryStore = undefined;
+		this.#resetProjection();
 		return super.newSession(options);
 	}
 
@@ -187,6 +205,7 @@ export class SessionManager extends SessionTree {
 	override createBranchedSession(leafId: string): string | undefined {
 		const path = super.createBranchedSession(leafId);
 		this.#memoryStore = undefined;
+		this.#resetProjection();
 		return path;
 	}
 
@@ -197,6 +216,7 @@ export class SessionManager extends SessionTree {
 
 	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
 		const location = locateSession(resolvePath(sessionFile));
+		this.#resetProjection();
 		if (location.kind === "database") {
 			this._loadDatabase(location.path);
 		} else if (location.kind === "jsonl") {
@@ -208,15 +228,19 @@ export class SessionManager extends SessionTree {
 	}
 
 	private _loadDatabase(path: string): void {
-		const projected = projectSnapshot(readSessionSnapshot(path));
-		if (projected.header === undefined) {
+		const projection = new SnapshotProjection();
+		const delta = projection.fold(readSessionSnapshot(path));
+		if (projection.header === undefined) {
 			this.newSession();
 			this.sessionFile = path;
 			return;
 		}
 		this.sessionFile = path;
-		this._loadEntries(projected.fileEntries);
-		this.#durableIds = projected.placement.durableIds;
+		this._loadEntries([projection.header, ...delta.entries]);
+		this.#projection = projection;
+		this.projectionPosition = this.fileEntries.length;
+		this.#refreshedLeaf = this.leafId;
+		this.#contextVersion++;
 		this.flushed = true;
 	}
 
@@ -282,22 +306,62 @@ export class SessionManager extends SessionTree {
 		return planEntry(entry, this, convertToLlm);
 	}
 
-	/** Resolve once every entry appended so far is durably written; appends are synchronous unless an engine runs. */
-	/** Refresh the in-memory tree from durable storage after an engine commit. */
+	/** Preserve the public refresh facade while incrementally synchronizing committed records. */
 	async refresh(): Promise<void> {
-		await this.flush();
-		if (!this.persist) {
-			const snapshot = await this.#memoryStore?.memorySnapshot();
-			if (snapshot !== undefined) {
-				const projected = projectSnapshot(snapshot);
-				this._loadEntries(projected.fileEntries);
-				this.#durableIds = projected.placement.durableIds;
-			}
-			return;
-		}
-		if (this.sessionFile && existsSync(this.sessionFile)) this._loadDatabase(this.sessionFile);
+		await this.refreshChanges();
 	}
 
+	/** Return only changes since the last synchronization; pure progress does not touch the tree or context. */
+	async refreshChanges(): Promise<SessionSyncChanges> {
+		if (this.#projectionError !== undefined) throw this.#projectionError;
+		await this.flush();
+		let changes: SessionSyncChanges = { entries: [], added: [], replaced: [], contextChanged: false };
+		const store = this.persist
+			? this.sessionFile && existsSync(this.sessionFile)
+				? DurableSessionStore.forPath(this.sessionFile)
+				: undefined
+			: this.#memoryStore;
+		if (store) {
+			this.#projection ??= new SnapshotProjection();
+			const snapshot = store.readDelta(this.#projection.water);
+			if (snapshot) {
+				try {
+					changes = this._applyEntryDelta(this.#projection.fold(snapshot));
+				} catch (error) {
+					this.#projectionError = error;
+					throw error;
+				}
+			}
+		}
+		const contextChanged = changes.contextChanged || this.#refreshedLeaf !== this.leafId;
+		this.#refreshedLeaf = this.leafId;
+		if (contextChanged) this.#contextVersion++;
+		return { ...changes, contextChanged };
+	}
+
+	/** Consumers can detect invalidation even if another caller already refreshed the store. */
+	getContextVersion(): number {
+		return this.#contextVersion;
+	}
+
+	/** Position in the stable committed prefix, independent of pending host appends. */
+	getCommittedEntryCount(): number {
+		return this.projectionPosition;
+	}
+
+	/** Read only newly committed entries for an independent consumer; no full-history discovery scan. */
+	getCommittedEntriesSince(position: number): { position: number; entries: SessionEntry[] } {
+		if (!Number.isInteger(position) || position < 0 || position > this.projectionPosition)
+			throw new Error("Invalid committed session position");
+		return {
+			position: this.projectionPosition,
+			entries: this.fileEntries
+				.slice(position, this.projectionPosition)
+				.filter((entry): entry is SessionEntry => entry.type !== "session"),
+		};
+	}
+
+	/** Resolve once every entry appended so far is durably written; appends are synchronous unless an engine runs. */
 	async flush(): Promise<void> {
 		if (!this.persist) {
 			await this.#memoryStore?.flush();
@@ -306,9 +370,18 @@ export class SessionManager extends SessionTree {
 		if (this.sessionFile && this.flushed) await DurableSessionStore.forPath(this.sessionFile).flush();
 	}
 
+	/** Committed branch position for attaching or forking the engine at the selected pi entry. */
+	durablePositionOf(piId: string) {
+		const placement = this.#projection?.placement;
+		const at = placement?.durableIds.get(piId);
+		const conversationId = placement?.home.get(piId);
+		if (at === undefined || conversationId === undefined) return undefined;
+		return { at, conversationId, atTip: placement?.tails.get(conversationId) === piId };
+	}
+
 	/** Durable entry ID of a pi entry, as of the last read of the store (`refresh()`). */
 	durableIdOf(piId: string): number | undefined {
-		return this.#durableIds.get(piId);
+		return this.#projection?.placement.durableIds.get(piId);
 	}
 
 	/**
@@ -369,7 +442,7 @@ export class SessionManager extends SessionTree {
 	 */
 	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const filterCwd = sessionDir !== undefined && !pathsEqual(dir, getDefaultSessionDirPath(cwd));
 		const mostRecent = findMostRecentSessionFile(dir, filterCwd ? resolvePath(cwd) : undefined);
 		if (mostRecent) {
 			return new SessionManager(cwd, dir, mostRecent, true);
@@ -454,7 +527,7 @@ export class SessionManager extends SessionTree {
 	 */
 	static findById(cwd: string, id: string, sessionDir?: string): string | undefined {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const filterCwd = sessionDir !== undefined && !pathsEqual(dir, getDefaultSessionDirPath(cwd));
 		return findSessionFileById(dir, id, filterCwd ? resolvePath(cwd) : undefined);
 	}
 
@@ -471,7 +544,7 @@ export class SessionManager extends SessionTree {
 		signal?: AbortSignal,
 	): Promise<SessionInfo[]> {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const filterCwd = sessionDir !== undefined && !pathsEqual(dir, getDefaultSessionDirPath(cwd));
 		const resolvedCwd = resolvePath(cwd);
 		const includeSession = (session: SessionInfo) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd);
 		const progress: SessionListProgress | undefined = onProgress

@@ -74,6 +74,7 @@ type State = {
 	conversationIdsByOwnerConversation: Map<ConversationId, ConversationId[]>;
 	conversationIdsByOwnerTask: Map<TaskId, ConversationId[]>;
 	entries: Map<EntryId, EntryRecord>;
+	allEntryIds: EntryId[];
 	entryIds: Map<ConversationId, EntryId[]>;
 	headEntryIds: Map<ConversationId, EntryId[]>;
 	entryCommitSeqs: Map<EntryId, Seq>;
@@ -224,6 +225,7 @@ export class MemoryStorage implements Storage {
 		conversationIdsByOwnerConversation: new Map(),
 		conversationIdsByOwnerTask: new Map(),
 		entries: new Map(),
+		allEntryIds: [],
 		entryIds: new Map(),
 		headEntryIds: new Map(),
 		entryCommitSeqs: new Map(),
@@ -332,6 +334,7 @@ export class MemoryStorage implements Storage {
 				case "entry": {
 					this.state.recordTypes.set(write.value.id, "entry");
 					this.state.entries.set(write.value.id, write.value);
+					insertSorted(this.state.allEntryIds, write.value.id);
 					this.state.entryCommitSeqs.set(write.value.id, seq);
 					let ids = this.state.entryIds.get(write.value.conversationId);
 					if (ids === undefined) {
@@ -494,6 +497,22 @@ export class MemoryStorage implements Storage {
 			upperEntryId = Math.min(upperEntryId, conversation.parent.at);
 			currentId = conversation.parent.conversationId;
 		}
+	}
+
+	/** Detached committed rows after immutable-ID watermarks, without inherited duplicates or historical scans. */
+	readCommittedRecordsSince(water: { readonly entryId: number; readonly conversationId: number }): {
+		entries: EntryRecord[];
+		conversations: ConversationRecord[];
+		nextSeq: number;
+	} {
+		this.assertOpen();
+		const entries = this.state.allEntryIds
+			.slice(upperBound(this.state.allEntryIds, water.entryId))
+			.map((id) => clone(this.state.entries.get(id)!));
+		const conversations = this.state.conversationIds
+			.slice(upperBound(this.state.conversationIds, water.conversationId))
+			.map((id) => clone(this.state.conversations.get(id)!));
+		return { entries, conversations, nextSeq: this.nextSeq };
 	}
 
 	async scanEntries(

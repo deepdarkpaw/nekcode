@@ -50,6 +50,7 @@ export interface CreatePlanToolOptions {
 function nextPlanRecord(options: CreatePlanToolOptions, params: CreatePlanToolInput, cwd: string): PlanRecord {
 	const todos = (params.todos ?? []).map((todo) => ({ id: todo.id, content: todo.content }));
 	if (params.plan_id !== undefined) {
+		if (!params.plan_id.trim()) throw new Error("plan_id must not be empty. Omit plan_id to create a new plan.");
 		const existing = options.getPlans().find((snapshot) => planId(snapshot.plan) === params.plan_id);
 		if (!existing) throw new Error(`Unknown plan_id "${params.plan_id}". Choose an id from the saved plans list.`);
 		return {

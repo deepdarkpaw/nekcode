@@ -8,18 +8,16 @@ import * as path from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent/core/agent-session";
 import type { ResourceDiagnostic } from "@earendil-works/pi-coding-agent/core/resource-loader";
 import type { SourceInfo } from "@earendil-works/pi-coding-agent/core/source-info";
+import * as ResourceDisplay from "@earendil-works/pi-coding-agent/modes/interactive/resource-display";
 import { type ThemeColor, theme } from "@earendil-works/pi-coding-agent/modes/interactive/theme/theme";
-import { parseGitUrl } from "@earendil-works/pi-coding-agent/utils/git";
 import { getCwdRelativePath } from "@earendil-works/pi-coding-agent/utils/paths";
 import { type Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { ExpandableText } from "./expandable-text.ts";
 
-type ResourceItem = { path: string; sourceInfo?: SourceInfo };
-type ScopeGroup = {
-	scope: "user" | "project" | "path";
-	paths: ResourceItem[];
-	packages: Map<string, ResourceItem[]>;
-};
+type ResourceItem = ResourceDisplay.ResourceItem;
+type ScopeGroup = ResourceDisplay.ScopeGroup;
+const resourcePaths: ResourceDisplay.ResourcePaths = { display: formatDisplayPath, short: getShortPath };
+const buildScopeGroups = ResourceDisplay.buildScopeGroups;
 
 export interface LoadedResourcesOptions {
 	session: AgentSession;
@@ -34,8 +32,7 @@ export interface LoadedResourcesOptions {
 }
 
 export function formatDisplayPath(p: string): string {
-	const home = os.homedir();
-	return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+	return ResourceDisplay.formatHomePath(p, os.homedir());
 }
 
 function formatExtensionDisplayPath(p: string): string {
@@ -44,154 +41,16 @@ function formatExtensionDisplayPath(p: string): string {
 		.replace(/\/index\.js$/, "");
 }
 
-function isPackageSource(sourceInfo?: SourceInfo): boolean {
-	const source = sourceInfo?.source ?? "";
-	return source.startsWith("npm:") || source.startsWith("git:");
-}
-
 function getShortPath(fullPath: string, sourceInfo?: SourceInfo): string {
-	const normalizedFullPath = fullPath.replace(/\\/g, "/");
-	const baseDir = sourceInfo?.baseDir;
-	if (baseDir && isPackageSource(sourceInfo)) {
-		const normalizedBaseDir = baseDir.replace(/\\/g, "/");
-		const npmRootMatch = normalizedBaseDir.match(/^(.*\/node_modules)\/(@?[^/]+(?:\/[^/]+)?)$/);
-		if (npmRootMatch?.[1] && normalizedFullPath.startsWith(`${npmRootMatch[1]}/`)) {
-			return path.posix.relative(normalizedBaseDir, normalizedFullPath);
-		}
-		const relativePath = path.relative(path.resolve(baseDir), path.resolve(fullPath));
-		if (
-			relativePath &&
-			relativePath !== "." &&
-			!relativePath.startsWith("..") &&
-			!relativePath.startsWith(`..${path.sep}`) &&
-			!path.isAbsolute(relativePath)
-		) {
-			return relativePath.replace(/\\/g, "/");
-		}
-	}
-	const source = sourceInfo?.source ?? "";
-	const npmMatch = normalizedFullPath.match(/node_modules\/(@?[^/]+(?:\/[^/]+)?)\/(.*)/);
-	if (npmMatch?.[2] && source.startsWith("npm:")) return npmMatch[2];
-	const gitMatch = normalizedFullPath.match(/git\/[^/]+\/[^/]+\/(.*)/);
-	if (gitMatch?.[1] && source.startsWith("git:")) return gitMatch[1];
-	return formatDisplayPath(fullPath);
+	return ResourceDisplay.getPackageRelativePath(fullPath, sourceInfo) || formatDisplayPath(fullPath);
 }
 
 function getCompactPathLabel(resourcePath: string, sourceInfo?: SourceInfo): string {
-	const shortPath = getShortPath(resourcePath, sourceInfo);
-	const segments = shortPath
-		.replace(/\\/g, "/")
-		.split("/")
-		.filter((segment) => segment.length > 0 && segment !== "~");
-	return segments[segments.length - 1] ?? shortPath;
-}
-
-function getCompactPackageSourceLabel(sourceInfo?: SourceInfo): string {
-	const source = sourceInfo?.source ?? "";
-	if (source.startsWith("npm:")) return source.slice("npm:".length) || source;
-	const gitSource = parseGitUrl(source);
-	if (gitSource) return gitSource.path || source;
-	return source;
-}
-
-function getCompactExtensionLabel(resourcePath: string, sourceInfo?: SourceInfo): string {
-	if (!isPackageSource(sourceInfo)) return getCompactPathLabel(resourcePath, sourceInfo);
-	const sourceLabel = getCompactPackageSourceLabel(sourceInfo);
-	if (!sourceLabel) return getCompactPathLabel(resourcePath, sourceInfo);
-	const shortPath = getShortPath(resourcePath, sourceInfo).replace(/\\/g, "/");
-	const packagePath = shortPath.startsWith("extensions/") ? shortPath.slice("extensions/".length) : shortPath;
-	const parsedPath = path.posix.parse(packagePath);
-	if (parsedPath.name === "index") {
-		return !parsedPath.dir || parsedPath.dir === "." ? sourceLabel : `${sourceLabel}:${parsedPath.dir}`;
-	}
-	return `${sourceLabel}:${packagePath}`;
-}
-
-function getCompactDisplayPathSegments(resourcePath: string): string[] {
-	return formatDisplayPath(resourcePath)
-		.replace(/\\/g, "/")
-		.split("/")
-		.filter((segment) => segment.length > 0 && segment !== "~");
-}
-
-function getCompactNonPackageExtensionLabel(
-	resourcePath: string,
-	index: number,
-	allPaths: Array<{ path: string; segments: string[] }>,
-): string {
-	const segments = allPaths[index]?.segments;
-	if (!segments || segments.length === 0) return getCompactPathLabel(resourcePath);
-	for (let segmentCount = 1; segmentCount <= segments.length; segmentCount += 1) {
-		const candidate = segments.slice(-segmentCount).join("/");
-		const isUnique = allPaths.every(
-			(item, itemIndex) => itemIndex === index || item.segments.slice(-segmentCount).join("/") !== candidate,
-		);
-		if (isUnique) return candidate;
-	}
-	return segments.join("/");
+	return ResourceDisplay.getCompactPathLabel({ path: resourcePath, sourceInfo }, resourcePaths);
 }
 
 function getCompactExtensionLabels(extensions: readonly ResourceItem[]): string[] {
-	const nonPackageExtensions = extensions
-		.map((extension) => {
-			const segments = getCompactDisplayPathSegments(extension.path);
-			const lastSegment = segments[segments.length - 1];
-			if (segments.length > 1 && (lastSegment === "index.ts" || lastSegment === "index.js")) segments.pop();
-			return { path: extension.path, sourceInfo: extension.sourceInfo, segments };
-		})
-		.filter((extension) => !isPackageSource(extension.sourceInfo));
-	return extensions.map((extension) => {
-		if (isPackageSource(extension.sourceInfo)) return getCompactExtensionLabel(extension.path, extension.sourceInfo);
-		const nonPackageIndex = nonPackageExtensions.findIndex((item) => item.path === extension.path);
-		if (nonPackageIndex === -1) return getCompactPathLabel(extension.path, extension.sourceInfo);
-		return getCompactNonPackageExtensionLabel(extension.path, nonPackageIndex, nonPackageExtensions);
-	});
-}
-
-function getDisplaySourceInfo(sourceInfo?: SourceInfo): { label: string; scopeLabel?: string } {
-	const source = sourceInfo?.source ?? "local";
-	const scope = sourceInfo?.scope ?? "project";
-	if (source === "local") {
-		if (scope === "user") return { label: "user" };
-		if (scope === "project") return { label: "project" };
-		if (scope === "temporary") return { label: "path", scopeLabel: "temp" };
-		return { label: "path" };
-	}
-	if (source === "cli") return { label: "path", scopeLabel: scope === "temporary" ? "temp" : undefined };
-	const scopeLabel =
-		scope === "user" ? "user" : scope === "project" ? "project" : scope === "temporary" ? "temp" : undefined;
-	return { label: source, scopeLabel };
-}
-
-function getScopeGroup(sourceInfo?: SourceInfo): "user" | "project" | "path" {
-	const source = sourceInfo?.source ?? "local";
-	const scope = sourceInfo?.scope ?? "project";
-	if (source === "cli" || scope === "temporary") return "path";
-	if (scope === "user") return "user";
-	if (scope === "project") return "project";
-	return "path";
-}
-
-function buildScopeGroups(items: readonly ResourceItem[]): ScopeGroup[] {
-	const groups: Record<ScopeGroup["scope"], ScopeGroup> = {
-		user: { scope: "user", paths: [], packages: new Map() },
-		project: { scope: "project", paths: [], packages: new Map() },
-		path: { scope: "path", paths: [], packages: new Map() },
-	};
-	for (const item of items) {
-		const group = groups[getScopeGroup(item.sourceInfo)];
-		const source = item.sourceInfo?.source ?? "local";
-		if (isPackageSource(item.sourceInfo)) {
-			const list = group.packages.get(source) ?? [];
-			list.push(item);
-			group.packages.set(source, list);
-		} else {
-			group.paths.push(item);
-		}
-	}
-	return [groups.project, groups.user, groups.path].filter(
-		(group) => group.paths.length > 0 || group.packages.size > 0,
-	);
+	return ResourceDisplay.getCompactExtensionLabels(extensions, resourcePaths);
 }
 
 function formatScopeGroups(
@@ -199,82 +58,18 @@ function formatScopeGroups(
 	formatPath: (item: ResourceItem) => string,
 	formatPackagePath: (item: ResourceItem) => string,
 ): string {
-	const lines: string[] = [];
-	for (const group of groups) {
-		lines.push(`  ${theme.fg("accent", group.scope)}`);
-		for (const item of [...group.paths].sort((a, b) => a.path.localeCompare(b.path))) {
-			lines.push(theme.fg("dim", `    ${formatPath(item)}`));
-		}
-		const sortedPackages = Array.from(group.packages.entries()).sort(([a], [b]) => a.localeCompare(b));
-		for (const [source, items] of sortedPackages) {
-			lines.push(`    ${theme.fg("mdLink", source)}`);
-			for (const item of [...items].sort((a, b) => a.path.localeCompare(b.path))) {
-				lines.push(theme.fg("dim", `      ${formatPackagePath(item)}`));
-			}
-		}
-	}
-	return lines.join("\n");
-}
-
-function findSourceInfoForPath(p: string, sourceInfos: Map<string, SourceInfo>): SourceInfo | undefined {
-	const exact = sourceInfos.get(p);
-	if (exact) return exact;
-	let current = p;
-	while (current.includes("/")) {
-		current = current.substring(0, current.lastIndexOf("/"));
-		const parent = sourceInfos.get(current);
-		if (parent) return parent;
-	}
-	return undefined;
-}
-
-function formatPathWithSource(p: string, sourceInfo?: SourceInfo): string {
-	if (!sourceInfo) return formatDisplayPath(p);
-	const { label, scopeLabel } = getDisplaySourceInfo(sourceInfo);
-	return `${scopeLabel ? `${label} (${scopeLabel})` : label} ${getShortPath(p, sourceInfo)}`;
+	return ResourceDisplay.formatScopeGroups(groups, formatPath, formatPackagePath, (color, text) =>
+		theme.fg(color, text),
+	);
 }
 
 export function formatDiagnostics(
 	diagnostics: readonly ResourceDiagnostic[],
 	sourceInfos: Map<string, SourceInfo>,
 ): string {
-	const lines: string[] = [];
-	const collisions = new Map<string, ResourceDiagnostic[]>();
-	const otherDiagnostics: ResourceDiagnostic[] = [];
-	for (const d of diagnostics) {
-		if (d.type === "collision" && d.collision) {
-			const list = collisions.get(d.collision.name) ?? [];
-			list.push(d);
-			collisions.set(d.collision.name, list);
-		} else {
-			otherDiagnostics.push(d);
-		}
-	}
-	for (const [name, collisionList] of collisions) {
-		const first = collisionList[0]?.collision;
-		if (!first) continue;
-		lines.push(theme.fg("warning", `  "${name}" collision:`));
-		const winner = formatPathWithSource(first.winnerPath, findSourceInfoForPath(first.winnerPath, sourceInfos));
-		lines.push(theme.fg("dim", `    ${theme.fg("success", "✓")} ${winner}`));
-		for (const d of collisionList) {
-			if (!d.collision) continue;
-			const loser = formatPathWithSource(
-				d.collision.loserPath,
-				findSourceInfoForPath(d.collision.loserPath, sourceInfos),
-			);
-			lines.push(theme.fg("dim", `    ${theme.fg("warning", "✗")} ${loser} (skipped)`));
-		}
-	}
-	for (const d of otherDiagnostics) {
-		const color = d.type === "error" ? "error" : "warning";
-		if (d.path) {
-			lines.push(theme.fg(color, `  ${formatPathWithSource(d.path, findSourceInfoForPath(d.path, sourceInfos))}`));
-			lines.push(theme.fg(color, `    ${d.message}`));
-		} else {
-			lines.push(theme.fg(color, `  ${d.message}`));
-		}
-	}
-	return lines.join("\n");
+	return ResourceDisplay.formatDiagnostics(diagnostics, sourceInfos, resourcePaths, (color, text) =>
+		theme.fg(color, text),
+	);
 }
 
 /** Fill `container` with the resource listing and diagnostics. Clears it first. */

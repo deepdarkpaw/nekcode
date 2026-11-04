@@ -326,6 +326,11 @@ export function stripTerminalSequences(str: string): string {
 	return result;
 }
 
+/** Replace C0/C1 controls in untrusted terminal text without interpreting escape sequences. */
+export function replaceControlCharacters(str: string): string {
+	return str.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ");
+}
+
 interface GraphemeCellRange {
 	start: number;
 	end: number;

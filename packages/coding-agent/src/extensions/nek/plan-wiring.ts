@@ -20,6 +20,7 @@ import { planId, planTodos, readPlanBody } from "./services/plan-store.ts";
 import { checkModeToolCall, withModeTools } from "./state/mode-rules.ts";
 import {
 	activePlan,
+	applyPlanArtifact,
 	findPlan,
 	NEK_MODE_ENTRY_TYPE,
 	NEK_PLAN_ENTRY_TYPE,
@@ -107,14 +108,7 @@ function registerPlanTools(wiring: PlanWiring): void {
 		}),
 	);
 	const setPlan = (plan: PlanRecord, markdown: string, ctx: ExtensionContext): void => {
-		const snapshot = { plan: { ...plan, todos: plan.todos.map((todo) => ({ ...todo })) }, markdown };
-		const index = nek.session.plans.findIndex((item) => item.plan.path === plan.path);
-		nek.session.plans =
-			index < 0
-				? [...nek.session.plans, snapshot]
-				: nek.session.plans.map((item, itemIndex) => (itemIndex === index ? snapshot : item));
-		nek.session.activePlan = plan.path;
-		nek.session.planStatus = "ready";
+		applyPlanArtifact(nek.session, { plan, markdown });
 		wiring.planCreated = { path: plan.path, revision: plan.revision };
 		wiring.epoch++;
 		syncPlanUi(ctx, nek.session, nek.config.plan.shortcut);

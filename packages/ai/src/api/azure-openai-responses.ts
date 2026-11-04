@@ -309,6 +309,7 @@ function buildParams(
 		supportsToolSearch,
 		toolOptions: {
 			supportsStrictMode: model.compat?.supportsStrictMode ?? true,
+			supportsStrictParameter: model.compat?.supportsStrictParameter ?? true,
 			supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		},
 	});
@@ -332,6 +333,7 @@ function buildParams(
 	if (transcriptTools.requestTools.length > 0) {
 		params.tools = convertResponsesTools(transcriptTools.requestTools, {
 			supportsStrictMode: model.compat?.supportsStrictMode ?? true,
+			supportsStrictParameter: model.compat?.supportsStrictParameter ?? true,
 			supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		});
 	}

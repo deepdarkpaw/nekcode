@@ -1,6 +1,5 @@
-import { computeCacheWaste } from "@earendil-works/pi-coding-agent/core/cache-stats";
 import { formatCacheWarmingStatus } from "@earendil-works/pi-coding-agent/core/cache-warmer";
-import { getUsageCostBreakdown } from "@earendil-works/pi-coding-agent/core/usage-totals";
+import { getSessionUsageDisplay } from "@earendil-works/pi-coding-agent/modes/interactive/session-statistics";
 import type { CommandDefinition } from "./registry.ts";
 
 export const sessionCommand: CommandDefinition = {
@@ -10,10 +9,12 @@ export const sessionCommand: CommandDefinition = {
 	run: (ctx) => {
 		const stats = ctx.session.getSessionStats();
 		const name = ctx.sessionManager.getSessionName();
-		const { input, cacheRead, cacheWrite, output, total } = stats.tokens;
-		const promptTokens = input + cacheRead + cacheWrite;
-		const cacheWaste = computeCacheWaste(ctx.sessionManager.getEntries(), ctx.session.modelRuntime);
-		const usageBreakdown = getUsageCostBreakdown(ctx.sessionManager.getEntries());
+		const { cacheRead, cacheWrite, output, total } = stats.tokens;
+		const { promptTokens, cacheHitPercent, cacheWaste, usageBreakdown } = getSessionUsageDisplay(
+			stats.tokens,
+			ctx.sessionManager.getEntries(),
+			ctx.session.modelRuntime,
+		);
 		const cacheStatus = ctx.session.cacheWarmingStatus;
 		const markdown = [
 			"## Session Info",
@@ -29,7 +30,7 @@ export const sessionCommand: CommandDefinition = {
 			"",
 			"## Tokens",
 			`- Input: ${promptTokens.toLocaleString()}`,
-			`- Cached: ${cacheRead.toLocaleString()}${promptTokens > 0 ? ` (${((cacheRead / promptTokens) * 100).toFixed(1)}%)` : ""}`,
+			`- Cached: ${cacheRead.toLocaleString()}${promptTokens > 0 ? ` (${cacheHitPercent.toFixed(1)}%)` : ""}`,
 			`- Cache writes: ${cacheWrite.toLocaleString()}`,
 			`- Output: ${output.toLocaleString()}`,
 			`- Total: ${total.toLocaleString()}`,
@@ -40,9 +41,9 @@ export const sessionCommand: CommandDefinition = {
 			"",
 			"## Cost",
 			`- Total: $${stats.cost.toFixed(3)}`,
-			...usageBreakdown
-				.slice(1)
-				.map((entry) => `- ${entry.key}: $${entry.cost.toFixed(3)} (${entry.tokens.toLocaleString()} tokens)`),
+			...usageBreakdown.map(
+				(entry) => `- ${entry.key}: $${entry.cost.toFixed(3)} (${entry.tokens.toLocaleString()} tokens)`,
+			),
 			...(cacheWaste.missedTokens > 0
 				? [`- Cache re-billed: ${cacheWaste.missedTokens.toLocaleString()} tokens (${cacheWaste.missCount} misses)`]
 				: []),

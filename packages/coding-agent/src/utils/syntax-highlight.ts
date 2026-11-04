@@ -210,3 +210,8 @@ export function highlight(code: string, options: HighlightOptions = {}): string 
 export function supportsLanguage(name: string): boolean {
 	return hljs.getLanguage(name) !== undefined;
 }
+
+/** Deferred grammar registration can change the highlighting of embedded languages. */
+export function getHighlightLanguageCount(): number {
+	return hljs.listLanguages().length;
+}

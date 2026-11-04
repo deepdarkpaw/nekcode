@@ -43,20 +43,18 @@ import type {
 	StreamOptions,
 	TextContent,
 	ThinkingBudgets,
-	ThinkingContent,
 	ThinkingLevel,
 	Tool,
-	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
-import { parseStreamingJson, parseToolCallArguments } from "../utils/json-parse.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import {
 	collapseSystemMessages,
@@ -110,12 +108,13 @@ export interface BedrockOptions extends StreamOptions {
 	bearerToken?: string;
 }
 
-type Block = (TextContent | ThinkingContent | ToolCall) & {
-	index?: number;
-	partialJson?: string;
-	/** Scratch buffer for encrypted reasoning deltas, joined into `thinkingSignature`. */
+/** Per-stream state, never attached to public/persisted content blocks. */
+type OpenBlock = {
+	contentIndex: number;
+	arguments?: ToolCallArgumentsStream;
 	redactedChunks?: Uint8Array[];
 };
+type OpenBlocks = Map<number, OpenBlock>;
 
 const EMPTY_TEXT_PLACEHOLDER = "<empty>";
 
@@ -152,7 +151,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			timestamp: Date.now(),
 		};
 
-		const blocks = output.content as Block[];
+		const blocks: OpenBlocks = new Map();
 
 		// A profile explicitly configured through pi's auth flow (the `profile`
 		// option or scoped `AWS_PROFILE` on the stored credential's env) must win
@@ -342,13 +341,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			}
 
 			// A stream can settle without stopping every block, so finalize here too.
-			for (const block of output.content) finalizeStreamingBlock(block as Block);
+			flushOpenBlocks(blocks, output);
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) {
-				finalizeStreamingBlock(block as Block);
-			}
+			flushOpenBlocks(blocks, output);
 			output.stopReason = options.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatBedrockError(error);
 			if (output.stopReason === "error") {
@@ -581,101 +578,84 @@ export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStrea
 
 function handleContentBlockStart(
 	event: ContentBlockStartEvent,
-	blocks: Block[],
+	blocks: OpenBlocks,
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
 ): void {
-	const index = event.contentBlockIndex!;
 	const start = event.start;
-
-	if (start?.toolUse) {
-		const block: Block = {
-			type: "toolCall",
-			id: start.toolUse.toolUseId || "",
-			name: start.toolUse.name || "",
-			arguments: {},
-			partialJson: "",
-			index,
-		};
-		output.content.push(block);
-		stream.push({ type: "toolcall_start", contentIndex: blocks.length - 1, partial: output });
-	}
+	if (!start?.toolUse) return;
+	output.content.push({
+		type: "toolCall",
+		id: start.toolUse.toolUseId || "",
+		name: start.toolUse.name || "",
+		arguments: {},
+	});
+	const contentIndex = output.content.length - 1;
+	blocks.set(event.contentBlockIndex!, { contentIndex, arguments: new ToolCallArgumentsStream() });
+	stream.push({ type: "toolcall_start", contentIndex, partial: output });
 }
 
 function handleContentBlockDelta(
 	event: ContentBlockDeltaEvent,
-	blocks: Block[],
+	blocks: OpenBlocks,
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
 ): void {
 	const contentBlockIndex = event.contentBlockIndex!;
 	const delta = event.delta;
-	let index = blocks.findIndex((b) => b.index === contentBlockIndex);
-	let block = blocks[index];
-
+	let open = blocks.get(contentBlockIndex);
+	let block = open === undefined ? undefined : output.content[open.contentIndex];
 	if (delta?.text !== undefined) {
-		// If no text block exists yet, create one, as `handleContentBlockStart` is not sent for text blocks
-		if (!block) {
-			const newBlock: Block = { type: "text", text: "", index: contentBlockIndex };
-			output.content.push(newBlock);
-			index = blocks.length - 1;
-			block = blocks[index];
-			stream.push({ type: "text_start", contentIndex: index, partial: output });
+		if (!open) {
+			output.content.push({ type: "text", text: "" });
+			open = { contentIndex: output.content.length - 1 };
+			blocks.set(contentBlockIndex, open);
+			block = output.content[open.contentIndex];
+			stream.push({ type: "text_start", contentIndex: open.contentIndex, partial: output });
 		}
-		if (block.type === "text") {
+		if (block?.type === "text") {
 			block.text += delta.text;
-			stream.push({ type: "text_delta", contentIndex: index, delta: delta.text, partial: output });
+			stream.push({ type: "text_delta", contentIndex: open.contentIndex, delta: delta.text, partial: output });
 		}
-	} else if (delta?.toolUse && block?.type === "toolCall") {
-		block.partialJson = (block.partialJson || "") + (delta.toolUse.input || "");
-		block.arguments = parseStreamingJson(block.partialJson);
-		stream.push({ type: "toolcall_delta", contentIndex: index, delta: delta.toolUse.input || "", partial: output });
+	} else if (delta?.toolUse && block?.type === "toolCall" && open?.arguments) {
+		block.arguments = open.arguments.append(delta.toolUse.input || "");
+		stream.push({
+			type: "toolcall_delta",
+			contentIndex: open.contentIndex,
+			delta: delta.toolUse.input || "",
+			partial: output,
+		});
 	} else if (delta?.reasoningContent) {
-		let thinkingBlock = block;
-		let thinkingIndex = index;
-
-		if (!thinkingBlock) {
-			const newBlock: Block = { type: "thinking", thinking: "", thinkingSignature: "", index: contentBlockIndex };
-			output.content.push(newBlock);
-			thinkingIndex = blocks.length - 1;
-			thinkingBlock = blocks[thinkingIndex];
-			stream.push({ type: "thinking_start", contentIndex: thinkingIndex, partial: output });
+		if (!open) {
+			output.content.push({ type: "thinking", thinking: "", thinkingSignature: "" });
+			open = { contentIndex: output.content.length - 1 };
+			blocks.set(contentBlockIndex, open);
+			block = output.content[open.contentIndex];
+			stream.push({ type: "thinking_start", contentIndex: open.contentIndex, partial: output });
 		}
-
-		if (thinkingBlock?.type === "thinking") {
-			if (delta.reasoningContent.text) {
-				thinkingBlock.thinking += delta.reasoningContent.text;
+		if (block?.type !== "thinking") return;
+		const contentIndex = open.contentIndex;
+		if (delta.reasoningContent.text) {
+			block.thinking += delta.reasoningContent.text;
+			stream.push({ type: "thinking_delta", contentIndex, delta: delta.reasoningContent.text, partial: output });
+		}
+		if (delta.reasoningContent.signature && !block.redacted) {
+			block.thinkingSignature = (block.thinkingSignature || "") + delta.reasoningContent.signature;
+		}
+		if (delta.reasoningContent.redactedContent?.length) {
+			if (!block.redacted) {
+				block.redacted = true;
+				block.thinkingSignature = "";
+				block.thinking += REDACTED_THINKING_PLACEHOLDER;
 				stream.push({
 					type: "thinking_delta",
-					contentIndex: thinkingIndex,
-					delta: delta.reasoningContent.text,
+					contentIndex,
+					delta: REDACTED_THINKING_PLACEHOLDER,
 					partial: output,
 				});
 			}
-			// `thinkingSignature` holds either an Anthropic signature or an opaque redacted
-			// payload, never both: mixing them would corrupt whichever arrived first.
-			if (delta.reasoningContent.signature && !thinkingBlock.redacted) {
-				thinkingBlock.thinkingSignature =
-					(thinkingBlock.thinkingSignature || "") + delta.reasoningContent.signature;
-			}
-			if (delta.reasoningContent.redactedContent?.length) {
-				// Encrypted reasoning from non-Anthropic models on Bedrock (e.g. OpenAI GPT-5.6).
-				// The payload is opaque, so keep it verbatim in `thinkingSignature` the way the
-				// Anthropic path stores redacted thinking, and replay it on the next turn.
-				if (!thinkingBlock.redacted) {
-					thinkingBlock.redacted = true;
-					thinkingBlock.thinkingSignature = "";
-					thinkingBlock.thinking += REDACTED_THINKING_PLACEHOLDER;
-					stream.push({
-						type: "thinking_delta",
-						contentIndex: thinkingIndex,
-						delta: REDACTED_THINKING_PLACEHOLDER,
-						partial: output,
-					});
-				}
-				thinkingBlock.redactedChunks ??= [];
-				thinkingBlock.redactedChunks.push(delta.reasoningContent.redactedContent);
-			}
+			open.redactedChunks ??= [];
+			open.redactedChunks.push(delta.reasoningContent.redactedContent);
 		}
 	}
 }
@@ -685,21 +665,17 @@ function handleContentBlockDelta(
  * buffer, which must never reach a persisted message: `Uint8Array` serializes to an
  * index-keyed object roughly ten times the size of the base64 payload.
  */
-function flushRedactedContent(block: Block): void {
-	if (block.type !== "thinking" || !block.redactedChunks) return;
-	block.thinkingSignature = bytesToBase64(block.redactedChunks);
-	delete block.redactedChunks;
+function flushRedactedContent(open: OpenBlock, output: AssistantMessage): void {
+	const block = output.content[open.contentIndex];
+	if (block?.type !== "thinking" || !open.redactedChunks) return;
+	block.thinkingSignature = bytesToBase64(open.redactedChunks);
+	open.redactedChunks = undefined;
 }
 
-/**
- * Strips every streaming scratch field. Runs from the terminal paths as well as
- * `contentBlockStop`, because a stream can settle without stopping each block.
- */
-function finalizeStreamingBlock(block: Block): void {
-	delete block.index;
-	// partialJson is only a streaming scratch buffer; never persist it.
-	delete block.partialJson;
-	flushRedactedContent(block);
+/** Dispose stream state even when the provider omits individual block stops. */
+function flushOpenBlocks(blocks: OpenBlocks, output: AssistantMessage): void {
+	for (const open of blocks.values()) flushRedactedContent(open, output);
+	blocks.clear();
 }
 
 function handleMetadata(
@@ -723,28 +699,26 @@ function handleMetadata(
 
 function handleContentBlockStop(
 	event: ContentBlockStopEvent,
-	blocks: Block[],
+	blocks: OpenBlocks,
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
 ): void {
-	const index = blocks.findIndex((b) => b.index === event.contentBlockIndex);
-	const block = blocks[index];
-	if (!block) return;
-	delete (block as Block).index;
+	const open = blocks.get(event.contentBlockIndex!);
+	if (!open) return;
+	blocks.delete(event.contentBlockIndex!);
+	const index = open.contentIndex;
+	const block = output.content[index];
 
 	switch (block.type) {
 		case "text":
 			stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: output });
 			break;
 		case "thinking":
-			flushRedactedContent(block);
+			flushRedactedContent(open, output);
 			stream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: output });
 			break;
 		case "toolCall":
-			Object.assign(block, parseToolCallArguments(block.partialJson));
-			// Finalize in-place and strip the scratch buffer so replay only
-			// carries parsed arguments.
-			delete (block as Block).partialJson;
+			if (open.arguments) Object.assign(block, open.arguments.finish());
 			stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: output });
 			break;
 	}

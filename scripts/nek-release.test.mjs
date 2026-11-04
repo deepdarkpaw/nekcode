@@ -22,6 +22,19 @@ test("graduates a prerelease to its release and moves past a release", () => {
 	assert.equal(nextReleaseVersion("0.3.2-beta.1", "0.3.2-beta.2"), "0.3.2-beta.2");
 });
 
+test("minor graduates only a prerelease at the minor boundary", () => {
+	assert.equal(nextReleaseVersion("0.4.0-beta.1", "minor"), "0.4.0");
+	assert.equal(nextReleaseVersion("0.3.2-beta.1", "minor"), "0.4.0");
+});
+
+test("rejects invalid identifiers and does not widen the release CLI syntax", () => {
+	for (const version of ["0.4.0-01", "0.4.0-beta..1", "0.4.0-.", "v0.4.0", "=0.4.0", " 0.4.0", "0.4.0+build"]) {
+		assert.throws(() => nextReleaseVersion("0.3.2", version), /Invalid release version/);
+		assert.throws(() => compareVersions("0.3.2", version), /Not a semver version/);
+	}
+	assert.equal(nextReleaseVersion("0.3.2", "0.4.0-beta-01"), "0.4.0-beta-01");
+});
+
 test("rejects versions that are not newer than the current one", () => {
 	assert.throws(() => nextReleaseVersion("0.3.2", "0.3.2"), /must be newer/);
 	assert.throws(() => nextReleaseVersion("0.3.2", "0.3.2-beta.2"), /must be newer/);

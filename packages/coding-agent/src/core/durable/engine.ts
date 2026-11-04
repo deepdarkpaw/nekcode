@@ -519,11 +519,38 @@ export class DurableEngine {
 	 * conversation's ID, which the host persists to reopen it.
 	 */
 	async fork(at: EntryId): Promise<ConversationId> {
-		const fork = await this.#conversation.fork(at, { ownership: { kind: "ownerless" } }, BACKGROUND_CONTEXT);
+		return this.selectBranch({ at, conversationId: this.#conversation.id });
+	}
+
+	/** Select any stored branch (or an empty root), not just an ancestor of the currently attached conversation. */
+	async selectBranch(
+		position?: { readonly at: EntryId; readonly conversationId: ConversationId },
+		options: { moveSettlement?: boolean } = {},
+	): Promise<ConversationId> {
+		const context = BACKGROUND_CONTEXT;
+		let selected: Conversation;
+		if (position) {
+			const source = await this.harness.conversation(position.conversationId, context);
+			if (!source) throw new Error(`Conversation ${position.conversationId} does not exist`);
+			selected = await source.fork(position.at, { ownership: { kind: "ownerless" } }, context);
+		} else {
+			selected = await this.harness.createConversation({ ownership: { kind: "ownerless" } }, context);
+		}
+		if (options.moveSettlement) {
+			const previous = this.#conversation.id;
+			await this.harness.commit(async (tx) => {
+				const from = await tx.doc(SettlementDoc, previous);
+				if (!from.pending) return;
+				const to = await tx.doc(SettlementDoc, selected.id);
+				to.pending = true;
+				from.pending = false;
+			}, context);
+		}
 		await this.#detach();
-		this.#conversation = fork;
+		this.#conversation = selected;
+		this.#installPromptKeys(storedPromptSections(await this.harness.snapshot(PromptDoc, selected.id, context)));
 		await this.#attach();
-		return fork.id;
+		return selected.id;
 	}
 
 	/** Pi's view of the current model context, compaction summaries included. */

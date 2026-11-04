@@ -1,5 +1,5 @@
 import type { JsonValue } from "../types.ts";
-import { type NonEmptyPath, type Op, overlap, type Path, RESERVED_SEGMENTS, type Seg } from "./index.ts";
+import { type NonEmptyPath, type Op, overlap, ownedSlice, type Path, RESERVED_SEGMENTS, type Seg } from "./index.ts";
 
 const DEFAULT_OVERLAP_SCAN = 65_536;
 const MAX_DELTA_OPERATIONS = 4_096;
@@ -63,7 +63,7 @@ const permutation = (before: readonly JsonValue[], after: readonly JsonValue[]):
 const emitString = (before: string, after: string, path: NonEmptyPath, operations: Op[]): void => {
 	if (before === after) return;
 	if (after.length > before.length && after.slice(0, before.length) === before) {
-		emitOperation(operations, ["a", path, after.slice(before.length)]);
+		emitOperation(operations, ["a", path, ownedSlice(after, before.length)]);
 		return;
 	}
 	const shared = overlap(before, after, DEFAULT_OVERLAP_SCAN);
@@ -72,7 +72,7 @@ const emitString = (before: string, after: string, path: NonEmptyPath, operation
 		return;
 	}
 	emitOperation(operations, ["t", path, before.length - shared]);
-	if (after.length > shared) emitOperation(operations, ["a", path, after.slice(shared)]);
+	if (after.length > shared) emitOperation(operations, ["a", path, ownedSlice(after, shared)]);
 };
 
 type ArrayMatch = readonly [before: number, after: number];

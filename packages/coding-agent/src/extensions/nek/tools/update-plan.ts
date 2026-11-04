@@ -72,6 +72,9 @@ function nextPlanRecord(
 }
 
 function targetPlan(options: UpdatePlanToolOptions, planIdArgument: string | undefined): PlanRecord {
+	if (planIdArgument !== undefined && !planIdArgument.trim()) {
+		throw new Error("plan_id must not be empty. Omit plan_id to update the active plan.");
+	}
 	const id = planIdArgument ?? options.getActivePlanId();
 	if (!id) throw new Error("No active plan. Call create_plan first or select one with /plans.");
 	const snapshot = options.getPlans().find((item) => planId(item.plan) === id);

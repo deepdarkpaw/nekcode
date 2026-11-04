@@ -137,6 +137,41 @@ describe("AgentSession queue characterization", () => {
 		},
 	);
 
+	it.each(["steer", "followUp"] as const)(
+		"holds %s input submitted while the prompt aligns its durable branch",
+		async (behavior) => {
+			let armed = false;
+			const harness = await createHarness({
+				extensionFactories: [
+					(pi) => {
+						pi.on("turn_start", () => {
+							if (getUserTexts(harness).length === 0) armed = true;
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			const refresh = harness.sessionManager.refresh.bind(harness.sessionManager);
+			let queued: string | undefined;
+			harness.sessionManager.refresh = async () => {
+				if (armed) {
+					armed = false;
+					queued = await harness.session[behavior]("during alignment");
+				}
+				await refresh();
+			};
+			harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+
+			await harness.session.prompt("start");
+			await harness.session.waitForIdle();
+
+			expect(queued).toBe("queued");
+			expect(getUserTexts(harness)).toEqual(["start", "during alignment"]);
+			expect(getAssistantTexts(harness)).toEqual(["first", "second"]);
+			expect(harness.session.pendingMessageCount).toBe(0);
+		},
+	);
+
 	it.each(["prompt", "steer", "followUp"] as const)(
 		"hands off %s input already being transformed when cancellation starts without processing it twice",
 		async (submission) => {

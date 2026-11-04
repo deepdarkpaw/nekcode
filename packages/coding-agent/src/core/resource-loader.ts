@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { detectCapabilities, getTerminalColorMode, type TerminalColorMode } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.ts";
@@ -8,7 +8,14 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
-import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
+import {
+	canonicalizePath,
+	getPathComparisonKey,
+	isLocalPath,
+	isPathWithin,
+	pathsEqual,
+	resolvePath,
+} from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
@@ -162,12 +169,12 @@ function findShadowedContextFile(cwd: string): string | undefined {
 	const mainRepoRoot = dirname(commonGitDir);
 	// False for an ordinary repo, where the two are the same dir, and for a sibling
 	// worktree (`git worktree add ../feat`), whose main repo is not an ancestor.
-	if (!worktreeRoot.startsWith(`${mainRepoRoot}${sep}`)) return undefined;
+	if (!isPathWithin(mainRepoRoot, worktreeRoot) || pathsEqual(mainRepoRoot, worktreeRoot)) return undefined;
 	// dirname of the common git dir is the main worktree root only when that dir is
 	// itself checked out from the same repo. In a bare layout (`proj/.bare` +
 	// `proj/main`) it is just the directory holding `.bare`, which tracks nothing; a
 	// submodule's gitdir has no `commondir`, so it lands under `.git/modules`.
-	if (canonicalizePath(join(mainRepoRoot, ".git")) !== commonGitDir) return undefined;
+	if (!pathsEqual(canonicalizePath(join(mainRepoRoot, ".git")), commonGitDir)) return undefined;
 	const worktreeContextFile = loadContextFileFromDir(worktreeRoot);
 	return worktreeContextFile ? join(mainRepoRoot, basename(worktreeContextFile.path)) : undefined;
 }
@@ -196,7 +203,9 @@ export function loadProjectContextFiles(options: {
 	while (true) {
 		const contextFile = loadContextFileFromDir(currentDir);
 		const isShadowed =
-			shadowedContextFile !== undefined && canonicalizePath(contextFile?.path ?? "") === shadowedContextFile;
+			shadowedContextFile !== undefined &&
+			contextFile !== null &&
+			pathsEqual(canonicalizePath(contextFile.path), shadowedContextFile);
 		if (contextFile && !isShadowed && !seenPaths.has(contextFile.path)) {
 			ancestorContextFiles.unshift(contextFile);
 			seenPaths.add(contextFile.path);
@@ -653,13 +662,13 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const preloadedByPath = new Map(
 			preTrustExtensions.extensions
 				.filter((extension) => !extension.path.startsWith("<inline:"))
-				.map((extension) => [extension.resolvedPath, extension]),
+				.map((extension) => [getPathComparisonKey(extension.resolvedPath), extension]),
 		);
 		const failedPreloadPaths = new Set(
-			preTrustExtensions.errors.map((error) => this.resolveExtensionLoadPath(error.path)),
+			preTrustExtensions.errors.map((error) => getPathComparisonKey(this.resolveExtensionLoadPath(error.path))),
 		);
 		const remainingPaths = extensionPaths.filter((path) => {
-			const resolvedPath = this.resolveExtensionLoadPath(path);
+			const resolvedPath = getPathComparisonKey(this.resolveExtensionLoadPath(path));
 			return !preloadedByPath.has(resolvedPath) && !failedPreloadPaths.has(resolvedPath);
 		});
 		const remainingExtensions = await loadExtensionsCached(
@@ -670,14 +679,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 		);
 		const loadedByPath = new Map(preloadedByPath);
 		for (const extension of remainingExtensions.extensions) {
-			loadedByPath.set(extension.resolvedPath, extension);
+			loadedByPath.set(getPathComparisonKey(extension.resolvedPath), extension);
 		}
 
 		const inlineExtensions = preTrustExtensions.extensions.filter((extension) =>
 			extension.path.startsWith("<inline:"),
 		);
 		const orderedExtensions = extensionPaths
-			.map((path) => loadedByPath.get(this.resolveExtensionLoadPath(path)))
+			.map((path) => loadedByPath.get(getPathComparisonKey(this.resolveExtensionLoadPath(path))))
 			.filter((extension): extension is Extension => extension !== undefined);
 		orderedExtensions.push(...inlineExtensions);
 
@@ -844,11 +853,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const normalizedResourcePath = resolve(resourcePath);
 		if (extraSourceInfos) {
 			for (const [sourcePath, sourceInfo] of extraSourceInfos.entries()) {
-				const normalizedSourcePath = resolve(sourcePath);
-				if (
-					normalizedResourcePath === normalizedSourcePath ||
-					normalizedResourcePath.startsWith(`${normalizedSourcePath}${sep}`)
-				) {
+				if (isPathWithin(sourcePath, normalizedResourcePath)) {
 					return { ...sourceInfo, path: resourcePath };
 				}
 			}
@@ -861,11 +866,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			}
 
 			for (const [sourcePath, metadata] of metadataByPath.entries()) {
-				const normalizedSourcePath = resolve(sourcePath);
-				if (
-					normalizedResourcePath === normalizedSourcePath ||
-					normalizedResourcePath.startsWith(`${normalizedSourcePath}${sep}`)
-				) {
+				if (isPathWithin(sourcePath, normalizedResourcePath)) {
 					return createSourceInfo(resourcePath, metadata);
 				}
 			}
@@ -925,7 +926,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		for (const p of [...primary, ...additional]) {
 			const resolved = this.resolveResourcePath(p);
-			const canonicalPath = canonicalizePath(resolved);
+			const canonicalPath = getPathComparisonKey(canonicalizePath(resolved));
 			if (seen.has(canonicalPath)) continue;
 			seen.add(canonicalPath);
 			merged.push(resolved);
@@ -1136,12 +1137,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private isUnderPath(target: string, root: string): boolean {
-		const normalizedRoot = resolve(root);
-		if (target === normalizedRoot) {
-			return true;
-		}
-		const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
-		return target.startsWith(prefix);
+		return isPathWithin(root, target);
 	}
 
 	private detectExtensionConflicts(extensions: Extension[]): Array<{ path: string; message: string }> {

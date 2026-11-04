@@ -1,4 +1,4 @@
-import { Marked, type Token, Tokenizer, type TokenizerExtension, type Tokens } from "marked";
+import { Marked, type Token, Tokenizer, type TokenizerExtension, type Tokens, type TokensList } from "marked";
 import { renderLatex } from "../latex.ts";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
 import type { Component } from "../tui.ts";
@@ -233,6 +233,14 @@ interface InlineStyleContext {
 	stylePrefix: string;
 }
 
+/** Last-render block data; old streaming revisions are discarded, not accumulated. */
+interface RenderedBlock {
+	width: number;
+	nextTokenType: string | undefined;
+	lines: string[];
+	highlightedCode: Map<string, string[]>;
+}
+
 export class Markdown implements Component {
 	private text: string;
 	private paddingX: number; // Left/right padding
@@ -249,7 +257,9 @@ export class Markdown implements Component {
 	// Parsed tokens depend only on the source, so they survive theme and width invalidation. Held weakly: a token tree is
 	// about ten times the size of its source, and every message of a long transcript keeps a Markdown component. The
 	// tokens survive a burst of re-renders, such as a theme preview, and are collected afterwards.
-	private cachedTokens?: WeakRef<{ source: string; tokens: Token[] }>;
+	private cachedTokens?: WeakRef<{ source: string; tokens: TokensList }>;
+	private blocks?: WeakRef<Map<string, RenderedBlock>>;
+	private blockHighlightedCode?: Map<string, string[]>;
 
 	constructor(
 		text: string,
@@ -269,10 +279,16 @@ export class Markdown implements Component {
 
 	setText(text: string): void {
 		this.text = text;
-		this.invalidate();
+		this.clearRenderCache();
 	}
 
 	invalidate(): void {
+		this.clearRenderCache();
+		this.blocks = undefined;
+		this.defaultStylePrefix = undefined;
+	}
+
+	private clearRenderCache(): void {
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
@@ -290,6 +306,7 @@ export class Markdown implements Component {
 
 		// Don't render anything if there's no actual text
 		if (!text || text.trim() === "") {
+			this.blocks = undefined;
 			const result: string[] = [];
 			// Update cache
 			this.cachedText = this.text;
@@ -310,53 +327,23 @@ export class Markdown implements Component {
 			this.cachedTokens = new WeakRef({ source: normalizedText, tokens });
 		}
 
-		// Convert tokens to styled terminal output
-		const renderedLines: string[] = [];
-
+		// Reference definitions can change the rendering of any earlier block.
+		const reuse = Object.keys(tokens.links).length === 0;
+		const previous = this.blocks?.deref();
+		const blocks = new Map<string, RenderedBlock>();
+		this.blocks = new WeakRef(blocks);
+		const contentLines: string[] = [];
 		for (let i = 0; i < tokens.length; i++) {
 			const token = tokens[i];
-			const nextToken = tokens[i + 1];
-			const tokenLines = this.renderToken(token, contentWidth, nextToken?.type);
-			for (const tokenLine of tokenLines) {
-				renderedLines.push(tokenLine);
-			}
+			const nextTokenType = tokens[i + 1]?.type;
+			const reused = reuse ? (blocks.get(token.raw) ?? previous?.get(token.raw)) : undefined;
+			const block = reused ?? { width: -1, nextTokenType, lines: [], highlightedCode: new Map() };
+			if (block.width !== width || block.nextTokenType !== nextTokenType)
+				this.renderBlock(block, token, nextTokenType, width, contentWidth);
+			if (reuse) blocks.set(token.raw, block);
+			for (const line of block.lines) contentLines.push(line);
 		}
-
-		// Wrap lines (NO padding, NO background yet)
-		const wrappedLines: string[] = [];
-		for (const line of renderedLines) {
-			if (isImageLine(line)) {
-				wrappedLines.push(line);
-			} else {
-				for (const wrappedLine of wrapTextWithAnsi(line, contentWidth)) {
-					wrappedLines.push(wrappedLine);
-				}
-			}
-		}
-
-		// Add margins and background to each wrapped line
-		const leftMargin = " ".repeat(this.paddingX);
-		const rightMargin = " ".repeat(this.paddingX);
 		const bgFn = this.defaultTextStyle?.bgColor;
-		const contentLines: string[] = [];
-
-		for (const line of wrappedLines) {
-			if (isImageLine(line)) {
-				contentLines.push(line);
-				continue;
-			}
-
-			const lineWithMargins = leftMargin + line + rightMargin;
-
-			if (bgFn) {
-				contentLines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
-			} else {
-				// No background - just pad to width
-				const visibleLen = visibleWidth(lineWithMargins);
-				const paddingNeeded = Math.max(0, width - visibleLen);
-				contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
-			}
-		}
 
 		// Add top/bottom padding (empty lines)
 		const emptyLine = " ".repeat(width);
@@ -366,9 +353,9 @@ export class Markdown implements Component {
 			emptyLines.push(line);
 		}
 
-		// Combine top padding, content, and bottom padding
+		flattenLines(emptyLines);
+		// Block lines are already flattened, so reuse them without re-copying their strings.
 		const result = emptyLines.concat(contentLines, emptyLines);
-		flattenLines(result);
 
 		// Update cache
 		this.cachedText = this.text;
@@ -376,6 +363,42 @@ export class Markdown implements Component {
 		this.cachedLines = result;
 
 		return result.length > 0 ? result : [""];
+	}
+
+	/** Render one top-level block, retaining code highlighting across width/spacing changes. */
+	private renderBlock(
+		block: RenderedBlock,
+		token: Token,
+		nextTokenType: string | undefined,
+		width: number,
+		contentWidth: number,
+	): void {
+		this.blockHighlightedCode = block.highlightedCode;
+		const margin = " ".repeat(this.paddingX);
+		const bg = this.defaultTextStyle?.bgColor;
+		const lines: string[] = [];
+		try {
+			for (const line of this.renderToken(token, contentWidth, nextTokenType)) {
+				if (isImageLine(line)) {
+					lines.push(line);
+					continue;
+				}
+				for (const wrapped of wrapTextWithAnsi(line, contentWidth)) {
+					const padded = margin + wrapped + margin;
+					lines.push(
+						bg
+							? applyBackgroundToLine(padded, width, bg)
+							: padded + " ".repeat(Math.max(0, width - visibleWidth(padded))),
+					);
+				}
+			}
+		} finally {
+			this.blockHighlightedCode = undefined;
+		}
+		flattenLines(lines);
+		block.lines = lines;
+		block.width = width;
+		block.nextTokenType = nextTokenType;
 	}
 
 	/**
@@ -531,7 +554,12 @@ export class Markdown implements Component {
 				const indent = this.theme.codeBlockIndent ?? "  ";
 				lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
 				if (this.theme.highlightCode) {
-					const highlightedLines = this.theme.highlightCode(token.text, token.lang);
+					const key = `${token.lang ?? ""}\0${token.text}`;
+					let highlightedLines = this.blockHighlightedCode?.get(key);
+					if (!highlightedLines) {
+						highlightedLines = this.theme.highlightCode(token.text, token.lang);
+						this.blockHighlightedCode?.set(key, highlightedLines);
+					}
 					for (const hlLine of highlightedLines) {
 						lines.push(`${indent}${hlLine}`);
 					}
@@ -574,8 +602,16 @@ export class Markdown implements Component {
 					return quoteStyle(lineWithReappliedStyle);
 				};
 
-				// Calculate available width for quote content (subtract border "│ " = 2 chars)
-				const quoteContentWidth = Math.max(1, width - 2);
+				// Once borders exhaust the width, render children without another border/re-wrap.
+				if (width < 3) {
+					const children = token.tokens || [];
+					for (let i = 0; i < children.length; i++) {
+						for (const line of this.renderToken(children[i], width, children[i + 1]?.type, styleContext))
+							lines.push(line);
+					}
+					break;
+				}
+				const quoteContentWidth = width - 2;
 
 				// Blockquotes contain block-level tokens (paragraph, list, code, etc.), so render
 				// children with renderToken() instead of renderInlineTokens().
@@ -589,9 +625,14 @@ export class Markdown implements Component {
 				for (let i = 0; i < quoteTokens.length; i++) {
 					const quoteToken = quoteTokens[i];
 					const nextQuoteToken = quoteTokens[i + 1];
-					renderedQuoteLines.push(
-						...this.renderToken(quoteToken, quoteContentWidth, nextQuoteToken?.type, quoteInlineStyleContext),
-					);
+					for (const line of this.renderToken(
+						quoteToken,
+						quoteContentWidth,
+						nextQuoteToken?.type,
+						quoteInlineStyleContext,
+					)) {
+						renderedQuoteLines.push(line);
+					}
 				}
 
 				// Avoid rendering an extra empty quote line before the outer blockquote spacing.

@@ -7,12 +7,9 @@ import { createModels } from "@earendil-works/pi-ai";
 import {
 	type ContextEdit,
 	type ConversationId,
-	type ConversationRecord,
-	type Cursor,
 	createRegistry,
 	type EntryDraft,
 	type EntryId,
-	type EntryRecord,
 	Harness,
 	type HarnessSettings,
 	MemoryStorage,
@@ -27,7 +24,15 @@ import { HookedModels } from "./models.ts";
 import { createSessionDatabase, StaleSessionPlacement, writePlansSync } from "./session-db.ts";
 import type { EntryPlan } from "./session-format.ts";
 import { sidecarFromBuilder, writeSessionSidecar } from "./session-sidecar.ts";
-import { Placement, projectSnapshot, readSessionSnapshot } from "./session-snapshot.ts";
+import {
+	EMPTY_SNAPSHOT_WATER,
+	Placement,
+	readSessionSnapshot,
+	readSnapshotDelta,
+	type SessionSnapshot,
+	SnapshotProjection,
+	type SnapshotWater,
+} from "./session-snapshot.ts";
 import { openSqliteStorage } from "./sqlite.ts";
 
 /**
@@ -102,6 +107,7 @@ export class DurableSessionStore {
 	/** Where pi entries live, valid while the database's next commit sequence is `#placementSeq`. */
 	#placement: Placement | undefined;
 	#placementSeq: number | undefined;
+	#projection: SnapshotProjection | undefined;
 	#summary: SessionInfoBuilder | undefined;
 	#pins = 0;
 	#queue: EntryPlan[] = [];
@@ -200,6 +206,7 @@ export class DurableSessionStore {
 				summaryFresh = true;
 			}
 		} finally {
+			this.#projection = undefined;
 			if (summaryFresh) this.#writeSidecar();
 			this.#lock?.release();
 			this.#lock = undefined;
@@ -212,6 +219,7 @@ export class DurableSessionStore {
 			if (!existsSync(path)) this.#create(path, plans);
 			else this.#append(path, plans);
 		} finally {
+			this.#projection = undefined;
 			lock?.release();
 		}
 		this.#writeSidecar();
@@ -253,12 +261,29 @@ export class DurableSessionStore {
 	}
 
 	#reload(path: string): void {
-		const snapshot = readSessionSnapshot(path);
-		const projected = projectSnapshot(snapshot);
-		this.#placement = projected.placement;
-		this.#placementSeq = snapshot.nextSeq;
+		this.#projection = new SnapshotProjection();
+		this.#placement = undefined;
 		this.#summary = new SessionInfoBuilder();
-		for (const entry of projected.fileEntries) this.#summary.add(entry);
+		this.#applySnapshot(readSessionSnapshot(path));
+	}
+
+	/** Advance committed placement and summary independently of the placement a write transaction stages. */
+	#applySnapshot(snapshot: SessionSnapshot): void {
+		this.#projection ??= new SnapshotProjection();
+		const delta = this.#projection.fold(snapshot);
+		const committed = this.#projection.placement;
+		if (this.#placement === undefined) this.#placement = committed.copy();
+		else {
+			for (const conversation of snapshot.conversations)
+				this.#placement.tails.set(conversation.id, committed.tails.get(conversation.id) ?? null);
+			for (const entry of delta.entries)
+				this.#placement.record(entry.id, committed.durableIds.get(entry.id)!, committed.home.get(entry.id)!);
+			this.#placement.headerWritten = committed.headerWritten;
+		}
+		this.#placementSeq = snapshot.nextSeq;
+		this.#summary ??= new SessionInfoBuilder();
+		if (delta.header) this.#summary.add(delta.header);
+		for (const entry of delta.entries) this.#summary.add(entry);
 	}
 
 	async #runQueue(): Promise<void> {
@@ -267,11 +292,12 @@ export class DurableSessionStore {
 				const batch = this.#queue.splice(0);
 				try {
 					const harness = await this.#open(BACKGROUND_CONTEXT);
-					await this.#reloadPlacement(BACKGROUND_CONTEXT);
+					this.#reloadPlacement();
 					await commitPlans(harness, this.#placement!, batch, BACKGROUND_CONTEXT);
-					for (const plan of batch) this.#summary?.add(plan.source);
+					this.#reloadPlacement();
 					this.#writeSidecar();
 				} catch (error) {
+					this.#placement = undefined;
 					this.#error ??= error;
 					this.host.report(error);
 				}
@@ -281,43 +307,21 @@ export class DurableSessionStore {
 		}
 	}
 
-	/** Read the complete in-memory durable tables for a synchronous SessionManager projection. */
-	async memorySnapshot(
-		context: Context = BACKGROUND_CONTEXT,
-	): Promise<{ conversations: ConversationRecord[]; entries: EntryRecord[]; nextSeq: number } | undefined> {
-		if (this.path !== undefined || this.#memory === undefined) return undefined;
-		const conversations: ConversationRecord[] = [];
-		let conversationCursor: Cursor | undefined;
-		do {
-			const page = await this.#memory.scanConversations({}, 256, conversationCursor, context);
-			conversations.push(...page.items);
-			conversationCursor = page.next;
-		} while (conversationCursor !== undefined);
-		const entries: EntryRecord[] = [];
-		for (const conversation of conversations) {
-			let entryCursor: Cursor | undefined;
-			do {
-				const page = await this.#memory.scanEntries({ conversationId: conversation.id }, 256, entryCursor, context);
-				entries.push(...page.items);
-				entryCursor = page.next;
-			} while (entryCursor !== undefined);
-		}
-		conversations.sort((left, right) => left.id - right.id);
-		entries.sort((left, right) => left.id - right.id);
-		return { conversations, entries, nextSeq: 0 };
+	/** Read immutable committed rows only; both backends have indexed entry/conversation ranges. */
+	readDelta(water: SnapshotWater): SessionSnapshot | undefined {
+		return this.path === undefined
+			? this.#memory?.readCommittedRecordsSince(water)
+			: readSnapshotDelta(this.path, water);
 	}
 
-	async #reloadPlacement(context: Context): Promise<void> {
-		if (this.path !== undefined) {
-			this.#reload(this.path);
-			return;
-		}
-		const snapshot = await this.memorySnapshot(context);
-		if (snapshot === undefined) return;
-		const projected = projectSnapshot(snapshot);
-		this.#placement = projected.placement;
-		this.#summary = new SessionInfoBuilder();
-		for (const entry of projected.fileEntries) this.#summary.add(entry);
+	/** Full snapshot facade retained for callers that explicitly initialize a memory projection. */
+	async memorySnapshot(_context: Context = BACKGROUND_CONTEXT): Promise<SessionSnapshot | undefined> {
+		return this.path === undefined ? this.readDelta(EMPTY_SNAPSHOT_WATER) : undefined;
+	}
+
+	#reloadPlacement(): void {
+		const snapshot = this.readDelta(this.#projection?.water ?? EMPTY_SNAPSHOT_WATER);
+		if (snapshot !== undefined) this.#applySnapshot(snapshot);
 	}
 
 	async #open(context: Context): Promise<Harness> {

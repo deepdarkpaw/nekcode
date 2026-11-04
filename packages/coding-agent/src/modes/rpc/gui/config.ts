@@ -24,9 +24,9 @@ const SETTINGS_FILE = "settings.json";
 
 /** Whether project-local resources may be read for `cwd`, mirroring startup trust resolution. */
 export function isProjectTrusted(ctx: GuiContext, cwd: string): boolean {
-	if (!hasTrustRequiringProjectResources(cwd)) return true;
 	const trusted = new ProjectTrustStore(ctx.agentDir).get(cwd);
 	if (trusted !== null) return trusted;
+	if (!hasTrustRequiringProjectResources(cwd)) return true;
 	return ctx.settingsManager.getDefaultProjectTrust() === "always";
 }
 

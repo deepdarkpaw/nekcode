@@ -1,8 +1,9 @@
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
+import { trustedHttpUrl } from "@earendil-works/pi-ai/utils/trusted-url";
 import { defaultModelPerProvider } from "@earendil-works/pi-coding-agent/core/model-resolver";
 import { openBrowser } from "@earendil-works/pi-coding-agent/utils/open-browser";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { fuzzyFilter } from "@earendil-works/pi-tui";
+import { fuzzyFilter, replaceControlCharacters } from "@earendil-works/pi-tui";
 import type { ModeContext } from "../mode/mode-context.ts";
 import { type AuthProviderOption, authSelector } from "../selectors/auth.ts";
 import type { CommandDefinition } from "./registry.ts";
@@ -62,16 +63,20 @@ async function prompt(ctx: ModeContext, request: AuthPrompt): Promise<string> {
 }
 
 function notify(ctx: ModeContext, event: AuthEvent): void {
+	const status = (text: string) => ctx.showStatus(replaceControlCharacters(text));
 	if (event.type === "auth_url") {
-		ctx.showStatus(`${event.instructions ?? "Open this URL to authenticate:"} ${event.url}`);
-		openBrowser(event.url);
-	} else if (event.type === "device_code")
-		ctx.showStatus(`Open ${event.verificationUri} and enter code ${event.userCode}`);
-	else if (event.type === "info")
-		ctx.showStatus(
-			event.links?.length ? `${event.message} ${event.links.map((link) => link.url).join(" ")}` : event.message,
+		const target = trustedHttpUrl(event.url);
+		status(`${event.instructions ?? "Open this URL to authenticate:"} ${target ?? event.url}`);
+		if (target) openBrowser(target);
+	} else if (event.type === "device_code") {
+		status(`Open ${trustedHttpUrl(event.verificationUri) ?? event.verificationUri} and enter code ${event.userCode}`);
+	} else if (event.type === "info") {
+		status(
+			event.links?.length
+				? `${event.message} ${event.links.map((link) => trustedHttpUrl(link.url) ?? link.url).join(" ")}`
+				: event.message,
 		);
-	else ctx.showStatus(event.message);
+	} else status(event.message);
 }
 
 export const loginCommand: CommandDefinition = {

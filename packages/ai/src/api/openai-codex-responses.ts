@@ -186,11 +186,15 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 			reject(new Error("Request was aborted"));
 			return;
 		}
-		const timeout = setTimeout(resolve, ms);
-		signal?.addEventListener("abort", () => {
+		const onAbort = () => {
 			clearTimeout(timeout);
 			reject(new Error("Request was aborted"));
-		});
+		};
+		const timeout = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
@@ -540,6 +544,7 @@ function buildRequestBody(
 	),
 ): RequestBody {
 	const supportsStrictMode = model.compat?.supportsStrictMode ?? true;
+	const supportsStrictParameter = model.compat?.supportsStrictParameter ?? true;
 	const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
 	const supportsAdditionalTools = model.compat?.supportsAdditionalTools ?? false;
 	const supportsToolSearch = model.compat?.supportsToolSearch ?? false;
@@ -557,7 +562,7 @@ function buildRequestBody(
 		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 		supportsAdditionalTools,
 		supportsToolSearch,
-		toolOptions: { strict: null, supportsStrictMode, supportsOpenAIGrammarTools },
+		toolOptions: { supportsStrictMode, supportsStrictParameter, supportsOpenAIGrammarTools },
 	});
 
 	const initialSystemMessage = getInitialSystemMessage(context.messages);
@@ -585,8 +590,8 @@ function buildRequestBody(
 
 	if (transcriptTools.requestTools.length > 0) {
 		body.tools = convertResponsesTools(transcriptTools.requestTools, {
-			strict: null,
 			supportsStrictMode,
+			supportsStrictParameter,
 			supportsOpenAIGrammarTools,
 		});
 	}

@@ -109,6 +109,11 @@ export function overlap(a: string, b: string, scan: number, probe = 64, maxCandi
 	return 0;
 }
 
+/** Copy a substring so V8 slices in a delta chain cannot retain whole historical outputs. */
+export function ownedSlice(text: string, start: number, end = text.length): string {
+	return `${text.slice(start, end)} `.slice(0, -1);
+}
+
 // ─── Immutable revision tracking ─────────────────────────────────────────────
 
 export { diffRevisions } from "./diff.ts";

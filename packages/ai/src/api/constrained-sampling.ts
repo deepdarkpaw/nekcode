@@ -167,36 +167,54 @@ export function getGrammarToolInput(
 	return input;
 }
 
+/** Existing cumulative-input API; streaming providers use the delta API below. */
 export function appendGrammarToolInputJsonDelta(
 	buffer: GrammarToolInputJsonBuffer,
 	inputProperty: string,
 	nextInput: string,
 	close: boolean,
 ): string | undefined {
+	if (close) return closeGrammarToolInputJson(buffer, inputProperty, nextInput);
+	if (!nextInput.startsWith(buffer.input))
+		throw new Error(`grammar tool input for property "${inputProperty}" changed non-monotonically`);
+	return appendGrammarToolInputJsonChunk(buffer, inputProperty, nextInput.slice(buffer.input.length));
+}
+
+/** Encode only the new input, never rescan or stringify the accumulated tool arguments. */
+export function appendGrammarToolInputJsonChunk(
+	buffer: GrammarToolInputJsonBuffer,
+	inputProperty: string,
+	delta: string,
+): string | undefined {
+	if (buffer.closed) throw new Error(`grammar tool input for property "${inputProperty}" changed after it was closed`);
+	if (!delta) return undefined;
+	buffer.input += delta;
+	return grammarToolInputJsonStart(buffer, inputProperty) + JSON.stringify(delta).slice(1, -1);
+}
+
+/** Finish a grammar tool's JSON stream, validating the final provider snapshot once. */
+export function closeGrammarToolInputJson(
+	buffer: GrammarToolInputJsonBuffer,
+	inputProperty: string,
+	finalInput: string | undefined,
+): string | undefined {
 	if (buffer.closed) {
-		if (close && nextInput === buffer.input) return undefined;
+		if (finalInput === undefined || finalInput === buffer.input) return undefined;
 		throw new Error(`grammar tool input for property "${inputProperty}" changed after it was closed`);
 	}
-	if (!nextInput.startsWith(buffer.input)) {
+	if (finalInput !== undefined && !finalInput.startsWith(buffer.input)) {
 		throw new Error(`grammar tool input for property "${inputProperty}" changed non-monotonically`);
 	}
+	const rest = finalInput === undefined ? "" : finalInput.slice(buffer.input.length);
+	if (finalInput !== undefined) buffer.input = finalInput;
+	buffer.closed = true;
+	return `${grammarToolInputJsonStart(buffer, inputProperty)}${JSON.stringify(rest).slice(1, -1)}"}`;
+}
 
-	const inputDelta = nextInput.slice(buffer.input.length);
-	if (!close && inputDelta.length === 0) return undefined;
-
-	let delta = "";
-	if (!buffer.started) {
-		delta += `{${JSON.stringify(inputProperty)}:"`;
-		buffer.started = true;
-	}
-	delta += JSON.stringify(inputDelta).slice(1, -1);
-	buffer.input = nextInput;
-
-	if (close) {
-		delta += '"}';
-		buffer.closed = true;
-	}
-	return delta;
+function grammarToolInputJsonStart(buffer: GrammarToolInputJsonBuffer, inputProperty: string): string {
+	if (buffer.started) return "";
+	buffer.started = true;
+	return `{${JSON.stringify(inputProperty)}:"`;
 }
 
 function inferGrammarInputProperty(tool: Tool): string {
