@@ -745,7 +745,16 @@ export type AssistantMessageEvent =
 	| { type: "thinking_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "thinking_end"; contentIndex: number; content: string; partial: AssistantMessage }
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
-	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
+	| {
+			type: "toolcall_delta";
+			contentIndex: number;
+			delta: string;
+			partial: AssistantMessage;
+			/** Durable whole-block update: replace arguments instead of appending delta as JSON. */
+			arguments?: ToolCall["arguments"];
+			/** Durable field update: append delta to this string field, not to the JSON document. */
+			argumentPath?: readonly (string | number)[];
+	  }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
 	| {
 			type: "done";

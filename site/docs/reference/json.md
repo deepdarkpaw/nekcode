@@ -69,13 +69,13 @@ RPC 模式不输出会话头，用 [`get_state`](/reference/rpc-commands#get-sta
 
 ### 重建流式消息
 
-线上的 `message_update` 只包含增量：省略了 SDK 事件中累积的 `message` 字段和每个 `assistantMessageEvent.partial` 快照，保证流的大小线性增长。
+线上的 `message_update` 只包含增量：省略了 SDK 事件中累积的 `message` 字段和每个 `assistantMessageEvent.partial` 快照，保证流的大小线性增长。唯一的例外是 `start`，它带有用于替换的快照。
 
 嵌套事件是以下之一：
 
 | 类型 | 额外字段 | 含义 |
 |---|---|---|
-| `start` | 无 | 服务商流开始 |
+| `start` | `message` | 用 `message` 替换整条部分消息；durable 会话在恢复或替换未完成回复时发出 |
 | `text_start` | `contentIndex` | 文本块开始 |
 | `text_delta` | `contentIndex`、`delta` | 追加文本 |
 | `text_end` | `contentIndex`、`content` | 文本块结束，带权威内容 |
@@ -83,14 +83,20 @@ RPC 模式不输出会话头，用 [`get_state`](/reference/rpc-commands#get-sta
 | `thinking_delta` | `contentIndex`、`delta` | 追加思考文本 |
 | `thinking_end` | `contentIndex`、`content` | 思考块结束，带权威内容 |
 | `toolcall_start` | `contentIndex`、`id`、`toolName` | 工具调用块开始 |
-| `toolcall_delta` | `contentIndex`、`delta` | 追加序列化的参数数据 |
+| `toolcall_delta` | `contentIndex`、`delta`、`arguments?`、`argumentPath?` | 更新工具调用参数，见下文 |
 | `toolcall_end` | `contentIndex`、`toolCall` | 工具调用结束，带完整的 `ToolCall` |
 | `done` | `reason`、`message` | 服务商流成功完成 |
 | `error` | `reason`、`error` | 服务商流以错误或中止结束 |
 
-正常的代理循环会把服务商层面的 `start`、`done`、`error` 转换为 `message_start` 和 `message_end`，而不是作为 `message_update` 发出。
+代理循环会把服务商层面的 `start`、`done`、`error` 转换为 `message_start` 和 `message_end`，而不是作为 `message_update` 发出。durable 会话只在替换整条部分消息时，才把 `start` 作为 `message_update` 发出。
 
 用 `contentIndex` 识别内容块。缓冲 `delta` 用于实时显示，但在收到 `text_end`、`thinking_end`、`toolcall_end` 时用其中的完整内容替换；收到 `message_end` 时用 `message_end.message` 替换整条部分消息。
+
+`toolcall_delta` 按它携带的字段处理：
+
+- `arguments`：用这个对象替换该块的参数。`delta` 是同一对象的序列化结果，不要追加。
+- `argumentPath`：把 `delta` 追加到参数中该路径上的字符串，例如 `["content"]`。`delta` 是原始文本，不是 JSON 文档的片段。
+- 两者都没有：把 `delta` 追加到序列化的参数 JSON 后，按不完整 JSON 解析。
 
 顶层的 `usage` 是服务商最新报告的累计用量。不在流式过程中报告用量的服务商，这个值可能直到完成前都是 0。
 
@@ -198,7 +204,9 @@ type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T
 
 type JsonAssistantMessageEvent<T> = T extends { type: "toolcall_start"; partial: unknown }
   ? WithoutPartial<T> & { id: string; toolName: string }
-  : WithoutPartial<T>;
+  : T extends { type: "start"; partial: infer Message }
+    ? WithoutPartial<T> & { message: Message }
+    : WithoutPartial<T>;
 
 type JsonAgentSessionEvent =
   | Exclude<AgentSessionEvent, { type: "message_update" }>

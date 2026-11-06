@@ -2,6 +2,7 @@ import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Message
 import type { ConversationId, EntryId, EntryRecord, SnapshotEvent } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { DurableEventAdapter, type DurableSessionEvent } from "../../src/core/durable/events.ts";
+import { toJsonEvent } from "../../src/modes/json-event.ts";
 
 function entry(id: number, kind: string, message: Message): EntryRecord {
 	return { id: id as EntryId, conversationId: 0 as ConversationId, kind, model: [message] };
@@ -41,6 +42,47 @@ function adapterWith(missed: EntryRecord[]): { adapter: DurableEventAdapter; eve
 }
 
 describe("DurableEventAdapter snapshot catch-up", () => {
+	it("preserves argument replacements and field paths across the JSON/RPC boundary", async () => {
+		const { adapter, events } = adapterWith([]);
+		const partial = fauxAssistantMessage([
+			fauxToolCall("write", { path: "G:", content: "# Arch" }, { id: "write-1" }),
+		]);
+		await adapter.handle([{ type: "message_start", message: partial }]);
+		await adapter.handle([
+			{
+				type: "message_update",
+				usage: partial.usage,
+				changes: [
+					{ type: "toolcall_delta", contentIndex: 0, path: ["path"], delta: "/project/ARD.md" },
+					{ type: "toolcall_delta", contentIndex: 0, path: ["content"], delta: "\nfirst\nsecond\n" },
+				],
+			},
+		]);
+		const updates = events
+			.map((event) => toJsonEvent(event))
+			.flatMap((event) =>
+				event.type === "message_update" && event.assistantMessageEvent.type === "toolcall_delta"
+					? [event.assistantMessageEvent]
+					: [],
+			);
+		expect(updates[0]).toMatchObject({ arguments: { path: "G:", content: "# Arch" } });
+		expect(updates[1]).toMatchObject({ argumentPath: ["path"], delta: "/project/ARD.md" });
+		expect(updates[2]).toMatchObject({ argumentPath: ["content"], delta: "\nfirst\nsecond\n" });
+		expect(updates.every((update) => !("partial" in update))).toBe(true);
+		const replacement = fauxAssistantMessage([
+			fauxToolCall("write", { path: "G:/project/ARD.md", content: "# Replaced" }, { id: "write-1" }),
+		]);
+		await adapter.handle([
+			{ type: "message_update", usage: partial.usage, changes: [{ type: "message", message: replacement }] },
+		]);
+		const reset = events
+			.map((event) => toJsonEvent(event))
+			.findLast((event) => event.type === "message_update" && event.assistantMessageEvent.type === "start");
+		expect(reset?.type === "message_update" && reset.assistantMessageEvent).toMatchObject({
+			type: "start",
+			message: replacement,
+		});
+	});
 	it("emits the ends a delivery overflow skipped, then closes the turn and run", async () => {
 		const user = entry(1, "pi.user", { role: "user", content: "go", timestamp: 1 });
 		const call = fauxAssistantMessage([fauxToolCall("probe", {}, { id: "call-1" })], { stopReason: "toolUse" });

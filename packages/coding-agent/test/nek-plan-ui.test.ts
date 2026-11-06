@@ -344,6 +344,28 @@ describe("Plan documents and mode presentation", () => {
 		await expect(operation).rejects.toMatchObject({ name: "AbortError" });
 	});
 
+	it("does not label a missing RPC approval as a user decline", async () => {
+		const { approval, ctx } = pendingModeApproval("rpc");
+		const setMode = vi.fn();
+		const tool = createSwitchModeToolDefinition({ getMode: () => "agent", setMode });
+		const operation = tool.execute("switch-cancel", { target_mode_id: "plan" }, undefined, undefined, ctx);
+		approval.resolve(undefined);
+		const result = await operation;
+		expect(JSON.stringify(result.content)).toContain("cancelled before approval");
+		expect(JSON.stringify(result.content)).not.toContain("User declined");
+		expect(setMode).not.toHaveBeenCalled();
+	});
+
+	it("labels only an explicit negative RPC approval as declined", async () => {
+		const { approval, ctx } = pendingModeApproval("rpc");
+		const setMode = vi.fn();
+		const tool = createSwitchModeToolDefinition({ getMode: () => "agent", setMode });
+		const operation = tool.execute("switch-reject", { target_mode_id: "plan" }, undefined, undefined, ctx);
+		approval.resolve(false);
+		expect(JSON.stringify((await operation).content)).toContain("User declined");
+		expect(setMode).not.toHaveBeenCalled();
+	});
+
 	it("rejects RPC mode without structured UI instead of falling back to confirm", async () => {
 		const ctx = { mode: "rpc", hasUI: true, ui: { confirm: async () => true } } as unknown as ExtensionContext;
 		const setMode = vi.fn();

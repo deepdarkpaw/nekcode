@@ -280,6 +280,7 @@ export class DurableEventAdapter {
 						type: "toolcall_delta",
 						contentIndex: index,
 						delta: change.delta,
+						argumentPath: change.path,
 						partial: snapshot(partial),
 					});
 				} else {
@@ -568,7 +569,10 @@ function emptyBlock(block: Block): Block {
 function blockDelta(
 	previous: Block | undefined,
 	next: Block,
-): { type: "text_delta" | "thinking_delta"; delta: string } | { type: "toolcall_delta"; delta: string } | undefined {
+):
+	| { type: "text_delta" | "thinking_delta"; delta: string }
+	| { type: "toolcall_delta"; delta: string; arguments: ToolCall["arguments"] }
+	| undefined {
 	if (next.type === "text") {
 		const before = previous?.type === "text" ? previous.text : "";
 		const delta = next.text.startsWith(before) ? next.text.slice(before.length) : next.text;
@@ -580,7 +584,9 @@ function blockDelta(
 		return delta === "" ? undefined : { type: "thinking_delta", delta };
 	}
 	const args = JSON.stringify(next.arguments);
-	return args === "{}" ? undefined : { type: "toolcall_delta", delta: args };
+	if (args === "{}" && (previous?.type !== "toolCall" || Object.keys(previous.arguments).length === 0))
+		return undefined;
+	return { type: "toolcall_delta", delta: args, arguments: structuredClone(next.arguments) };
 }
 
 function applyDelta(

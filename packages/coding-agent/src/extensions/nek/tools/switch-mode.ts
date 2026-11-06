@@ -62,7 +62,9 @@ export function createSwitchModeToolDefinition(
 				);
 				signal?.throwIfAborted();
 				if (result === undefined)
-					return textResult(`User declined the mode switch. Stay in ${modeLabel(current)} mode.`);
+					return textResult(
+						`Mode switch cancelled before approval. Stay in ${modeLabel(current)} mode. No user decision was received; ask again if needed.`,
+					);
 				if (typeof result.approved !== "boolean") throw new Error("Invalid result for nek.switch_mode.");
 				approved = result.approved;
 			} else {

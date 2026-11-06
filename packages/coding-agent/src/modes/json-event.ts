@@ -5,7 +5,9 @@ type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T
 
 type ToJsonAssistantMessageEvent<T> = T extends { type: "toolcall_start"; partial: unknown }
 	? WithoutPartial<T> & { id: string; toolName: string }
-	: WithoutPartial<T>;
+	: T extends { type: "start"; partial: infer Message }
+		? WithoutPartial<T> & { message: Message }
+		: WithoutPartial<T>;
 
 type MessageUpdateEvent = Extract<AgentSessionEvent, { type: "message_update" }>;
 type JsonMessageUpdateEvent = {
@@ -20,6 +22,9 @@ export type JsonAgentSessionEvent = Exclude<AgentSessionEvent, { type: "message_
 function toJsonAssistantMessageEvent(
 	event: MessageUpdateEvent["assistantMessageEvent"],
 ): JsonMessageUpdateEvent["assistantMessageEvent"] {
+	// Durable recovery may replace a partial message. Unlike normal deltas, this is an
+	// authoritative reset; dropping its snapshot leaves RPC clients stuck on the first partial.
+	if (event.type === "start") return { type: "start", message: event.partial };
 	if (event.type === "toolcall_start") {
 		const toolCall = event.partial.content[event.contentIndex];
 		if (toolCall?.type !== "toolCall") {
@@ -38,10 +43,11 @@ function toJsonAssistantMessageEvent(
 }
 
 /**
- * Remove cumulative assistant snapshots from streaming wire events.
- * `message_start` provides the initial message, deltas build it, and
- * `message_end` provides the final authoritative message. Cumulative usage,
- * tool-call ids, and tool names remain available because their size is constant.
+ * Remove cumulative assistant snapshots from ordinary streaming wire deltas.
+ * `message_start` provides the initial message and `message_end` the final message;
+ * an explicit `start` update retains a replacement snapshot for durable recovery.
+ * Tool argument replacement/field-path metadata must survive JSON serialization:
+ * field deltas are not fragments of the surrounding JSON document.
  */
 export function toJsonEvent(event: MessageUpdateEvent): JsonMessageUpdateEvent;
 export function toJsonEvent(event: AgentSessionEvent): JsonAgentSessionEvent;

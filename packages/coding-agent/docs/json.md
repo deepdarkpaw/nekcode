@@ -69,13 +69,13 @@ A turn is one assistant response plus any tool calls and tool results produced b
 
 ### Reconstruct streaming messages
 
-Wire `message_update` records are delta-only. They omit the SDK event's cumulative `message` field and every `assistantMessageEvent.partial` snapshot so stream size remains linear.
+Wire `message_update` records are delta-only. They omit the SDK event's cumulative `message` field and every `assistantMessageEvent.partial` snapshot so stream size remains linear. The one exception is `start`, which carries a replacement snapshot.
 
 The nested event is one of:
 
 | Type | Fields in addition to `type` | Meaning |
 |---|---|---|
-| `start` | None | The provider stream started; its cumulative `partial` field is removed on the wire. |
+| `start` | `message` | Replace the whole partial message with `message`. Durable sessions send it when they recover or replace a partial reply. |
 | `text_start` | `contentIndex` | A text block started. |
 | `text_delta` | `contentIndex`, `delta` | Append text to the block. |
 | `text_end` | `contentIndex`, `content` | The text block ended with authoritative content. |
@@ -83,14 +83,20 @@ The nested event is one of:
 | `thinking_delta` | `contentIndex`, `delta` | Append thinking text to the block. |
 | `thinking_end` | `contentIndex`, `content` | The thinking block ended with authoritative content. |
 | `toolcall_start` | `contentIndex`, `id`, `toolName` | A tool-call block started. |
-| `toolcall_delta` | `contentIndex`, `delta` | Append serialized argument data. |
+| `toolcall_delta` | `contentIndex`, `delta`, `arguments?`, `argumentPath?` | Update the tool-call arguments; see below. |
 | `toolcall_end` | `contentIndex`, `toolCall` | The tool call ended with the complete `ToolCall`. |
 | `done` | `reason`, `message` | The provider stream completed successfully. |
 | `error` | `reason`, `error` | The provider stream ended with an error or abort message. |
 
-The normal agent loop translates provider-level `start`, `done`, and `error` into `message_start` and `message_end` session events rather than emitting them as `message_update`. They remain admitted by the exported `JsonAgentSessionEvent` transformation for callers that construct a matching session event.
+The agent loop translates provider-level `start`, `done`, and `error` into `message_start` and `message_end` session events rather than emitting them as `message_update`. A durable session emits `start` as a `message_update` only when it replaces the whole partial message. `done` and `error` remain admitted by the exported `JsonAgentSessionEvent` transformation for callers that construct a matching session event.
 
 Use `contentIndex` to identify the content block. Buffer `delta` fields for a live display, but replace reconstructed data with the completed content in `text_end`, `thinking_end`, or `toolcall_end`. Replace the whole partial message with `message_end.message` when it arrives.
+
+Apply a `toolcall_delta` by the first field it carries:
+
+- `arguments`: replace the block's arguments with this object. `delta` is the same object serialized; do not append it.
+- `argumentPath`: append `delta` to the string at that path inside the arguments, for example `["content"]`. `delta` is raw text, not a fragment of the JSON document.
+- Neither: append `delta` to the serialized argument JSON and parse it as partial JSON.
 
 The top-level `usage` is the latest cumulative provider-reported usage for the assistant response. It can remain zero until completion when a provider does not report usage while streaming.
 
@@ -247,7 +253,9 @@ type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T
 
 type JsonAssistantMessageEvent<T> = T extends { type: "toolcall_start"; partial: unknown }
   ? WithoutPartial<T> & { id: string; toolName: string }
-  : WithoutPartial<T>;
+  : T extends { type: "start"; partial: infer Message }
+    ? WithoutPartial<T> & { message: Message }
+    : WithoutPartial<T>;
 
 type JsonAgentSessionEvent =
   | Exclude<AgentSessionEvent, { type: "message_update" }>
