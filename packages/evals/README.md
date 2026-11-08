@@ -70,7 +70,7 @@ npm run eval:docs -w packages/evals -- -t "adds the model"
 
 The runner:
 
-1. Mounts the repository ephemerally for a Docker build, packs the current workspace packages using the repository's consumer-install machinery, then creates separate `without_docs` and `with_docs` images from the staged runtime.
+1. Builds in an intermediate Docker stage, caching the locked dependency layer separately from source, packs the current workspace packages using the repository's consumer-install machinery, then creates separate `without_docs` and `with_docs` images from the staged runtime.
 2. Discovers the selected cases in both images and requires identical cohorts.
 3. Plans every `(case, variant, model, runNumber)` arm before execution.
 4. Runs each arm in a fresh container. A failed or missing arm is recorded and the planned cohort continues.
@@ -81,9 +81,9 @@ Repetition order alternates by run number to reduce order bias.
 
 ## Documentation variants
 
-`without_docs` omits the coding-agent `README.md`, `CHANGELOG.md`, `docs/`, and `examples/`, then removes the Pi documentation-routing section from the default system prompt.
+`without_docs` omits the coding-agent `README.md`, `CHANGELOG.md`, `docs/`, and `examples/` and uses nek's default system prompt, which has no documentation-routing section.
 
-`with_docs` includes those files and uses the unchanged default prompt.
+`with_docs` includes those files and adds an explicit documentation-routing section to the otherwise identical prompt. The harness verifies the expected section before recording a result.
 
 Both variants install the same local workspace tarballs. Existing npm overrides ensure coding-agent's internal Pi dependencies also come from the current repository rather than the registry. Documentation and source files from internal dependency packages are removed symmetrically so they cannot act as alternate instructions. Startup validates the image allowlist and verifies that the installed coding-agent package resolves from `dist/`. Eval definitions, evaluator helpers, fixtures, and Vitest configuration are root-owned and unreadable after the harness permanently drops to an unprivileged UID. Each run receives a new home, agent directory, workspace, session directory, and container filesystem.
 

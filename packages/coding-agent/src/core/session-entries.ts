@@ -747,7 +747,7 @@ export function getSessionHeaderCwd(header: SessionHeader): string | undefined {
 }
 
 export function sessionCwdMatches(cwd: string | undefined, resolvedCwd: string): boolean {
-	return cwd !== undefined && cwd !== "" && pathsEqual(resolvePath(cwd), resolvedCwd);
+	return cwd !== undefined && cwd !== "" && pathsEqual(normalizePath(cwd), resolvedCwd);
 }
 
 /** Exported for testing */

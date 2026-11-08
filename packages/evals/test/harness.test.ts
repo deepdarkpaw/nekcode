@@ -7,6 +7,7 @@ import {
 	createPiDocumentationEvalHarness,
 	DOCUMENTATION_EVAL_TOOLS,
 	excludePiDocumentation,
+	includePiDocumentation,
 	resolveDocumentationVariant,
 	resolveModelSelection,
 	verifySystemPrompt,
@@ -69,17 +70,20 @@ describe("documentation variant", () => {
 		expect(() => resolveDocumentationVariant(variant)).toThrow("PI_EVAL_VARIANT");
 	});
 
-	it("strips only the documentation routing section from the default Pi prompt", () => {
-		const prompt = buildSystemPrompt({
+	it("adds documentation only for treatment and strips it back to the original nek prompt", () => {
+		const basePrompt = buildSystemPrompt({
 			cwd: "/workspace",
 			selectedTools: [...DOCUMENTATION_EVAL_TOOLS],
 		});
+		expect(basePrompt).not.toContain("\n<docs>\n");
+		const prompt = includePiDocumentation(basePrompt);
 		expect(prompt).toContain("\n<docs>\nPi documentation (read only");
 		expect(prompt).toContain("\n<rules>\n");
 		expect(prompt).toContain("\n<cwd>\n/workspace\n</cwd>");
 		expect(prompt).toContain("docs/models.md");
 
 		const stripped = excludePiDocumentation(prompt);
+		expect(stripped).toBe(basePrompt);
 		expect(stripped).toContain("\n<rules>\n");
 		expect(stripped).toContain("\n<cwd>\n/workspace\n</cwd>");
 		expect(stripped).not.toContain("<docs>");
@@ -91,19 +95,25 @@ describe("documentation variant", () => {
 	});
 
 	it("verifies the prompt that was sent", () => {
-		const prompt = buildSystemPrompt({
+		const basePrompt = buildSystemPrompt({
 			cwd: "/workspace",
 			selectedTools: [...DOCUMENTATION_EVAL_TOOLS],
 		});
+		const prompt = includePiDocumentation(basePrompt);
 		const stripped = excludePiDocumentation(prompt);
 
+		expect(verifySystemPrompt(prompt, { name: "with_docs", expectedPiDocumentation: true })).toBe(prompt);
 		expect(verifySystemPrompt(stripped, { name: "without_docs", expectedPiDocumentation: false })).toBe(stripped);
 		expect(() => verifySystemPrompt(prompt, { name: "without_docs", expectedPiDocumentation: false })).toThrow(
 			"does not match",
 		);
 	});
 
-	it("fails closed when prompt markers are missing", () => {
+	it("fails closed when prompt markers are missing or duplicated", () => {
+		expect(() => includePiDocumentation("Instructions")).toThrow("no working-directory section");
+		expect(() => includePiDocumentation("\n<docs>\nexisting\n</docs>\n<cwd>\n/workspace\n</cwd>")).toThrow(
+			"already has a documentation section",
+		);
 		expect(() => excludePiDocumentation("Instructions")).toThrow("no Pi documentation section");
 		expect(() => excludePiDocumentation("\n<docs>\nPi documentation\n</docs>")).toThrow(
 			"no working-directory section",

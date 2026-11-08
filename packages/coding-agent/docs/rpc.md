@@ -46,7 +46,7 @@ The protocol has four record families:
 | stdout | Session event | Stream run, message, tool, queue, compaction, and retry activity |
 | Both | Extension UI record | Forward supported extension interactions between nekcode and the client |
 
-See [RPC Commands](rpc-commands.md), [JSON Event Stream](json.md), and [RPC Extension UI](rpc-extension-ui.md) for the canonical record definitions.
+See [RPC Commands](rpc-commands.md), [JSON Event Stream](json.md), and [RPC Extension UI](rpc-extension-ui.md) for the canonical record definitions. The [GUI RPC acceptance matrix](rpc-acceptance.md) maps commands and events to their regression tests.
 
 ### Correlate commands and responses
 

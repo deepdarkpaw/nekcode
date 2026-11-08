@@ -13,6 +13,9 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 	getAgentDir,
+	getDocsPath,
+	getExamplesPath,
+	getReadmePath,
 	type InlineExtension,
 	ModelRuntime,
 	readStoredCredential,
@@ -491,6 +494,24 @@ export function resolveDocumentationVariant(
 	throw new TypeError('PI_EVAL_VARIANT must be "without_docs" or "with_docs".');
 }
 
+/** The nek prompt has no documentation section; add it only to the treatment. */
+export function includePiDocumentation(defaultPrompt: string): string {
+	if (defaultPrompt.includes("\n<docs>\n")) throw new Error("System prompt already has a documentation section.");
+	const cwdStart = defaultPrompt.lastIndexOf("\n<cwd>\n");
+	if (cwdStart < 0) throw new Error("Default system prompt has no working-directory section.");
+	const documentation = [
+		"\n<docs>",
+		"Pi documentation (read only when the user asks about the harness, its SDK, extensions, themes, skills, or TUI):",
+		`- Main documentation: ${getReadmePath()}`,
+		`- Additional docs: ${getDocsPath()}`,
+		`- Examples: ${getExamplesPath()}`,
+		"- Resolve docs/... under Additional docs and examples/... under Examples, not the current working directory.",
+		"- Consult the relevant documentation (including docs/models.md) and examples before implementing harness changes.",
+		"</docs>",
+	].join("\n");
+	return defaultPrompt.slice(0, cwdStart) + documentation + defaultPrompt.slice(cwdStart);
+}
+
 export function excludePiDocumentation(defaultPrompt: string): string {
 	const documentationStartMarker = "\n<docs>\n";
 	const documentationEndMarker = "\n</docs>";
@@ -531,7 +552,7 @@ export function createPiDocumentationEvalHarness<TOutput extends JsonValue>(
 		...options,
 		name: variant,
 		tools: options.tools ?? [...DOCUMENTATION_EVAL_TOOLS],
-		...(variant === "without_docs" ? { transformSystemPrompt: excludePiDocumentation } : {}),
+		...(variant === "with_docs" ? { transformSystemPrompt: includePiDocumentation } : {}),
 		expectedPiDocumentation: variant === "with_docs",
 	});
 }

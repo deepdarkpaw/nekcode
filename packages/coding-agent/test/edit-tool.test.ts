@@ -1,4 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	lstatSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -232,7 +241,7 @@ describe("M7 edit tool", () => {
 			{} as never,
 		);
 		expect(readFileSync(target, "utf8")).toBe("after\n");
-		expect(statSync(link).isSymbolicLink()).toBe(true);
+		expect(lstatSync(link).isSymbolicLink()).toBe(true);
 		expect(statSync(target).mode & 0o777).toBe(mode);
 	});
 });

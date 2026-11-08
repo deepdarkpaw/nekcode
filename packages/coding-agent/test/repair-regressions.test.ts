@@ -62,6 +62,11 @@ describe("trust and Windows comparison", () => {
 		expect(await resolveProjectTrusted({ cwd, trustStore, projectTrustContext })).toBe(false);
 		expect(select).not.toHaveBeenCalled();
 	});
+	it("matches relative session directories and rejects missing ones", () => {
+		expect(sessionCwdMatches(".", process.cwd())).toBe(true);
+		expect(sessionCwdMatches("", process.cwd())).toBe(false);
+		expect(sessionCwdMatches(undefined, process.cwd())).toBe(false);
+	});
 	it("folds case only for Windows comparison, respecting segment boundaries", () => {
 		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
 		expect(pathsEqual("C:\\Work\\Project", "c:/work/project")).toBe(true);
