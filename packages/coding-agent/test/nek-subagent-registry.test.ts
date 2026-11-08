@@ -490,6 +490,34 @@ describe("SubagentRegistry", () => {
 		await vi.waitFor(() => expect(registry.get(record.id)?.status).toBe("completed"));
 	});
 
+	it.each([
+		{ failure: new DOMException("cancelled before generation", "AbortError"), status: "aborted" },
+		{ failure: new Error("provider failed before cancellation"), status: "errored" },
+	])("classifies preflight failures without masking real errors: $status", async ({ failure, status }) => {
+		let rejectPrompt!: (error: Error) => void;
+		const pending = new Promise<void>((_resolve, reject) => {
+			rejectPrompt = reject;
+		});
+		const session = fakeSession([]);
+		session.prompt = () => pending;
+		session.abort = async () => {
+			rejectPrompt(failure);
+		};
+		const notified: SubagentRecord[] = [];
+		const registry = new SubagentRegistry(config({}), (record) => notified.push(record));
+		const record = await registry.start({
+			description: "preflight cancellation",
+			type: "explorer",
+			prompt: "not submitted",
+			background: true,
+			createSession: async () => session,
+		});
+		await registry.abort(record.id);
+		expect(registry.get(record.id)?.status).toBe(status);
+		expect(registry.get(record.id)?.error).toBe(status === "errored" ? failure.message : undefined);
+		expect(notified).toEqual([]);
+	});
+
 	it("abort cancels a running subagent without a notice", async () => {
 		const gate = createGate();
 		const notified: SubagentRecord[] = [];

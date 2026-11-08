@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compareVersions, nextReleaseVersion } from "./nek-release.mjs";
+import { compareVersions, nextReleaseVersion, releaseTagForVersion } from "./nek-release.mjs";
+
+test("keeps prerelease tags out of legacy stable scans", () => {
+	assert.equal(releaseTagForVersion("0.4.3"), "nek-v0.4.3");
+	assert.equal(releaseTagForVersion("0.5.0-beta.1"), "nek-beta-v0.5.0-beta.1");
+	assert.equal(releaseTagForVersion("0.5.0-rc.1"), "nek-beta-v0.5.0-rc.1");
+	const tags = ["0.4.3", "0.5.0-beta.1", "0.6.0-alpha.1"].map(releaseTagForVersion);
+	assert.deepEqual(tags.filter((tag) => tag.startsWith("nek-v")), ["nek-v0.4.3"]);
+	assert.throws(() => releaseTagForVersion("0.5.0+build"), /Invalid release version/);
+});
 
 test("orders releases and their prereleases by semver precedence", () => {
 	assert.ok(compareVersions("0.3.2", "0.3.2-beta.1") > 0);

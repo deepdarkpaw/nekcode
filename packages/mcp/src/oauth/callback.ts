@@ -66,6 +66,7 @@ export class OAuthCallbackServer {
 	private paths: string[];
 	private timeoutMs: number;
 	private renderPage: ((page: OAuthCallbackPage) => string) | undefined;
+	private closing: Promise<void> | undefined;
 	private pending = new Map<
 		string,
 		{
@@ -112,6 +113,7 @@ export class OAuthCallbackServer {
 	 * a server-specific redirect URI can tell authorization servers apart (RFC 9700 section 4.4.2.2).
 	 */
 	waitForCallback(state: string, path?: string): Promise<OAuthCallback> {
+		if (this.closing) throw new Error("OAuth callback server closed");
 		if (this.pending.has(state)) throw new Error("OAuth state is already pending");
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
@@ -122,15 +124,21 @@ export class OAuthCallbackServer {
 		});
 	}
 
-	async close(): Promise<void> {
+	/** Stop accepting callbacks and await the same shutdown for every caller. */
+	close(): Promise<void> {
+		if (this.closing) return this.closing;
 		for (const pending of this.pending.values()) {
 			clearTimeout(pending.timer);
 			pending.reject(new Error("OAuth callback server closed"));
 		}
 		this.pending.clear();
-		await new Promise<void>((resolve, reject) => {
+		this.closing = new Promise<void>((resolve, reject) => {
 			this.server.close((error) => (error ? reject(error) : resolve()));
 		});
+		// Stop listening first, then drop preconnect/keep-alive sockets that can otherwise hold close()
+		// open for minutes. Callback responses have already been sent by this point.
+		this.server.closeAllConnections();
+		return this.closing;
 	}
 
 	private reply(response: ServerResponse, status: number, page: OAuthCallbackPage): void {

@@ -178,6 +178,22 @@ interface HeldInput {
 	behavior: "steer" | "followUp";
 	content: (TextContent | ImageContent)[];
 	after: readonly AgentMessage[];
+	/** Only deliver after input_queued handlers finish; clearQueue may withdraw it meanwhile. */
+	ready: boolean;
+}
+
+/** Identity of an idle prompt's admission, retained by queues that await input hooks alongside it. */
+interface PromptRunReservation {
+	state: "preflight" | "starting" | "running" | "released";
+	controller: AbortController;
+}
+
+/** A context reader reserved synchronously before input/auth awaits, released when a run takes over. */
+interface PromptPreflight {
+	run: PromptRunReservation | undefined;
+	startsRun: boolean;
+	done: Promise<void>;
+	release: () => void;
 }
 
 /** Parsed skill block from a user message */
@@ -439,6 +455,9 @@ export class AgentSession {
 	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
+	private readonly _promptPreflights = new Set<PromptPreflight>();
+	private _promptRunReservation?: PromptRunReservation;
+	private _reloadReservation?: object;
 	/** Set by `abort()` during a run; the run then settles `aborted` and later submissions wait for that settlement. */
 	private _agentRunAbortRequested = false;
 	private _isEmittingAgentSettled = false;
@@ -1176,8 +1195,13 @@ export class AgentSession {
 			return;
 		}
 		if (event.type === "queue_update") {
-			this._steeringMessages = [...event.steering];
-			this._followUpMessages = [...event.followUp];
+			const heldText = (behavior: HeldInput["behavior"]): string[] =>
+				this._heldInputs
+					.filter((input) => input.behavior === behavior)
+					.map((input) => contentText(input.content, ""));
+			this._steeringMessages = [...event.steering, ...heldText("steer")];
+			this._followUpMessages = [...event.followUp, ...heldText("followUp")];
+			event = { ...event, steering: this._steeringMessages, followUp: this._followUpMessages };
 		}
 		// Remove a placed input from the visible queue before its message_start, so listeners see the updated queue.
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -1332,6 +1356,10 @@ export class AgentSession {
 	 * continuation was submitted settles the run without it.
 	 */
 	private async _settleRun(durableOutcome: AgentActivityOutcome): Promise<void> {
+		// Inputs admitted alongside this run may still be inside input/input_queued hooks. Give them its continuation,
+		// rather than settling their target first and leaving accepted input stranded until another explicit prompt.
+		const preparingInput = [...this._promptPreflights].filter((preflight) => !preflight.startsRun);
+		await Promise.all(preparingInput.map((preflight) => preflight.done));
 		const engine = this._engine;
 		// Pi's post-run automatic compaction: an overflow or truncated answer compacts and retries; a threshold compaction
 		// continues when work is queued.
@@ -1408,7 +1436,7 @@ export class AgentSession {
 
 	/** Whether user input or custom work was queued for after the run. */
 	private _hasHeldWork(): boolean {
-		return this._heldInputs.length > 0 || this.agent.hasQueuedMessages();
+		return this._heldInputs.some((input) => input.ready) || this.agent.hasQueuedMessages();
 	}
 
 	/** The custom messages held since the run ended, as boundary drafts, removed from the held list. */
@@ -1440,12 +1468,12 @@ export class AgentSession {
 	 * it. Returns whether anything was submitted.
 	 */
 	private async _startHeldWork(engine: DurableEngine): Promise<boolean> {
-		const inputs = this._heldInputs.splice(0);
+		const hasInputs = this._heldInputs.some((input) => input.ready);
 		const custom = this.agent.peekQueuedMessages();
 		this.agent.clearAllQueues();
-		if (inputs.length === 0 && custom.length === 0) return false;
+		if (!hasInputs && custom.length === 0) return false;
 		this._runEnded = false;
-		for (const input of inputs) await this._submitQueuedInput(engine, input);
+		await this._submitHeldInputs(engine, this._promptRunReservation);
 		for (const message of custom) await engine.appendMessage(message, { trigger: true, deliverAs: "steer" });
 		return true;
 	}
@@ -1464,6 +1492,11 @@ export class AgentSession {
 	 */
 	private async _handleAgentSettled(outcome: AgentActivityOutcome): Promise<void> {
 		const event = { type: "agent_settled", outcome } satisfies Extract<AgentSessionEvent, { type: "agent_settled" }>;
+		if (this._promptRunReservation) this._promptRunReservation.state = "released";
+		this._promptRunReservation = undefined;
+		// An event stream can settle before the submitter's admission await returns. Do not leave its marker locked.
+		for (const message of this._takeStartingRunMessages()) this.agent.steer(message);
+		this._startingRunMessages = undefined;
 		this._isAgentRunActive = false;
 		this._runEnded = false;
 		this._agentRunAbortRequested = false;
@@ -1685,6 +1718,7 @@ export class AgentSession {
 		// Everything up to closing the engine is synchronous, as before the durable engine: a caller that does not await
 		// sees a stale extension context and no listeners immediately.
 		try {
+			this._promptRunReservation?.controller.abort();
 			this.abortRetry();
 			this.abortCompaction();
 			this.abortBranchSummary();
@@ -1776,9 +1810,14 @@ export class AgentSession {
 		return this._isAgentRunActive;
 	}
 
-	/** Whether the session has no active agent run, compaction, branch summary, retry, or queued continuation. */
+	/** Whether no run, input preflight, compaction, tree navigation, or runtime reload owns the context. */
 	get isIdle(): boolean {
-		return !this._isAgentRunActive && !this.isCompacting;
+		return (
+			!this._isAgentRunActive &&
+			this._promptPreflights.size === 0 &&
+			!this.isCompacting &&
+			this._reloadReservation === undefined
+		);
 	}
 
 	/** Current effective system prompt, including changes not yet sent to the model. */
@@ -2135,6 +2174,52 @@ export class AgentSession {
 		return { images: normalizedImages, hints };
 	}
 
+	/** Reject admissions before they can observe a context being replaced. Extension commands run outside preflight. */
+	private _assertInputAdmissionAllowed(): void {
+		if (this._disposed) throw new Error("AgentSession is disposed");
+		if (this._reloadReservation !== undefined)
+			throw new Error("Wait for the current reload to finish before submitting input.");
+		if (this._compactionAbortController !== undefined || this._branchSummaryAbortController !== undefined) {
+			throw new Error(
+				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
+			);
+		}
+	}
+
+	/** Reserve before any await, so neither maintenance nor another input can start a competing idle run. */
+	private _reservePromptPreflight(): PromptPreflight {
+		this._assertInputAdmissionAllowed();
+		const startsRun = !this.isStreaming && !this._promptRunReservation && this._promptPreflights.size === 0;
+		if (startsRun) {
+			this._promptRunReservation = { state: "preflight", controller: new AbortController() };
+			this._startingRunMessages = [];
+		}
+		return this._trackPromptPreflight(this._promptRunReservation, startsRun);
+	}
+
+	private _trackPromptPreflight(run: PromptRunReservation | undefined, startsRun: boolean): PromptPreflight {
+		let release!: () => void;
+		const done = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const preflight = { run, startsRun, done, release };
+		this._promptPreflights.add(preflight);
+		return preflight;
+	}
+
+	private _releasePromptPreflight(preflight: PromptPreflight): void {
+		if (this._promptPreflights.delete(preflight)) preflight.release();
+	}
+
+	/** Handled, failed, or cancelled prompts leave accepted queued input visible for the next explicit prompt. */
+	private async _finishPromptPreflight(preflight: PromptPreflight): Promise<void> {
+		try {
+			if (preflight.startsRun && preflight.run?.state === "preflight") await this._failRunStart(preflight.run);
+		} finally {
+			this._releasePromptPreflight(preflight);
+		}
+	}
+
 	/**
 	 * Prepare a run started by a user message or an idle custom message: compact first when needed, then mark the
 	 * session busy (see {@link _beginRunStart}), emit before_agent_start, and apply the run's prompt options and tool
@@ -2142,12 +2227,13 @@ export class AgentSession {
 	 * before_agent_start messages, then custom work a cancelled run left queued. The caller submits the run, or calls
 	 * {@link _failRunStart} when it cannot.
 	 */
-	private async _prepareRun(trigger: BeforeAgentStartTrigger): Promise<AgentMessage[]> {
-		// Check if we need to compact before sending (catches aborted responses). The starting message is sent after
-		// this, so a compaction here never continues the previous run.
+	private async _prepareRun(trigger: BeforeAgentStartTrigger, preflight: PromptPreflight): Promise<AgentMessage[]> {
+		// The reservation also spans automatic pre-prompt compaction, without continuing the previous run.
+		preflight.run?.controller.signal.throwIfAborted();
 		const lastAssistant = this._findLastAssistantMessage();
 		if (lastAssistant) await this._checkCompaction(lastAssistant, false);
-		this._beginRunStart();
+		preflight.run?.controller.signal.throwIfAborted();
+		this._beginRunStart(preflight);
 		const selectedToolsBefore = [...this._baseSystemPromptOptions.selectedTools];
 		const before = await this._extensionRunner.emitBeforeAgentStart(trigger, this._baseSystemPromptOptions);
 		const messages: AgentMessage[] = [...this._pendingNextTurnMessages];
@@ -2182,35 +2268,53 @@ export class AgentSession {
 	 * `triggerTurn` and queued user input join the starting run instead of starting another, and an abort requested
 	 * meanwhile aborts the run once it starts.
 	 */
-	private _beginRunStart(): void {
+	private _beginRunStart(preflight: PromptPreflight): void {
 		this._isAgentRunActive = true;
 		this._agentRunAbortRequested = false;
-		this._startingRunMessages = [];
+		if (preflight.run) preflight.run.state = "starting";
+		// Synchronous handoff: maintenance can never observe neither reservation nor active run.
+		this._releasePromptPreflight(preflight);
 	}
 
-	/** End preparation right before the run is submitted; returns the triggered messages that join it. */
+	/** Take a batch without releasing preparation: durable's prompt storage and admission still await commits. */
 	private _takeStartingRunMessages(): CustomMessage[] {
-		const held = this._startingRunMessages ?? [];
-		this._startingRunMessages = undefined;
-		return held;
+		return this._startingRunMessages?.splice(0) ?? [];
 	}
 
-	/** A run could not start: release its busy state and place held messages without starting a run. */
-	private async _failRunStart(): Promise<void> {
+	/** A run could not start: retain user queues, and place held custom messages without triggering another run. */
+	private async _failRunStart(reservation: PromptRunReservation | undefined): Promise<void> {
+		if (reservation !== this._promptRunReservation) return;
+		// Run preparation may already have released preflight. Protect its cleanup writes and their synchronous listeners.
+		const cleanup = this._trackPromptPreflight(reservation, false);
+		if (reservation) reservation.state = "released";
+		this._promptRunReservation = undefined;
 		const held = this._takeStartingRunMessages();
+		this._startingRunMessages = undefined;
 		this._isAgentRunActive = false;
 		for (const resolve of this._settledWaiters.splice(0)) resolve();
-		for (const message of held) await this.sendCustomMessage(message);
+		try {
+			for (const message of held) await this.sendCustomMessage(message);
+		} finally {
+			this._releasePromptPreflight(cleanup);
+		}
 	}
 
-	/** Join held user inputs to the run just submitted; abort it at once when an abort came while it was prepared. */
-	private async _afterRunSubmitted(engine: DurableEngine): Promise<void> {
+	/** Join held inputs only after primary admission; an abort during preparation never starts held work. */
+	private async _afterRunSubmitted(
+		engine: DurableEngine,
+		reservation: PromptRunReservation | undefined,
+	): Promise<void> {
+		if (reservation?.state === "released") return;
+		if (reservation) reservation.state = "running";
+		const custom = this._takeStartingRunMessages();
+		this._startingRunMessages = undefined;
 		if (this._agentRunAbortRequested) {
+			for (const message of custom) this.agent.steer(message);
 			await engine.abort();
 			return;
 		}
-		// Inputs held while an earlier run settled without continuing, or while this one was prepared, join this run.
-		for (const input of this._heldInputs.splice(0)) await this._submitQueuedInput(engine, input);
+		for (const message of custom) await engine.appendMessage(message, { trigger: true, deliverAs: "steer" });
+		await this._submitHeldInputs(engine, reservation);
 	}
 
 	/**
@@ -2218,12 +2322,22 @@ export class AgentSession {
 	 * before_agent_start handlers set the run's prompt sections and messages (upstream earendil-works/pi#10739).
 	 */
 	private async _startCustomRun(message: CustomMessage): Promise<void> {
+		const preflight = this._reservePromptPreflight();
+		try {
+			if (!preflight.startsRun) throw new Error("Agent is already processing.");
+			await this._submitCustomRun(message, preflight);
+		} finally {
+			await this._finishPromptPreflight(preflight);
+		}
+	}
+
+	private async _submitCustomRun(message: CustomMessage, preflight: PromptPreflight): Promise<void> {
 		this._flushPendingBashMessages();
 		let after: AgentMessage[];
 		try {
-			after = await this._prepareRun({ messageType: "custom", message });
+			after = await this._prepareRun({ messageType: "custom", message }, preflight);
 		} catch (error) {
-			if (this._startingRunMessages !== undefined) await this._failRunStart();
+			if (this._startingRunMessages !== undefined) await this._failRunStart(preflight.run);
 			throw error;
 		}
 		// Wait for this run's settlement, registered before submitting so it includes the submissions it defers.
@@ -2241,10 +2355,10 @@ export class AgentSession {
 			after.push(...this._takeStartingRunMessages());
 			submission = await engine.appendMessage(message, { trigger: true, after });
 		} catch (error) {
-			await this._failRunStart();
+			await this._failRunStart(preflight.run);
 			throw error;
 		}
-		await this._afterRunSubmitted(engine);
+		await this._afterRunSubmitted(engine, preflight.run);
 		await submission.wait(BACKGROUND_CONTEXT);
 		await settled;
 	}
@@ -2263,33 +2377,38 @@ export class AgentSession {
 			this._deferUntilAgentSettled(() => this.prompt(text, options), "user");
 			return;
 		}
+		if (this._reloadReservation !== undefined)
+			throw new Error("Wait for the current reload to finish before submitting input.");
 		const preflightResult = options?.preflightResult;
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
-		// Extension commands execute immediately, even during streaming; they manage their own LLM interaction.
-		if (expandPromptTemplates && text.startsWith("/")) {
-			const handled = await this._tryExecuteExtensionCommand(text);
-			if (handled) {
-				preflightResult?.("handled");
-				return;
-			}
-		}
-		if (this._deferUntilAgentSettled(() => this.prompt(text, options), "user")) return;
-		if (this._compactionAbortController !== undefined) {
-			throw new Error(
-				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
-			);
-		}
-		const processed = await this._runInputHandlers(
-			text,
-			options?.images,
-			options?.source ?? "interactive",
-			this.isStreaming ? options?.streamingBehavior : undefined,
-		);
-		if (processed === undefined) {
+		// Detect commands synchronously: unknown slash inputs must reserve before their first await too.
+		if (
+			expandPromptTemplates &&
+			text.startsWith("/") &&
+			this._extensionRunner.getCommand(text.slice(1).split(" ", 1)[0]!)
+		) {
+			await this._tryExecuteExtensionCommand(text);
 			preflightResult?.("handled");
 			return;
 		}
-		await this._promptWithInput(processed.text, processed.images, options);
+		if (this._deferUntilAgentSettled(() => this.prompt(text, options), "user")) return;
+		const preflight = this._reservePromptPreflight();
+		try {
+			const processed = await this._runInputHandlers(
+				text,
+				options?.images,
+				options?.source ?? "interactive",
+				this.isStreaming || !preflight.startsRun ? options?.streamingBehavior : undefined,
+			);
+			if (preflight.startsRun) preflight.run?.controller.signal.throwIfAborted();
+			if (processed === undefined) {
+				preflightResult?.("handled");
+				return;
+			}
+			await this._submitPromptWithInput(processed.text, processed.images, options, preflight);
+		} finally {
+			await this._finishPromptPreflight(preflight);
+		}
 	}
 
 	/** Align admission after startup hooks have persisted their entries, without moving the selected tree leaf. */
@@ -2304,10 +2423,25 @@ export class AgentSession {
 		if (this.model) await engine.setModel(this.model, this.thinkingLevel);
 	}
 
+	/** Re-admit already transformed input after cancellation/settlement, without running its input hooks twice. */
 	private async _promptWithInput(
 		currentText: string,
 		currentImages: ImageContent[] | undefined,
 		options?: PromptOptions,
+	): Promise<void> {
+		const preflight = this._reservePromptPreflight();
+		try {
+			await this._submitPromptWithInput(currentText, currentImages, options, preflight);
+		} finally {
+			await this._finishPromptPreflight(preflight);
+		}
+	}
+
+	private async _submitPromptWithInput(
+		currentText: string,
+		currentImages: ImageContent[] | undefined,
+		options: PromptOptions | undefined,
+		preflight: PromptPreflight,
 	): Promise<void> {
 		if (this._deferUntilAgentSettled(() => this._promptWithInput(currentText, currentImages, options), "user")) {
 			return;
@@ -2315,23 +2449,33 @@ export class AgentSession {
 		const preflightResult = options?.preflightResult;
 		const input: ExpandedInput =
 			(options?.expandPromptTemplates ?? true) ? this._expandInput(currentText) : { text: currentText, after: [] };
-		if (this.isStreaming) {
+		if (!preflight.startsRun) {
 			if (options?.streamingBehavior === undefined) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
-			await this._queueInput(options.streamingBehavior, input, currentImages, options.source ?? "interactive");
+			await this._queueInput(
+				options.streamingBehavior,
+				input,
+				currentImages,
+				options.source ?? "interactive",
+				preflight,
+			);
 			preflightResult?.("queued");
 			return;
 		}
 		this._flushPendingBashMessages();
 		if (!this.model) throw new Error(formatNoModelSelectedMessage());
-		await this._getRequiredRequestAuth(this.model);
+		await this._getRequiredRequestAuth(this.model, preflight.run?.controller.signal);
+		preflight.run?.controller.signal.throwIfAborted();
 		let messages: AgentMessage[];
 		let content: (TextContent | ImageContent)[];
 		try {
-			const runMessages = await this._prepareRun({ messageType: "user", prompt: input.text, images: currentImages });
+			const runMessages = await this._prepareRun(
+				{ messageType: "user", prompt: input.text, images: currentImages },
+				preflight,
+			);
 			// The mentioned skills follow the user message directly, before the run's other messages.
 			messages = [...input.after, ...runMessages];
 			// Normalized after before_agent_start, so a model a handler selected determines the resize profile.
@@ -2344,7 +2488,7 @@ export class AgentSession {
 				...normalized.images,
 			];
 		} catch (error) {
-			if (this._startingRunMessages !== undefined) await this._failRunStart();
+			if (this._startingRunMessages !== undefined) await this._failRunStart(preflight.run);
 			throw error;
 		}
 		// Wait for this run's settlement, registered before submitting so it includes the submissions it defers.
@@ -2367,7 +2511,7 @@ export class AgentSession {
 				whenBusy: "reject",
 			});
 		} catch (error) {
-			await this._failRunStart();
+			await this._failRunStart(preflight.run);
 			if (error instanceof Error && error.message.includes("is busy")) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -2375,7 +2519,7 @@ export class AgentSession {
 			}
 			throw error;
 		}
-		await this._afterRunSubmitted(engine);
+		await this._afterRunSubmitted(engine, preflight.run);
 		await submission.wait(BACKGROUND_CONTEXT);
 		await settled;
 		await this.sessionManager.refresh();
@@ -2391,17 +2535,78 @@ export class AgentSession {
 		input: ExpandedInput,
 		images: ImageContent[] | undefined,
 		source: InputSource,
+		preflight: PromptPreflight,
 	): Promise<void> {
+		const queued: HeldInput = {
+			behavior,
+			content: [{ type: "text", text: input.text }, ...(images ?? [])],
+			after: input.after,
+			ready: false,
+		};
+		this._heldInputs.push(queued);
 		(behavior === "steer" ? this._steeringMessages : this._followUpMessages).push(input.text);
 		this._emitQueueUpdate();
 		await this._extensionRunner.emit({ type: "input_queued", behavior, source });
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text: input.text }, ...(images ?? [])];
-		// A settling run, or one still being prepared, cannot take input yet; it joins the next run.
-		if (this._runEnded || this._startingRunMessages !== undefined) {
-			this._heldInputs.push({ behavior, content, after: input.after });
+		queued.ready = true;
+		if (!this._heldInputs.includes(queued)) return;
+		if (preflight.startsRun) {
+			if (!preflight.run?.controller.signal.aborted) await this._startQueuedRun(queued, preflight);
 			return;
 		}
-		await this._submitQueuedInput(await this._engineOrThrow(), { behavior, content, after: input.after });
+		if (this._shouldHoldQueuedInput(preflight.run)) return;
+		const engine = await this._engineOrThrow();
+		// Opening/resuming the engine is another await at which cancellation or settlement may release the target.
+		if (!this._heldInputs.includes(queued) || this._shouldHoldQueuedInput(preflight.run)) return;
+		this._heldInputs.splice(this._heldInputs.indexOf(queued), 1);
+		await this._submitQueuedInput(engine, queued);
+	}
+
+	/** Preserve the idle steer/followUp API's admission-only wait, but reserve until durable has accepted its run. */
+	private async _startQueuedRun(input: HeldInput, preflight: PromptPreflight): Promise<void> {
+		this._beginRunStart(preflight);
+		let engine: DurableEngine;
+		try {
+			engine = await this._engineOrThrow();
+			await this._alignEngineBranch(engine);
+			if (!this._heldInputs.includes(input)) {
+				await this._failRunStart(preflight.run);
+				return;
+			}
+			this._heldInputs.splice(this._heldInputs.indexOf(input), 1);
+			await this._submitQueuedInput(engine, {
+				...input,
+				after: [...input.after, ...this._takeStartingRunMessages()],
+			});
+		} catch (error) {
+			if (!this._heldInputs.includes(input)) this._heldInputs.unshift(input);
+			await this._failRunStart(preflight.run);
+			throw error;
+		}
+		// Once primary admission succeeded, a later delivery failure must never requeue the primary input.
+		await this._afterRunSubmitted(engine, preflight.run);
+	}
+
+	private _shouldHoldQueuedInput(target: PromptRunReservation | undefined): boolean {
+		return (
+			this._runEnded ||
+			this._startingRunMessages !== undefined ||
+			target?.state === "released" ||
+			(!this.isStreaming && this._promptPreflights.size > 0)
+		);
+	}
+
+	/** Transfer one item at a time so durable queue updates cannot hide the host's not-yet-submitted items. */
+	private async _submitHeldInputs(
+		engine: DurableEngine,
+		reservation: PromptRunReservation | undefined,
+	): Promise<void> {
+		for (const input of [...this._heldInputs]) {
+			if (this._agentRunAbortRequested || reservation?.state === "released") return;
+			const index = this._heldInputs.indexOf(input);
+			if (index === -1 || !input.ready) continue;
+			this._heldInputs.splice(index, 1);
+			await this._submitQueuedInput(engine, input);
+		}
 	}
 
 	private async _submitQueuedInput(engine: DurableEngine, input: HeldInput): Promise<void> {
@@ -2549,20 +2754,26 @@ export class AgentSession {
 		this._assertQueueableInput(text);
 		const options: PromptOptions = { images, streamingBehavior: behavior, source };
 		if (this._deferUntilAgentSettled(() => this.prompt(text, options), "user")) return "queued";
-		const processed = await this._runInputHandlers(text, images, source, this.isStreaming ? behavior : undefined);
-		if (processed === undefined) return "handled";
-		if (
-			this._deferUntilAgentSettled(() => this._promptWithInput(processed.text, processed.images, options), "user")
-		) {
+		const preflight = this._reservePromptPreflight();
+		try {
+			const processed = await this._runInputHandlers(
+				text,
+				images,
+				source,
+				this.isStreaming || !preflight.startsRun ? behavior : undefined,
+			);
+			if (processed === undefined) return "handled";
+			if (
+				this._deferUntilAgentSettled(() => this._promptWithInput(processed.text, processed.images, options), "user")
+			) {
+				return "queued";
+			}
+			await this._queueInput(behavior, this._expandInput(processed.text), processed.images, source, preflight);
 			return "queued";
+		} finally {
+			await this._finishPromptPreflight(preflight);
 		}
-		await this._queueInput(behavior, this._expandInput(processed.text), processed.images, source);
-		return "queued";
 	}
-
-	/**
-	 * Throw an error if the text is an extension command.
-	 */
 
 	/**
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
@@ -2581,6 +2792,7 @@ export class AgentSession {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void> {
+		if (this._reloadReservation !== undefined || options?.triggerTurn === true) this._assertInputAdmissionAllowed();
 		const appMessage = {
 			role: "custom" as const,
 			customType: message.customType,
@@ -2743,10 +2955,12 @@ export class AgentSession {
 	}
 
 	/** `abort()`; a manual compaction aborting the run first does not wait for itself when it was resumed. */
-	private async _abort(waitForResumedCompaction: boolean): Promise<void> {
+	private async _abort(waitForResumedCompaction: boolean, ownCompaction?: AbortController): Promise<void> {
 		if (this._isAgentRunActive) this._agentRunAbortRequested = true;
+		this._promptRunReservation?.controller.abort();
 		this.abortRetry();
-		this.abortCompaction();
+		if (this._compactionAbortController !== ownCompaction) this._compactionAbortController?.abort();
+		this._autoCompactionAbortController?.abort();
 		this.abortBranchSummary();
 		if (this._engineOpened()) await (await this._engineOrThrow()).abort();
 		await this._waitForIdle(waitForResumedCompaction);
@@ -2759,6 +2973,7 @@ export class AgentSession {
 
 	private async _waitForIdle(waitForResumedCompaction: boolean): Promise<void> {
 		for (;;) {
+			await Promise.all([...this._promptPreflights].map((preflight) => preflight.done));
 			await this._settleDeliveries();
 			if (this._deferredDrain !== undefined) await this._deferredDrain;
 			if (this._engineOpened()) await (await this._engineOrThrow()).waitForIdle();
@@ -2766,6 +2981,7 @@ export class AgentSession {
 			await this._whenRunSettled();
 			if (
 				!this._isAgentRunActive &&
+				this._promptPreflights.size === 0 &&
 				!this._settling &&
 				(!waitForResumedCompaction || this._resumedCompaction === undefined) &&
 				this._pendingDeliveries.size === 0 &&
@@ -3369,12 +3585,21 @@ export class AgentSession {
 	 * again (see `_resumeManualCompaction`).
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		await this._abort(false);
-		this._compactionAbortController = new AbortController();
-		const signal = this._compactionAbortController.signal;
-		this._emit({ type: "compaction_start", reason: "manual" });
+		if (this._promptPreflights.size > 0) throw new Error("Wait for input processing to finish before compacting.");
+		if (this._reloadReservation !== undefined)
+			throw new Error("Wait for the current reload to finish before compacting.");
+		if (this._compactionAbortController || this._branchSummaryAbortController) {
+			throw new Error("Wait for the current compaction or tree navigation to finish before compacting.");
+		}
+		// Reserve synchronously, including the await that stops the previous run.
+		const controller = new AbortController();
+		this._compactionAbortController = controller;
+		const signal = controller.signal;
 		const state = { fromExtension: false, cancelledByExtension: false };
 		try {
+			await this._abort(false, controller);
+			signal.throwIfAborted();
+			this._emit({ type: "compaction_start", reason: "manual" });
 			const model = this.model;
 			if (!model) throw new Error(formatNoModelSelectedMessage());
 			const settings = this.settingsManager.getCompactionSettings(model);
@@ -3412,7 +3637,7 @@ export class AgentSession {
 			await this._notifyCompactionFailed("manual", aborted, errorMessage, state.fromExtension);
 			throw error;
 		} finally {
-			this._compactionAbortController = undefined;
+			if (this._compactionAbortController === controller) this._compactionAbortController = undefined;
 		}
 	}
 
@@ -3811,6 +4036,7 @@ export class AgentSession {
 			read: { autoResizeImages },
 			bash: { commandPrefix: shellCommandPrefix, shellPath },
 			web_search: {
+				provider: webSearch?.provider,
 				endpoint: webSearch?.endpoint,
 				apiKey: webSearch?.apiKey,
 				defaultResults: webSearch?.numResults,
@@ -3861,6 +4087,22 @@ export class AgentSession {
 	}
 
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+		if (this.isStreaming || this._promptPreflights.size > 0) {
+			throw new Error("Wait for the current response to finish before reloading.");
+		}
+		if (this.isCompacting) throw new Error("Wait for compaction to finish before reloading.");
+		if (this._reloadReservation !== undefined)
+			throw new Error("Wait for the current reload to finish before reloading.");
+		const reservation = {};
+		this._reloadReservation = reservation;
+		try {
+			await this._reloadRuntime(options);
+		} finally {
+			if (this._reloadReservation === reservation) this._reloadReservation = undefined;
+		}
+	}
+
+	private async _reloadRuntime(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
 		const previousToolNames = this.getActiveToolNames();
@@ -3893,6 +4135,8 @@ export class AgentSession {
 			this._extensionErrorListener;
 		if (hasBindings) {
 			await options?.beforeSessionStart?.();
+			// The new runtime is installed and bound; startup handlers may legitimately submit input.
+			this._reloadReservation = undefined;
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
 		}
@@ -4086,9 +4330,11 @@ export class AgentSession {
 		targetId: string,
 		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
 	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
-		if (this.isStreaming) {
+		if (this.isStreaming || this._promptPreflights.size > 0) {
 			throw new Error("Wait for the current response to finish before navigating the session tree.");
 		}
+		if (this._reloadReservation !== undefined)
+			throw new Error("Wait for the current reload to finish before navigating the session tree.");
 		if (this.isCompacting) {
 			throw new Error(
 				"Wait for the current compaction or tree navigation to finish before navigating the session tree.",
@@ -4135,8 +4381,9 @@ export class AgentSession {
 			label,
 		};
 
-		// Set up abort controller for summarization
-		this._branchSummaryAbortController = new AbortController();
+		// This navigation owns its controller until the selected context is fully installed.
+		const controller = new AbortController();
+		this._branchSummaryAbortController = controller;
 
 		try {
 			let extensionSummary: { summary: string; details?: unknown; usage?: Usage } | undefined;
@@ -4147,7 +4394,7 @@ export class AgentSession {
 				const result = (await this._extensionRunner.emit({
 					type: "session_before_tree",
 					preparation,
-					signal: this._branchSummaryAbortController.signal,
+					signal: controller.signal,
 				})) as SessionBeforeTreeResult | undefined;
 
 				if (result?.cancel) {
@@ -4177,14 +4424,19 @@ export class AgentSession {
 			let summaryUsage: Usage | undefined;
 			if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
 				const model = this.model!;
-				const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(model);
+				const {
+					model: requestModel,
+					apiKey,
+					headers,
+					env,
+				} = await this._getSummarizationRequestAuth(model, controller.signal);
 				const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
 				const result = await generateBranchSummary(entriesToSummarize, {
 					model: requestModel,
 					apiKey,
 					headers,
 					env,
-					signal: this._branchSummaryAbortController.signal,
+					signal: controller.signal,
 					thinkingLevel: this.thinkingLevel,
 					customInstructions,
 					replaceInstructions,
@@ -4210,6 +4462,8 @@ export class AgentSession {
 				summaryDetails = extensionSummary.details;
 				summaryUsage = extensionSummary.usage;
 			}
+
+			if (controller.signal.aborted) return { cancelled: true, aborted: true };
 
 			// Determine the new leaf position based on target type
 			let newLeafId: string | null;
@@ -4264,7 +4518,8 @@ export class AgentSession {
 			this._refreshFinalizedContext();
 			this._restoreToolsFromTranscript();
 
-			// Emit session_tree event
+			// Context is installed. session_tree handlers may now prompt or navigate again.
+			this._branchSummaryAbortController = undefined;
 			await this._extensionRunner.emit({
 				type: "session_tree",
 				newLeafId: this.sessionManager.getLeafId(),
@@ -4276,8 +4531,11 @@ export class AgentSession {
 			// Emit to custom tools
 
 			return { editorText, cancelled: false, summaryEntry };
+		} catch (error) {
+			if (controller.signal.aborted) return { cancelled: true, aborted: true };
+			throw error;
 		} finally {
-			this._branchSummaryAbortController = undefined;
+			if (this._branchSummaryAbortController === controller) this._branchSummaryAbortController = undefined;
 		}
 	}
 

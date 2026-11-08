@@ -14,6 +14,8 @@ foreach ($arg in $args) {
 
 if ($noEnv) {
 	$envVarsToUnset = @(
+		"TAVILY_API_KEY",
+		"EXA_API_KEY",
 		"ANTHROPIC_API_KEY",
 		"ANTHROPIC_OAUTH_TOKEN",
 		"OPENAI_API_KEY",

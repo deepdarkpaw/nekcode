@@ -38,7 +38,7 @@ See [Choose a Model](models.md) for model selection and thinking controls.
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `defaultTools` | `string[]` | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ast_grep`, `web_search` | Built-in tools enabled at startup. An empty array disables all built-in tools but not extension or SDK tools. `+name` adds to the selection and `-name` removes from it. |
-| `webSearch` | object | Exa's hosted server | Endpoint, API key, and default result count of the `web_search` tool. See [Web search](#web-search). |
+| `webSearch` | object | Tavily | Provider, endpoint, API key, and default result count of `web_search`. See [Web search](#web-search). |
 
 Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`, `ast_grep`, and `web_search`.
 
@@ -48,15 +48,45 @@ Available built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `gre
 
 ### Web search
 
-`web_search` talks to Exa's hosted MCP server by default. The settings object has three optional fields:
+`web_search` defaults to Tavily's official JSON Search API. A Tavily API key is required; a missing or invalid configured key fails explicitly, without falling back to Exa.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `endpoint` | string | `https://mcp.exa.ai/mcp` | MCP endpoint of the search server |
-| `apiKey` | string | None | Exa API key. A literal, `$ENV_VAR`/`${ENV_VAR}`, or `!command`, resolved like every other nek credential. Raised limits apply to the account that owns the key. |
-| `numResults` | number | `8` | Result count used when a call does not pass `num_results` |
+| `provider` | `"tavily"` \| `"exa"` | `"tavily"` | Search service; Exa must be selected explicitly |
+| `endpoint` | string | Provider-specific | Tavily: `https://api.tavily.com/search`; Exa MCP: `https://mcp.exa.ai/mcp` |
+| `apiKey` | string | `TAVILY_API_KEY` for Tavily; none for Exa | Literal, `$ENV_VAR`/`${ENV_VAR}`, or `!command`, resolved lazily when searching. The standard Tavily environment variable is used only if this field is omitted. |
+| `numResults` | integer | `8` | Default result count (1–20), overridden by the model's `num_results` |
 
-The key travels as the endpoint's `exaApiKey` query parameter, which is how Exa's hosted server accepts it; a keyless endpoint stays usable at Exa's rate limits. Without settings, `web_search` uses the default endpoint without a key.
+Configure your local `~/.nek/agent/settings.json`, or set `TAVILY_API_KEY` and leave `webSearch` unset:
+
+```json
+{
+  "webSearch": {
+    "provider": "tavily",
+    "apiKey": "$TAVILY_API_KEY",
+    "numResults": 8
+  }
+}
+```
+
+Existing settings that specify an endpoint or API key must now select `provider` explicitly before searching. This prevents an old Exa credential from being sent to the new Tavily default. Settings that only change `numResults` still use Tavily normally.
+
+To retain Exa explicitly:
+
+```json
+{
+  "webSearch": {
+    "provider": "exa",
+    "apiKey": "$EXA_API_KEY"
+  }
+}
+```
+
+Exa can use its keyless hosted rate limits when `apiKey` is omitted. A configured but unresolved key is an error, not a request to use keyless access. Tavily keys travel in `Authorization: Bearer` and Exa keys in `x-api-key`; keys must not appear in endpoint URLs. Custom endpoints must implement the selected provider's protocol; setting an endpoint alone does not change the provider. When switching providers, remove any old explicit endpoint as well. Credentials and settings remain local and must not be committed.
+
+Domain allow/block lists are sent to Tavily's `include_domains`/`exclude_domains` or Exa's advanced MCP search `includeDomains`/`excludeDomains`. Exa's endpoint enables `web_search_advanced_exa` via the non-secret `tools` query parameter; custom Exa servers must offer that tool for filtered searches. Unavailable tools and malformed responses are reported as errors, not empty searches.
+
+Each call has one 25-second total budget, including credential resolution, connection setup, response reading, and bounded exponential retries. Credential commands run asynchronously, can be cancelled, and are limited to 10 seconds and 8 KB of stdout. HTTP 429 honors `Retry-After` (seconds or an HTTP date); a retry that cannot fit the remaining budget fails explicitly. HTTP failures report a status without echoing unsafe provider bodies. Responses are capped at 2 MB, each excerpt at 4 KB, and model content and serialized renderer details independently at 50 KB. Excerpts are shortened before source titles or URLs; an output budget too small for intact source identities is an explicit error.
 
 ## Sessions and context
 

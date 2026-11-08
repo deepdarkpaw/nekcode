@@ -855,8 +855,7 @@ function buildParams(
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
-	} else if (hasToolHistory(context.messages)) {
-		// Anthropic (via LiteLLM/proxy) requires tools param when conversation has tool_calls/tool_results
+	} else if (compat.requiresToolsWithToolHistory && hasToolHistory(context.messages)) {
 		params.tools = [];
 	}
 
@@ -1653,6 +1652,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: false,
 		requiresAssistantAfterToolResult: false,
+		requiresToolsWithToolHistory: false,
 		requiresThinkingAsText: false,
 		requiresReasoningContentOnAssistantMessages: isDeepSeek,
 		thinkingFormat: isDeepSeek
@@ -1709,6 +1709,7 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		requiresToolResultName: model.compat.requiresToolResultName ?? detected.requiresToolResultName,
 		requiresAssistantAfterToolResult:
 			model.compat.requiresAssistantAfterToolResult ?? detected.requiresAssistantAfterToolResult,
+		requiresToolsWithToolHistory: model.compat.requiresToolsWithToolHistory ?? detected.requiresToolsWithToolHistory,
 		requiresThinkingAsText: model.compat.requiresThinkingAsText ?? detected.requiresThinkingAsText,
 		requiresReasoningContentOnAssistantMessages:
 			model.compat.requiresReasoningContentOnAssistantMessages ??

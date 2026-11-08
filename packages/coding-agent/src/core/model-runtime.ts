@@ -605,6 +605,14 @@ export class ModelRuntime implements Models {
 		});
 	}
 
+	/**
+	 * Wait for credential writes already in progress, including background catalog OAuth refreshes.
+	 * Call before process exit so a rotated refresh token is saved. Existing refresh/lock timeouts apply.
+	 */
+	settleCredentialWrites(): Promise<void> {
+		return this.credentials.settled();
+	}
+
 	listCredentials(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
 		return this.credentials.list(options);
 	}

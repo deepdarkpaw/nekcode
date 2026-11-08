@@ -95,6 +95,20 @@ describe("provider retry classification", () => {
 		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(true);
 	});
 
+	it("retries a gateway stream cut short after the reply began", () => {
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "Claude Code's stream from Anthropic was cut short after the reply had begun",
+				}),
+			),
+		).toBe(true);
+		expect(
+			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: "output cut short" })),
+		).toBe(false);
+	});
+
 	it("matches Azure peak-load capacity errors", () => {
 		// Regression for #9669.
 		expect(

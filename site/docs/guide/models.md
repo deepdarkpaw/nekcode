@@ -156,6 +156,10 @@ Ollama 不检查 key，这里的 `apiKey` 只是让 nek 认为这个服务商“
 
 在字符串里写字面的 `$` 用 `$$`，写以 `!` 开头的字面值用 `$!`。
 
+没有启用工具时，`openai-completions` 默认不发送 `tools` 字段，即使历史中有工具调用。只有确认旧版 Anthropic 代理要求此时发送空数组，才设置 `compat.requiresToolsWithToolHistory: true`；拒绝 `tools: []` 的 vLLM 接口不要开启。
+
+`openai-responses` 的 `openai` 会话亲和格式使用 `session-id` 和 `x-client-request-id` 请求头，避免下划线头被代理丢弃；Chat Completions 的格式不变。
+
 ### 模型字段
 
 | 字段 | 说明 |

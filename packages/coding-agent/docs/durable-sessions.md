@@ -16,6 +16,12 @@ After a CLI restart:
 
 Extension tools can still declare whether they may run twice with `replay: "safe"` (see [Extensions](extensions.md#custom-tools)) for SDK callers that opt into durable crash recovery.
 
+## Input admission and maintenance
+
+A prompt reserves the current context before its asynchronous input hooks and authentication checks. Tree navigation and reload cannot overtake this preflight; manual compaction is also refused while input processing is in progress. New prompts cannot enter a manual compaction, branch summary, or reload while it replaces context.
+
+Steering and follow-up input accepted during preflight joins the primary run after durable admission, rather than starting a competing run. If the primary prompt is handled by an input hook, fails authentication, or is cancelled before starting, accepted queued input remains visible for the next explicit prompt; SDK callers can retrieve it with `clearQueue()`. No old run is silently started and input hooks are not repeated.
+
 ## Storage
 
 Each session is one SQLite database (`<timestamp>_<session-id>.sqlite`) with a `.meta.json` file next to it. The `.meta.json` file only caches the `/resume` listing and is rebuilt from the database when missing or stale. A `.lock` file marks the process that has the session open; a second process cannot open the same session at the same time.

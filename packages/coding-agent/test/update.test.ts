@@ -35,6 +35,11 @@ describe("update command", () => {
 		);
 	});
 
+	it("never selects a higher prerelease for the stable channel", () => {
+		expect(selectHighestStableTag(["nek-v0.4.3", "nek-v0.5.0-beta.1", "nek-v1.0.0-rc.1"])).toBe("nek-v0.4.3");
+		expect(selectHighestStableTag(["nek-v0.5.0-beta.1", "nek-beta-v0.5.0-beta.2"])).toBeUndefined();
+	});
+
 	it("uses peeled annotated tag commits regardless of line order", () => {
 		for (const output of [
 			"tag-object refs/tags/nek-v0.1.0\ncommit refs/tags/nek-v0.1.0^{}",

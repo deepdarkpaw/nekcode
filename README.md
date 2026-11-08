@@ -9,7 +9,7 @@ nekcode（命令名 `nek`）是一个运行在终端里的编程助手，基于 
 - **子代理（subagent）**：内置可写 `generalPurpose` 和只读 `explorer`，默认继承当前模型，可前台或后台运行，可由模型或 Esc 停止；支持自行添加类型。
 - **结构化搜索 `ast_grep`**、Cursor 风格的分块读文件、Claude Code 风格的精确替换编辑。
 - **MCP 服务器**和按需加载工具的 `tool_search`。
-- **`web_search`** 联网搜索，无需 API key。
+- **`web_search`** 联网搜索，默认使用 Tavily（需 API key），也可显式选择 Exa。
 - **崩溃后续跑**：每一步都写入会话数据库（SQLite），进程被杀掉后用 `nek -c` 重新打开，中断的回合会接着跑完。见 [Durable 会话](packages/coding-agent/docs/durable-sessions.md)。
 
 ## 一键安装
@@ -60,6 +60,8 @@ nek update             # 更新到所选通道的最新版本
 | `dev` | `nek` 分支最新提交 | 开发中的代码，更新更快 |
 
 用 `nek update --channel dev`（或 `stable`）切换通道，选择会保存在全局设置 `updateChannel` 中；`--check` 不会保存。
+
+预发布使用独立的 `nek-beta-v*` 标签，不进入 `stable`。尝鲜可切换到 `dev`，它持续跟踪 `nek` 分支，不会固定在某个 beta 标签。
 
 - `nek update --check` 只通过 `git ls-remote` 访问源码仓库的 `origin`，不调用 GitHub API。退出码：`0` 没有更新，`2` 有更新，`1` 无法检查。
 - nek 启动时不会自动检查更新。
@@ -130,6 +132,22 @@ node --import ./packages/coding-agent/src/experimental/source-resolver.ts script
 **Linux 上的 ast-grep**：自动下载的版本需要系统有 `unzip`（用来解压），并且 glibc 不低于 2.34（Ubuntu 22.04+、Debian 12+、RHEL 9+）。在更老的系统或 Alpine 上请自己安装，例如 `npm install -g @ast-grep/cli`；只要 `ast-grep` 在 PATH 里，nek 就会直接使用。
 
 **离线环境**：设置 `NEK_OFFLINE=1` 后 nek 不会尝试下载，请提前用系统包管理器装好这三个工具。
+
+### 联网搜索认证
+
+`web_search` 默认调用 Tavily 官方 API。设置 `TAVILY_API_KEY` 环境变量，或在 `~/.nek/agent/settings.json` 中配置：
+
+```json
+{
+  "webSearch": {
+    "provider": "tavily",
+    "apiKey": "$TAVILY_API_KEY",
+    "numResults": 8
+  }
+}
+```
+
+未配置 Tavily key 时会明确报错，不会自动切换服务。`apiKey` 也支持字面值和 `!command`，只在搜索时解析；密钥通过请求头发送，不写入 URL。要使用 Exa，必须设置 `"provider": "exa"`；可选 `"apiKey": "$EXA_API_KEY"`，不配置 key 时使用 Exa 的免 key 限额。详见 [搜索设置](packages/coding-agent/docs/settings.md#web-search)。
 
 ## 安装选项
 

@@ -250,9 +250,13 @@ describe("openai-completions empty tools handling", () => {
 		expect(clientOptions.defaultHeaders?.["x-session-affinity"]).toBe("session-1");
 	});
 
-	it("still emits tools: [] for Anthropic/LiteLLM proxy when conversation has tool history", async () => {
+	it.each([undefined, false, true])("only emits tools: [] when required by the proxy (%s)", async (required) => {
 		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
-		const model = { ...baseModel, api: "openai-completions" } as const;
+		const model = {
+			...baseModel,
+			api: "openai-completions",
+			compat: { requiresToolsWithToolHistory: required },
+		} as const;
 
 		await streamSimple(
 			model,
@@ -298,7 +302,6 @@ describe("openai-completions empty tools handling", () => {
 		).result();
 
 		const params = mockState.lastParams as { tools?: unknown[] };
-		expect(Array.isArray(params.tools)).toBe(true);
-		expect(params.tools).toEqual([]);
+		expect(params.tools).toEqual(required ? [] : undefined);
 	});
 });

@@ -100,6 +100,10 @@ Choose the conservative end of any published range. A model without a lifetime f
 
 Compatibility settings should describe verified differences in the endpoint's request or response behavior. Do not enable them based only on an endpoint advertising OpenAI or Anthropic compatibility.
 
+Requests without active tools omit the `tools` field, including when the history contains tool calls. If an older Anthropic proxy requires an empty array in that case, set `compat.requiresToolsWithToolHistory: true` on that model or provider. Do not enable it for vLLM endpoints that reject `tools: []`.
+
+For the Responses API, the `openai` session-affinity format sends `session-id` and `x-client-request-id`; the Chat Completions format is unchanged.
+
 ## Per-Thinking-Level Sampling
 
 Models and model overrides can define `samplingByThinkingLevel` for `temperature`, `topP`, and `topK` keyed by thinking level. These fields use the model's provider-resolved level; a value of `null` suppresses that parameter. Explicit stream options take precedence, including explicit `null` to suppress a field.

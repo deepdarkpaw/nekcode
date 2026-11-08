@@ -38,6 +38,12 @@ export function nextReleaseVersion(current, bump) {
 	return version;
 }
 
+/** Keep previews invisible to shipped clients that scan all nek-v* tags as stable. */
+export function releaseTagForVersion(version) {
+	if (!isReleaseVersion(version)) throw new Error(`Invalid release version ${version}.`);
+	return `${semver.prerelease(version) === null ? "nek-v" : "nek-beta-v"}${version}`;
+}
+
 function release() {
 	const [bump, ...rest] = process.argv.slice(2);
 	if (rest.length || !bump || (bump !== "patch" && bump !== "minor" && !isReleaseVersion(bump))) {
@@ -50,7 +56,7 @@ function release() {
 	const current = manifest.nekConfig?.version;
 	if (typeof current !== "string") throw new Error("nekConfig.version must be semver.");
 	const version = nextReleaseVersion(current, bump);
-	const tag = `nek-v${version}`;
+	const tag = releaseTagForVersion(version);
 	if (git(["tag", "--list", tag])) throw new Error(`Tag ${tag} already exists.`);
 	manifest.nekConfig.version = version;
 	writeFileSync(path, `${JSON.stringify(manifest, null, "\t")}\n`);

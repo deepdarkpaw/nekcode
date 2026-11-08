@@ -33,7 +33,7 @@ features:
     details: 每一步都写入会话数据库（SQLite）。进程被杀、终端被关之后，用 nek -c 重新打开，中断的回合会接着跑完。
     link: /reference/durable-sessions
   - title: 好用的文件工具
-    details: 带行号和代码大纲的 read、精确替换的 edit、结构化搜索 ast_grep，再加上 grep、find、ls 和免 key 的 web_search。
+    details: 带行号和代码大纲的 read、精确替换的 edit、结构化搜索 ast_grep，再加上 grep、find、ls 和默认使用 Tavily 的 web_search（需 API key）。
     link: /guide/tools
   - title: MCP 与扩展
     details: 内置 MCP 客户端（stdio、Streamable HTTP、OAuth），工具按需加载；也可以用 TypeScript 扩展添加工具、命令和界面。

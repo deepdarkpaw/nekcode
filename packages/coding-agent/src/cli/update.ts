@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { compare, valid } from "semver";
+import { compare, prerelease, valid } from "semver";
 import { getPackageDir } from "../config.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { spawnProcess, spawnProcessSync, waitForChildProcess } from "../utils/child-process.ts";
@@ -38,12 +38,12 @@ export function compareVersions(left: string, right: string): number {
 	return compare(left, right);
 }
 
-/** Select the highest valid semantic version from nek-v tags. */
+/** Select the highest non-prerelease semantic version from nek-v tags. */
 export function selectHighestStableTag(tags: readonly string[]): string | undefined {
 	let selected: { tag: string; version: string } | undefined;
 	for (const tag of tags) {
 		const match = /^nek-v(.+)$/u.exec(tag);
-		if (!match || !valid(match[1])) continue;
+		if (!match || !valid(match[1]) || prerelease(match[1]) !== null) continue;
 		if (!selected || compareVersions(match[1], selected.version) > 0) {
 			selected = { tag, version: match[1] };
 		}

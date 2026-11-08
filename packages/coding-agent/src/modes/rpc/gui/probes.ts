@@ -1,7 +1,7 @@
 /**
  * Probes the settings page needs: does web search work, and does an MCP server answer with tools.
  *
- * Both run the real code paths (the Exa MCP tool and the MCP client) with a bounded timeout. Failures are
+ * Both run the real code paths (the configured search provider and the MCP client) with a bounded timeout. Failures are
  * data, not RPC errors: the GUI shows them next to the field the user is editing.
  */
 
@@ -21,20 +21,20 @@ import { errorMessage } from "./response.ts";
 const WEB_SEARCH_TEST_TIMEOUT_MS = 25_000;
 const DEFAULT_MCP_TIMEOUT_SECONDS = 60;
 
-/** Run one web search with the configured endpoint, key, and default result count. */
+/** Run one web search with the configured provider, endpoint, key, and default result count. */
 export async function testWebSearch(ctx: GuiContext, query: string): Promise<RpcTestWebSearchResult> {
-	const settings = ctx.settingsManager.getWebSearchSettings();
-	const tool = createWebSearchToolDefinition({
-		endpoint: settings?.endpoint,
-		apiKey: settings?.apiKey,
-		defaultResults: settings?.numResults,
-		timeoutMs: WEB_SEARCH_TEST_TIMEOUT_MS,
-	});
-	const signal = AbortSignal.timeout(WEB_SEARCH_TEST_TIMEOUT_MS);
 	const started = Date.now();
 	try {
+		const settings = ctx.settingsManager.getWebSearchSettings();
+		const tool = createWebSearchToolDefinition({
+			provider: settings?.provider,
+			endpoint: settings?.endpoint,
+			apiKey: settings?.apiKey,
+			defaultResults: settings?.numResults,
+			timeoutMs: WEB_SEARCH_TEST_TIMEOUT_MS,
+		});
 		// The probe only exercises the search itself; tool-call updates and an extension context have no meaning here.
-		const result = await tool.execute("gui-test-web-search", { query }, signal, undefined, undefined as never);
+		const result = await tool.execute("gui-test-web-search", { query }, undefined, undefined, undefined as never);
 		return { ok: true, latencyMs: Date.now() - started, resultCount: result.details?.results.length ?? 0 };
 	} catch (error: unknown) {
 		return { ok: false, message: errorMessage(error) };

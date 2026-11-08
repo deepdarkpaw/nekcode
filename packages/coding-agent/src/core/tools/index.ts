@@ -118,6 +118,7 @@ export {
 	createWebSearchTool,
 	createWebSearchToolDefinition,
 	parseWebSearchResults,
+	type WebSearchProvider,
 	type WebSearchResult,
 	type WebSearchToolDetails,
 	type WebSearchToolInput,

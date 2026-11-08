@@ -9,7 +9,7 @@ nekcode (command: `nek`) is a terminal coding agent built on [pi](https://github
 - **Subagents**: built-in writable `generalPurpose` and read-only `explorer` types inherit the current model, run in the foreground or background, and stop with Escape or the model's `stop_subagent`; custom types are optional.
 - **Structural search with `ast_grep`**, Cursor-style chunked reading, and Claude Code-style exact-replacement editing.
 - **MCP servers** and `tool_search` for on-demand tool loading.
-- **`web_search`** without an API key.
+- **`web_search`** through Tavily by default (API key required), with Exa as an explicit alternative.
 - **Crash recovery**: every step of a turn is saved to the session database (SQLite); if nek is killed mid-turn, `nek -c` continues the interrupted turn. See [Durable sessions](packages/coding-agent/docs/durable-sessions.md).
 
 ## One-line install
@@ -60,6 +60,8 @@ There are two update channels:
 | `dev` | the latest commit on the `nek` branch | work in progress, updated more often |
 
 Switch with `nek update --channel dev` (or `stable`). The choice is saved in the global setting `updateChannel`; `--check` does not save it.
+
+Prereleases use a separate `nek-beta-v*` tag namespace and do not enter `stable`. Use `dev` to try preview changes; it keeps tracking the `nek` branch rather than pinning a particular beta tag.
 
 - `nek update --check` only runs `git ls-remote` against the checkout's `origin`. It does not call the GitHub API. Exit codes: `0` no update, `2` update available, `1` could not check.
 - nek never checks for updates on its own at startup.
@@ -130,6 +132,22 @@ node --import ./packages/coding-agent/src/experimental/source-resolver.ts script
 **ast-grep on Linux**: the downloaded build needs `unzip` to extract and glibc 2.34 or newer (Ubuntu 22.04+, Debian 12+, RHEL 9+). On older systems or Alpine, install it yourself, for example `npm install -g @ast-grep/cli`; nek uses any `ast-grep` on PATH.
 
 **Offline machines**: with `NEK_OFFLINE=1`, nek never downloads tools. Install all three with your package manager beforehand.
+
+### Web search authentication
+
+`web_search` uses Tavily's official API by default. Set the `TAVILY_API_KEY` environment variable, or configure `~/.nek/agent/settings.json`:
+
+```json
+{
+  "webSearch": {
+    "provider": "tavily",
+    "apiKey": "$TAVILY_API_KEY",
+    "numResults": 8
+  }
+}
+```
+
+A missing Tavily key is an explicit error, never an automatic provider switch. `apiKey` also accepts a literal or `!command`, resolved only when searching. Keys travel in request headers, never in URLs. To use Exa, set `"provider": "exa"` explicitly; optionally set `"apiKey": "$EXA_API_KEY"`, or omit the key to use Exa's keyless rate limits. See [Web search settings](packages/coding-agent/docs/settings.md#web-search).
 
 ## Installer options
 

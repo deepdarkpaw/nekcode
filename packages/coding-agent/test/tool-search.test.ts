@@ -65,6 +65,56 @@ describe("Bm25Ranker", () => {
 	});
 });
 
+describe("referenced tool schemas", () => {
+	it("indexes referenced descriptions but not unused definitions", () => {
+		const document = createToolSearchDocument({
+			...tool("mcp__records__inspect", "Inspect records"),
+			parameters: Type.Unsafe({
+				type: "object",
+				properties: { options: { $ref: "#/$defs/options" } },
+				$defs: {
+					options: { properties: { mode: { description: "reconciliation" } } },
+					unused: { description: "unreachableunicorn" },
+				},
+			}),
+		});
+		expect(new Bm25Ranker().rank("reconciliation", [document], 8)).toHaveLength(1);
+		expect(document.text).toContain("mode");
+		expect(document.text).not.toContain("unreachableunicorn");
+	});
+
+	it("visits shared recursive definitions once and decodes escaped pointer names", () => {
+		const document = createToolSearchDocument({
+			...tool("mcp__tree__inspect", "Inspect"),
+			parameters: Type.Unsafe({
+				properties: {
+					first: { $ref: "#/$defs/a~1b~0c%20node" },
+					second: { $ref: "#/$defs/a~1b~0c%20node" },
+				},
+				$defs: {
+					"a/b~c node": {
+						description: "treebranch",
+						properties: { child: { $ref: "#/$defs/a~1b~0c%20node" } },
+					},
+				},
+			}),
+		});
+		expect(document.text.match(/treebranch/g)).toHaveLength(1);
+		expect(document.text).toContain("child");
+	});
+
+	it.each(["#/$defs/%E0", "#/$defs/missing", "https://example.com/schema", "#/toString"])(
+		"ignores unresolved or malformed references without failing discovery: %s",
+		(ref) => {
+			const document = createToolSearchDocument({
+				...tool("mcp__refs__inspect", "Inspect"),
+				parameters: Type.Unsafe({ properties: { options: { $ref: ref, description: "visiblehint" } } }),
+			});
+			expect(document.text).toContain("visiblehint");
+		},
+	);
+});
+
 describe("tool_search description", () => {
 	it("lists the sources", () => {
 		expect(

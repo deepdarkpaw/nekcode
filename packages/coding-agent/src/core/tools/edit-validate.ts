@@ -1,4 +1,5 @@
 import { normalizeToLF } from "./edit-diff.ts";
+import { applyTextReplacements, type TextReplacement } from "./edit-replacements.ts";
 
 const DESANITIZATIONS: Record<string, string> = {
 	"<fnr>": "<function_results>",
@@ -82,17 +83,34 @@ export function validateEditText(content: string, input: EditTextInput): Validat
 	return { actualOldString, newString };
 }
 
-/** Apply one validated replacement using a closure so `$&`, `$1`, and `$$` remain literal text. */
+/** Locate exact, non-overlapping replacements, including the existing whole-line deletion rule. */
+export function getEditReplacements(
+	content: string,
+	actualOldString: string,
+	newString: string,
+	replaceAll: boolean,
+): TextReplacement[] {
+	if (actualOldString === "") return [{ matchIndex: 0, matchLength: content.length, newText: newString }];
+	const search =
+		newString === "" && !actualOldString.endsWith("\n") && content.includes(`${actualOldString}\n`)
+			? `${actualOldString}\n`
+			: actualOldString;
+	const replacements: TextReplacement[] = [];
+	let matchIndex = content.indexOf(search);
+	while (matchIndex !== -1) {
+		replacements.push({ matchIndex, matchLength: search.length, newText: newString });
+		if (!replaceAll) break;
+		matchIndex = content.indexOf(search, matchIndex + search.length);
+	}
+	return replacements;
+}
+
+/** Apply one validated replacement while keeping `$&`, `$1`, and `$$` literal. */
 export function applyEditToFile(
 	content: string,
 	actualOldString: string,
 	newString: string,
 	replaceAll: boolean,
 ): string {
-	if (actualOldString === "") return newString;
-	const search =
-		newString === "" && !actualOldString.endsWith("\n") && content.includes(`${actualOldString}\n`)
-			? `${actualOldString}\n`
-			: actualOldString;
-	return replaceAll ? content.replaceAll(search, () => newString) : content.replace(search, () => newString);
+	return applyTextReplacements(content, getEditReplacements(content, actualOldString, newString, replaceAll));
 }

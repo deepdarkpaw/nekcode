@@ -97,13 +97,15 @@ export interface WarningSettings {
 
 export type DefaultProjectTrust = "ask" | "always" | "never";
 
-/** Web search settings: a custom Exa-compatible endpoint, its API key, and the default result count. */
+/** Web search provider, authentication, and default result count. Credentials resolve only on a search. */
 export interface WebSearchSettings {
-	/** MCP endpoint of the search server; defaults to Exa's hosted server. */
+	/** Defaults to Tavily; required explicitly when configuring an endpoint or API key. */
+	provider?: "tavily" | "exa";
+	/** Defaults to the selected provider's official endpoint. */
 	endpoint?: string;
-	/** Literal, `$ENV`/`${ENV}`, or `!command`, resolved like any other nek credential. */
+	/** Literal, `$ENV`/`${ENV}`, or `!command`. Tavily uses TAVILY_API_KEY when omitted. */
 	apiKey?: string;
-	/** Default number of results per search (1-20). */
+	/** Default number of results per search (integer, 1-20). */
 	numResults?: number;
 }
 
@@ -172,7 +174,7 @@ export interface Settings {
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
-	webSearch?: WebSearchSettings; // Endpoint, API key, and default result count of the web_search tool
+	webSearch?: WebSearchSettings; // Provider, endpoint, API key, and default result count of web_search
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	cacheWarming?: CacheWarmingMode; // default: "streaming"; global only because each refresh costs money
@@ -1401,10 +1403,34 @@ export class SettingsManager {
 		return tools ? resolveDefaultTools(tools).unknown : [];
 	}
 
-	/** Web search endpoint, key, and default result count; `undefined` when nothing is configured. */
+	/** Validate search configuration without resolving credentials; `undefined` when unconfigured. */
 	getWebSearchSettings(): WebSearchSettings | undefined {
 		const settings = this.settings.webSearch;
-		return settings ? { ...settings } : undefined;
+		if (settings === undefined) return undefined;
+		if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+			throw new Error("Invalid webSearch setting: expected an object.");
+		}
+		if (settings.provider !== undefined && settings.provider !== "tavily" && settings.provider !== "exa") {
+			throw new Error("Invalid webSearch.provider setting: expected tavily or exa.");
+		}
+		if (settings.endpoint !== undefined && (typeof settings.endpoint !== "string" || !settings.endpoint.trim())) {
+			throw new Error("Invalid webSearch.endpoint setting: expected a nonempty URL string.");
+		}
+		if (settings.apiKey !== undefined && (typeof settings.apiKey !== "string" || !settings.apiKey.trim())) {
+			throw new Error("Invalid webSearch.apiKey setting: expected a nonempty credential string.");
+		}
+		if (settings.provider === undefined && (settings.endpoint !== undefined || settings.apiKey !== undefined)) {
+			throw new Error(
+				"Invalid webSearch setting: select provider tavily or exa explicitly for an endpoint or API key.",
+			);
+		}
+		if (
+			settings.numResults !== undefined &&
+			(!Number.isInteger(settings.numResults) || settings.numResults < 1 || settings.numResults > 20)
+		) {
+			throw new Error("Invalid webSearch.numResults setting: expected an integer from 1 to 20.");
+		}
+		return { ...settings };
 	}
 
 	setEnabledModels(patterns: string[] | undefined): void {

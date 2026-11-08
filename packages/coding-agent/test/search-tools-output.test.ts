@@ -1,5 +1,4 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,26 +30,25 @@ describe.skipIf(getToolPath("rg") === null)("grep output", () => {
 		const content = "before\r\nhit one\r\nbetween\r\nhit two\r\nafter";
 		const path = join(dir, "context.txt");
 		writeFileSync(path, content);
-		const read = vi.fn((file: string) => readFile(file, "utf8"));
+		const read = vi.fn(() => {
+			throw new Error("Context must come from rg");
+		});
 		const tool = createGrepTool(dir, { operations: { isDirectory: () => false, readFile: read } });
 		const result = await tool.execute("grep", { pattern: "hit", path, context: 1 });
 		expect(textOf(result)).toBe("context.txt:\n  1- before\n  2: hit one\n  3- between\n  4: hit two\n  5- after");
-		expect(read).toHaveBeenCalledTimes(1);
+		expect(read).not.toHaveBeenCalled();
 	});
 
-	it("still reports when requested context cannot be read", async () => {
+	it("never consults the legacy file-read hook for context", async () => {
 		const path = join(dir, "matches.txt");
-		writeFileSync(path, "hit one");
-		const tool = createGrepTool(dir, {
-			operations: {
-				isDirectory: () => false,
-				readFile: async () => {
-					throw new Error("permission denied");
-				},
-			},
+		writeFileSync(path, "before\nhit one\nafter");
+		const read = vi.fn(async () => {
+			throw new Error("permission denied");
 		});
+		const tool = createGrepTool(dir, { operations: { isDirectory: () => false, readFile: read } });
 		const result = await tool.execute("grep", { pattern: "hit", path, context: 1 });
-		expect(textOf(result)).toBe("matches.txt:1: (unable to read file)");
+		expect(textOf(result)).toBe("matches.txt:\n  1- before\n  2: hit one\n  3- after");
+		expect(read).not.toHaveBeenCalled();
 	});
 
 	it("joins adjacent context windows but marks omitted regions", async () => {

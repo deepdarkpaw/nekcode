@@ -146,6 +146,14 @@ Truncate large model-facing results and tell the model where to read the complet
 
 See [`hello.ts`](../examples/extensions/hello.ts), [`todo.ts`](../examples/extensions/todo.ts), [`dynamic-tools.ts`](../examples/extensions/dynamic-tools.ts), and [`truncated-tool.ts`](../examples/extensions/truncated-tool.ts).
 
+#### Built-in file operations
+
+`ReadOperations.createReadStream(absolutePath, { signal })` is optional and returns an `AsyncIterable<Uint8Array>` (a Node `Readable` works). Provide a fresh stream on each call: negative `offset` uses two bounded scans, first counting lines and then selecting them. The stream must honor cancellation and release resources when iteration ends or is interrupted. Ranged text reads and files without an outline language use it; images and unranged source files still use `readFile` for image processing and AST folding. Custom operations without this hook retain whole-file `readFile` behavior; default local ranged text reads always stream, without falling back to `readFile`.
+
+The stream decoder uses the existing encoding contract (UTF-8, or UTF-16LE with a BOM), removes a leading BOM, and normalizes CRLF and lone CR to LF. Empty files count as one line; a final newline adds an empty last line, including for negative offsets. Counts and continuation offsets include those lines. Large successful reads record read-state evidence without retaining full content; files up to 50KB retain normalized content. Non-outline fixed-window chunk metadata is capped at 2000 entries, independently of file size.
+
+`GrepOperations` customizes the directory check, not the search backend: grep always runs local `rg`. Context comes from rg's JSON records; the deprecated optional `readFile` hook is ignored and matched files are never reread. Override `execute()` to search remotely. Directory globs are relative to the search `path`, including symlinked paths; a leading `./` (also after `!`) is ignored. Explicit-file searches follow rg's behavior of ignoring globs for files named directly.
+
 ### Activate tools dynamically
 
 Register every tool first, keep optional tools inactive, and use `pi.setActiveTools()` from a loader tool to select the desired active tools. Names must already be registered; unknown names are ignored.

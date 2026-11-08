@@ -275,6 +275,7 @@ describe("GUI RPC faux acceptance", () => {
 	});
 
 	it("probes web search and MCP with intercepted JSON-RPC transports", async () => {
+		harness.settingsManager.applyOverrides({ webSearch: { provider: "exa" } });
 		const calls: string[] = [];
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
 			if (init?.method === "DELETE") return new Response(null, { status: 204 });
@@ -310,7 +311,7 @@ describe("GUI RPC faux acceptance", () => {
 		});
 		expect(await request({ type: "test_web_search", query: "failure" })).toMatchObject({
 			ok: false,
-			message: expect.stringContaining("Local transport failed"),
+			message: "Exa web search connection failed.",
 		});
 	});
 });

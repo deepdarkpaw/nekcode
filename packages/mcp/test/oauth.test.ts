@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { Server } from "node:http";
+import { createConnection } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpClient, StreamableHttpTransport } from "../src/index.ts";
 import {
@@ -617,6 +619,42 @@ describe("OAuthCallbackServer pages", () => {
 		} finally {
 			await callback.close();
 		}
+	});
+
+	// #11311: a browser may keep an unused preconnect socket alongside its successful callback.
+	it("closes after a successful callback while a spare connection remains open", async () => {
+		const callback = await OAuthCallbackServer.listen();
+		const url = new URL(callback.redirectUrl);
+		const spare = createConnection({ host: url.hostname, port: Number(url.port) });
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await once(spare, "connect");
+			const pending = callback.waitForCallback("s1");
+			const response = await fetch(`${callback.redirectUrl}?code=abc&state=s1`);
+			expect(await response.text()).toBe("Authorization complete. You may close this window.");
+			expect((await pending).code).toBe("abc");
+			const disconnected = once(spare, "close");
+			const closing = callback.close();
+			const timeout = new Promise<void>((_resolve, reject) => {
+				timer = setTimeout(() => reject(new Error("callback close timed out")), 2_000);
+			});
+			await Promise.race([Promise.all([closing, disconnected]), timeout]);
+		} finally {
+			clearTimeout(timer);
+			spare.destroy();
+			await callback.close();
+		}
+	});
+
+	it("shares an idempotent close and rejects pending or new callback waits", async () => {
+		const callback = await OAuthCallbackServer.listen();
+		const pending = callback.waitForCallback("pending");
+		const rejected = expect(pending).rejects.toThrow("OAuth callback server closed");
+		const closing = callback.close();
+		expect(callback.close()).toBe(closing);
+		await Promise.all([closing, rejected]);
+		expect(callback.close()).toBe(closing);
+		expect(() => callback.waitForCallback("new")).toThrow("OAuth callback server closed");
 	});
 
 	// #10302

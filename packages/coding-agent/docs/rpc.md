@@ -106,7 +106,9 @@ Clients must also handle child-process startup failures, unexpected exits, stder
 
 ## Shutdown
 
-Close the child's stdin to request an orderly shutdown. nekcode disposes the active runtime before exiting. Clients should still handle process signals and unexpected exits.
+Close the child's stdin to request an orderly shutdown. nekcode disposes the active runtime and waits for credential writes already in progress before exiting, so allow cleanup to finish before killing the process. The sessionless control process also waits for its credential writes.
+
+Once shutdown starts, stdin EOF or a single SIGTERM/SIGHUP does not interrupt cleanup; a second signal forces exit immediately. Print mode likewise waits for an in-progress final disposal. Clients must still handle unexpected exits and hard kills.
 
 An extension can also request shutdown through its extension context. nekcode completes shutdown after the current command or after the active run emits `agent_settled`.
 

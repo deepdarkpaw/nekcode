@@ -9,7 +9,7 @@ import {
 	getModel,
 	type Model,
 } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -166,7 +166,7 @@ async function createRuntimeHost(options: {
 			} catch {
 				// ignore test cleanup failures
 			}
-			session.dispose();
+			await session.dispose();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true });
 			}
@@ -176,6 +176,7 @@ async function createRuntimeHost(options: {
 
 async function startRpcMode(options: Parameters<typeof createRuntimeHost>[0]): Promise<{
 	lineHandler: (line: string) => void;
+	runtimeHost: AgentSessionRuntime;
 	cleanup: () => Promise<void>;
 }> {
 	rpcIo.outputLines = [];
@@ -185,8 +186,57 @@ async function startRpcMode(options: Parameters<typeof createRuntimeHost>[0]): P
 	void runRpcMode(runtimeHost);
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
-	return { lineHandler: rpcIo.lineHandler!, cleanup };
+	return { lineHandler: rpcIo.lineHandler!, runtimeHost, cleanup };
 }
+
+describe("RPC shutdown triggers", () => {
+	const signals: NodeJS.Signals[] = ["SIGTERM", "SIGHUP"];
+	let savedSignals: Array<[NodeJS.Signals, NodeJS.SignalsListener[]]> = [];
+	let savedEnds: Array<() => void> = [];
+	beforeEach(() => {
+		savedSignals = signals.map((signal) => [signal, process.listeners(signal)]);
+		savedEnds = process.stdin.listeners("end") as Array<() => void>;
+		for (const signal of signals) process.removeAllListeners(signal);
+		process.stdin.removeAllListeners("end");
+	});
+	afterEach(() => {
+		for (const signal of signals) process.removeAllListeners(signal);
+		process.stdin.removeAllListeners("end");
+		for (const [signal, listeners] of savedSignals) for (const listener of listeners) process.on(signal, listener);
+		for (const listener of savedEnds) process.stdin.on("end", listener);
+		vi.restoreAllMocks();
+	});
+	it.each(["eof-first", "signal-first", "repeated-signal"])("does not cut off disposal: %s", async (order) => {
+		const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+		vi.spyOn(process.stdin, "pause").mockReturnValue(process.stdin);
+		const { runtimeHost, cleanup } = await startRpcMode({ withAuth: false, responseDelayMs: 0 });
+		let finish!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			finish = resolve;
+		});
+		vi.mocked(runtimeHost.dispose).mockReturnValue(pending);
+		try {
+			if (order === "signal-first") process.emit("SIGTERM");
+			else process.stdin.emit("end");
+			await vi.waitFor(() => expect(runtimeHost.dispose).toHaveBeenCalledTimes(1));
+			expect(process.listenerCount("SIGTERM")).toBe(1);
+			if (order === "signal-first") process.stdin.emit("end");
+			else process.emit("SIGTERM");
+			await Promise.resolve();
+			expect(exit).not.toHaveBeenCalled();
+			if (order === "repeated-signal") {
+				process.emit("SIGTERM");
+				expect(exit).toHaveBeenCalledWith(143);
+			}
+			finish();
+			await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(order === "signal-first" ? 143 : 0));
+			expect(runtimeHost.dispose).toHaveBeenCalledTimes(1);
+		} finally {
+			finish();
+			await cleanup();
+		}
+	});
+});
 
 describe("RPC prompt response semantics", () => {
 	afterEach(() => {

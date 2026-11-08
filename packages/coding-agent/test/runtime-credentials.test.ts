@@ -73,6 +73,76 @@ describe("RuntimeCredentials", () => {
 		expect(await credentials.read("anthropic")).toEqual({ type: "api_key", key: "runtime-key" });
 	});
 
+	test("settled waits until a pending modification has been persisted", async () => {
+		const storage = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "old" } });
+		const credentials = new RuntimeCredentials(storage);
+		let respond!: () => void;
+		const response = new Promise<void>((resolve) => {
+			respond = resolve;
+		});
+		const modification = credentials.modify("anthropic", async () => {
+			await response;
+			return { type: "api_key", key: "rotated" };
+		});
+		let settled = false;
+		const settling = credentials.settled().then(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(settled).toBe(false);
+
+		respond();
+		await settling;
+		expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: "rotated" });
+		await modification;
+	});
+
+	test("settled observes failures without rejecting early or creating unhandled rejections", async () => {
+		const storage = AuthStorage.inMemory();
+		const credentials = new RuntimeCredentials(storage);
+		const failure = new Error("invalid_grant");
+		let fail!: () => void;
+		const failedResponse = new Promise<void>((_resolve, reject) => {
+			fail = () => reject(failure);
+		});
+		let respond!: () => void;
+		const response = new Promise<void>((resolve) => {
+			respond = resolve;
+		});
+		const failed = credentials.modify("anthropic", async () => {
+			await failedResponse;
+			return undefined;
+		});
+		const written = credentials.modify("openai", async () => {
+			await response;
+			return { type: "api_key", key: "rotated" };
+		});
+		let settled = false;
+		const settling = credentials.settled().then(() => {
+			settled = true;
+		});
+		fail();
+		// Deliberately attach the caller's rejection handler later; tracking must already observe it.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(settled).toBe(false);
+		await expect(failed).rejects.toBe(failure);
+
+		respond();
+		await settling;
+		await written;
+		expect(await storage.read("openai")).toEqual({ type: "api_key", key: "rotated" });
+		await credentials.settled();
+	});
+
+	test("settled does not initiate credential operations", async () => {
+		const storage = AuthStorage.inMemory();
+		const modify = vi.spyOn(storage, "modify");
+		const credentials = new RuntimeCredentials(storage);
+
+		await credentials.settled();
+		expect(modify).not.toHaveBeenCalled();
+	});
+
 	test("delete clears both the override and persisted credential", async () => {
 		const storage = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "stored-key" } });
 		const credentials = new RuntimeCredentials(storage);

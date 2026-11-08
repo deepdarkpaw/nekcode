@@ -116,6 +116,8 @@ nek update --channel stable   # 切回 stable 并更新
 
 选择会保存到全局设置 `updateChannel`。加上 `--check` 时只检查，不保存通道。
 
+预发布使用独立的 `nek-beta-v*` 标签，不进入 `stable`。尝鲜可以切到 `dev`，但它持续跟踪分支，不会固定在某个 beta 标签。
+
 ### 更新的细节
 
 - `nek update` 操作的是**正在运行的 nek 所在的源码目录**，与你当前所在的项目目录无关。

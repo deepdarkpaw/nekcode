@@ -83,6 +83,8 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// the Codex WebSocket transport throws "WebSocket stream closed before response.completed".
 	"stream disconnected",
 	"closed before response\\.completed",
+	// Gateways may relay an interrupted Anthropic reply using this specific wording (#11879).
+	"cut short after the reply had begun",
 
 	// Provider-requested retry delay cap failures should flow through the outer
 	// retry policy so callers can surface/abort the backoff (#1123).

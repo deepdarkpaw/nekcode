@@ -420,6 +420,7 @@ export class AgentSessionRuntime {
 		return { cancelled: false };
 	}
 
+	/** Dispose for process exit, waiting for started credential writes even if other cleanup fails. */
 	async dispose(): Promise<void> {
 		const errors: unknown[] = [];
 		try {
@@ -437,6 +438,11 @@ export class AgentSessionRuntime {
 		}
 		try {
 			await this.session.dispose();
+		} catch (error) {
+			errors.push(error);
+		}
+		try {
+			await this.services.modelRuntime.settleCredentialWrites();
 		} catch (error) {
 			errors.push(error);
 		}

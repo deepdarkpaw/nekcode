@@ -86,7 +86,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	// Shutdown request flag
 	let shutdownRequested = false;
 	let shuttingDown = false;
-	const signalCleanupHandlers: Array<() => void> = [];
+	let signalCount = 0;
 
 	/** Client dialogs: extension UI requests and the structured requests of `auth_login`. */
 	const ui = createUiRequester(output);
@@ -360,12 +360,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 
 		for (const signal of signals) {
-			const handler = () => {
+			const exitCode = signal === "SIGHUP" ? 129 : 143;
+			// Keep handlers until exit so EOF followed by one signal cannot interrupt credential persistence.
+			process.on(signal, () => {
+				signalCount++;
 				killTrackedDetachedChildren();
-				void shutdown(signal === "SIGHUP" ? 129 : 143, signal);
-			};
-			process.on(signal, handler);
-			signalCleanupHandlers.push(() => process.off(signal, handler));
+				if (signalCount > 1) process.exit(exitCode);
+				void shutdown(exitCode, signal);
+			});
 		}
 	};
 
@@ -723,14 +725,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	 */
 	let detachInput = () => {};
 
-	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
-		if (shuttingDown) {
-			process.exit(exitCode);
-		}
+	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<void> {
+		if (shuttingDown) return;
 		shuttingDown = true;
-		for (const cleanup of signalCleanupHandlers) {
-			cleanup();
-		}
 		unsubscribe?.();
 		unsubscribeBackpressure?.();
 		cancelAuthLogins();

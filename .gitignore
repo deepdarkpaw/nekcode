@@ -61,6 +61,8 @@ collect.sh
 packages/agent/docs/extensions/pi-server-artifact/index.md
 
 # nekcode workspace
+.worktree/
+.tmp/
 reference/
 /*.md
 !/README.md

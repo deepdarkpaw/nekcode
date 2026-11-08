@@ -13,7 +13,7 @@ nekcode 基于开源项目 [pi](https://github.com/earendil-works/pi) 二次开�
 | 子代理 | 把边界清晰的任务派给独立子会话，可前台或后台运行 | [子代理](/guide/subagents) |
 | 新的文件工具 | Cursor 风格的分块 `read`、Claude Code 风格的精确替换 `edit`、结构化搜索 `ast_grep` | [内置工具](/guide/tools) |
 | `ask_question` | 模型需要你做决定时，弹出多选题而不是长篇追问 | [内置工具](/guide/tools#ask-question) |
-| `web_search` | 联网搜索，无需 API key | [内置工具](/guide/tools#web-search) |
+| `web_search` | 默认使用 Tavily 联网搜索（需 API key），可显式选择 Exa | [内置工具](/guide/tools#web-search) |
 | MCP | 内置 MCP 客户端和按需加载工具的 `tool_search` | [MCP 服务器](/guide/mcp) |
 | 崩溃后续跑 | 每一步写入 SQLite，进程被杀后 `nek -c` 接着跑 | [Durable 会话](/reference/durable-sessions) |
 | 一键安装与更新 | 从源码运行，`nek update` 跟随 stable 或 dev 通道 | [安装、更新与卸载](/start/install) |

@@ -103,6 +103,10 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 		buffered += decoder.decode();
 		if (buffered) processLine(buffered);
 		dispatch();
+	} catch (error) {
+		// Releasing the lock alone leaves the response open; preserve the original failure if cancel fails.
+		await reader.cancel().catch(() => {});
+		throw error;
 	} finally {
 		reader.releaseLock();
 	}
@@ -129,15 +133,36 @@ export interface StreamableHttpTransportOptions {
 	reconnect?: StreamableHttpReconnectOptions;
 }
 
+/** Parse Retry-After delay-seconds or an HTTP date, rejecting non-HTTP dates and numeric overflow. */
+function parseRetryAfter(value: string | null): number | undefined {
+	if (value === null) return undefined;
+	const text = value.trim();
+	if (/^\d+$/.test(text)) {
+		const delayMs = Number(text) * 1_000;
+		return Number.isSafeInteger(delayMs) ? delayMs : undefined;
+	}
+	// Date.parse alone also accepts invalid delays such as "-1" or "1.5" as calendar dates.
+	if (!/^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/i.test(text)) return undefined;
+	const date = new Date(text);
+	if (date.toUTCString().toLowerCase() !== text.toLowerCase()) return undefined;
+	return Math.max(0, date.getTime() - Date.now());
+}
+
 export class McpHttpError extends Error {
 	readonly status: number;
 	readonly body: string;
+	/** Only the Retry-After response header is retained, never credentials or other sensitive headers. */
+	readonly retryAfter: string | null;
+	/** Server-requested delay in milliseconds, or undefined for a missing/invalid Retry-After header. */
+	readonly retryAfterMs: number | undefined;
 
-	constructor(status: number, message: string, body = "") {
+	constructor(status: number, message: string, body = "", headers?: RequestInit["headers"]) {
 		super(message);
 		this.name = "McpHttpError";
 		this.status = status;
 		this.body = body;
+		this.retryAfter = headers ? new Headers(headers).get("retry-after") : null;
+		this.retryAfterMs = parseRetryAfter(this.retryAfter);
 	}
 }
 
@@ -145,15 +170,15 @@ export class McpAuthRequiredError extends McpHttpError {
 	readonly wwwAuthenticate: string | null;
 
 	constructor(response: Response, body = "") {
-		super(401, "MCP server requires authentication", body);
+		super(401, "MCP server requires authentication", body, response.headers);
 		this.name = "McpAuthRequiredError";
 		this.wwwAuthenticate = response.headers.get("www-authenticate");
 	}
 }
 
 export class McpSessionExpiredError extends McpHttpError {
-	constructor(body = "") {
-		super(404, "MCP session expired", body);
+	constructor(body = "", headers?: RequestInit["headers"]) {
+		super(404, "MCP session expired", body, headers);
 		this.name = "McpSessionExpiredError";
 	}
 }
@@ -176,6 +201,41 @@ function isTransientStatus(status: number): boolean {
 
 function discard(response: Response): Promise<void> {
 	return response.body?.cancel().catch(() => {}) ?? Promise.resolve();
+}
+
+/**
+ * Decode at most maxBytes of a response, cancelling the rest instead of buffering it. Excerpts stop
+ * at the limit immediately; JSON needs one more read to distinguish an exact-size body from overflow.
+ * An incomplete UTF-8 character at the excerpt boundary is omitted, not replaced or split.
+ */
+async function readBodyText(
+	response: Response,
+	maxBytes: number,
+	excerpt = false,
+): Promise<{ text: string; truncated: boolean }> {
+	if (!response.body) return { text: "", truncated: false };
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let text = "";
+	let remaining = maxBytes;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) return { text: text + decoder.decode(), truncated: false };
+			const kept = value.subarray(0, remaining);
+			remaining -= kept.byteLength;
+			text += decoder.decode(kept, { stream: true });
+			if (kept.byteLength < value.byteLength || (excerpt && remaining === 0)) {
+				await reader.cancel().catch(() => {});
+				return { text, truncated: true };
+			}
+		}
+	} catch (error) {
+		await reader.cancel().catch(() => {});
+		throw error;
+	} finally {
+		reader.releaseLock();
+	}
 }
 
 function describeHttpFailure(status: number, body: string): string {
@@ -253,7 +313,10 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		}
 		const type = contentType(response);
 		if (type === "application/json") {
-			const body: unknown = await response.json();
+			const maxBytes = this.options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
+			const { text, truncated } = await readBodyText(response, maxBytes);
+			if (truncated) throw new Error(`MCP JSON response exceeds ${maxBytes} bytes`);
+			const body: unknown = JSON.parse(text);
 			for (const item of Array.isArray(body) ? body : [body]) this.emitMessage(parseJsonRpcMessage(item));
 			return;
 		}
@@ -338,10 +401,11 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 
 	private async checkResponse(response: Response): Promise<void> {
 		if (response.ok) return;
-		const body = (await response.text().catch(() => "")).slice(0, MAX_ERROR_BODY_BYTES);
+		// Keep only a bounded excerpt, even when a chunked error body never ends.
+		const body = (await readBodyText(response, MAX_ERROR_BODY_BYTES, true).catch(() => ({ text: "" }))).text;
 		if (response.status === 401) throw new McpAuthRequiredError(response, body);
-		if (response.status === 404 && this.sessionIdValue) throw new McpSessionExpiredError(body);
-		throw new McpHttpError(response.status, describeHttpFailure(response.status, body), body);
+		if (response.status === 404 && this.sessionIdValue) throw new McpSessionExpiredError(body, response.headers);
+		throw new McpHttpError(response.status, describeHttpFailure(response.status, body), body, response.headers);
 	}
 
 	private async consumeSse(

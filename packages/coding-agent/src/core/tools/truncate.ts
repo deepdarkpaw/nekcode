@@ -272,7 +272,32 @@ export function truncateLine(
 	if (line.length <= maxChars) {
 		return { text: line, wasTruncated: false };
 	}
-	return { text: `${line.slice(0, maxChars)}... [truncated]`, wasTruncated: true };
+	return { text: `${sliceHead(line, maxChars)}... [truncated]`, wasTruncated: true };
+}
+
+/** Keep at most maxUnits UTF-16 code units from the head, without splitting a surrogate pair. */
+export function sliceHead(text: string, maxUnits: number): string {
+	const end = Math.max(0, Math.trunc(maxUnits));
+	return isHighSurrogate(text.charCodeAt(end - 1)) && isLowSurrogate(text.charCodeAt(end))
+		? text.slice(0, end - 1)
+		: text.slice(0, end);
+}
+
+/** Keep at most maxUnits UTF-16 code units from the tail, without splitting a surrogate pair. */
+export function sliceTail(text: string, maxUnits: number): string {
+	if (maxUnits <= 0) return "";
+	const start = Math.max(0, text.length - Math.trunc(maxUnits));
+	return isLowSurrogate(text.charCodeAt(start)) && isHighSurrogate(text.charCodeAt(start - 1))
+		? text.slice(start + 1)
+		: text.slice(start);
+}
+
+function isHighSurrogate(code: number): boolean {
+	return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+	return code >= 0xdc00 && code <= 0xdfff;
 }
 
 export interface MiddleTruncationResult {

@@ -29,7 +29,7 @@ A new session activates `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `
 | `subagent` | Delegates a bounded task to a subagent, in the foreground or background. |
 | `await` | Waits for background subagents to finish; a user steer ends the wait without stopping the child. |
 | `stop_subagent` | Stops a running subagent; it is marked aborted and sends no completion notice. |
-| `web_search` | Searches current public-web information through Exa's keyless hosted MCP endpoint. |
+| `web_search` | Searches current public-web information through Tavily (API key required); Exa is an explicit alternative. See [Web search settings](settings.md#web-search). |
 
 ### Compact search output
 

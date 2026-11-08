@@ -386,8 +386,13 @@ export class SubagentRegistry {
 			await work();
 			finishRecord(entry.record, entry.session, this.config.finalTextMaxBytes);
 		} catch (error) {
-			entry.record.status = "errored";
-			entry.record.error = error instanceof Error ? error.message : String(error);
+			if (entry.abortRequested && error instanceof Error && error.name === "AbortError") {
+				entry.record.status = "aborted";
+				entry.record.finalText = undefined;
+			} else {
+				entry.record.status = "errored";
+				entry.record.error = error instanceof Error ? error.message : String(error);
+			}
 		} finally {
 			entry.detachAbort?.();
 			delete entry.detachAbort;
@@ -493,7 +498,7 @@ export class SubagentRegistry {
 	}
 }
 
-/** Abort the child's run; the flag covers an abort that lands before the run is active (AgentSession ignores it). */
+/** Abort the child, including preflight; the flag also covers requests before a run exists. */
 function requestAbort(entry: SubagentEntry): Promise<void> {
 	entry.abortRequested = true;
 	return entry.session.abort();

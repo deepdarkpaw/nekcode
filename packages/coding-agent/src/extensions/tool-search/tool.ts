@@ -83,19 +83,41 @@ function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function schemaText(schema: unknown, parts: string[]): void {
-	if (!isObject(schema)) return;
+/** Resolve a local JSON Pointer without traversing prototypes or fetching external schemas. */
+function resolveSchemaRef(ref: string, root: unknown): unknown {
+	if (ref === "#") return root;
+	if (!ref.startsWith("#/")) return undefined;
+	let pointer: string;
+	try {
+		pointer = decodeURIComponent(ref.slice(2));
+	} catch {
+		return undefined;
+	}
+	let current = root;
+	for (const token of pointer.split("/")) {
+		const key = token.replace(/~1/g, "/").replace(/~0/g, "~");
+		if (typeof current !== "object" || current === null || !Object.hasOwn(current, key)) return undefined;
+		current = (current as Record<string, unknown>)[key];
+	}
+	return current;
+}
+
+/** Index each reachable subschema once; shared and recursive definitions do not inflate term counts. */
+function schemaText(schema: unknown, parts: string[], root = schema, seen = new Set<unknown>()): void {
+	if (!isObject(schema) || seen.has(schema)) return;
+	seen.add(schema);
 	if (typeof schema.description === "string") parts.push(schema.description);
+	if (typeof schema.$ref === "string") schemaText(resolveSchemaRef(schema.$ref, root), parts, root, seen);
 	if (isObject(schema.properties)) {
 		for (const [name, property] of Object.entries(schema.properties)) {
 			parts.push(name);
-			schemaText(property, parts);
+			schemaText(property, parts, root, seen);
 		}
 	}
-	schemaText(schema.items, parts);
+	schemaText(schema.items, parts, root, seen);
 	for (const key of ["anyOf", "oneOf", "allOf"]) {
 		const variants = schema[key];
-		if (Array.isArray(variants)) for (const variant of variants) schemaText(variant, parts);
+		if (Array.isArray(variants)) for (const variant of variants) schemaText(variant, parts, root, seen);
 	}
 }
 

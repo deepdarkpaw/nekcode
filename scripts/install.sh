@@ -166,7 +166,7 @@ process.stdin.on("data", c => text += c);
 process.stdin.on("end", () => {
  const versions = text.split(/\r?\n/).map(line => line.trim().split(/\s+/).at(-1)?.replace("refs/tags/", ""))
   .map(tag => ({ tag, match: /^nek-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(tag || "") }))
-  .filter(v => v.match && v.match.slice(1,4).every(n => Number.isSafeInteger(Number(n))) && (!v.match[4] || v.match[4].split(".").every(p => p && (!/^\d+$/.test(p) || !/^0\d/.test(p)))))
+  .filter(v => v.match && !v.match[4] && v.match.slice(1,4).every(n => Number.isSafeInteger(Number(n))))
   .map(v => ({ tag: v.tag, core: v.match.slice(1,4).map(Number), pre: v.match[4]?.split(".") || [] }));
  const compare = (a,b) => {
   for (let i=0;i<3;i++) if (a.core[i]!==b.core[i]) return a.core[i]-b.core[i];

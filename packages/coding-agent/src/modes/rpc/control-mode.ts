@@ -133,13 +133,15 @@ export async function runControlMode(): Promise<never> {
 	};
 
 	let shuttingDown = false;
-	const shutdown = async (exitCode = 0): Promise<never> => {
-		if (shuttingDown) process.exit(exitCode);
+	let signalCount = 0;
+	const shutdown = async (exitCode = 0): Promise<void> => {
+		if (shuttingDown) return;
 		shuttingDown = true;
 		cancelAuthLogins();
 		ui.cancelAll();
 		detachInput();
 		process.stdin.pause();
+		await modelRuntime.settleCredentialWrites();
 		await flushRawStdout();
 		process.exit(exitCode);
 	};
@@ -148,6 +150,14 @@ export async function runControlMode(): Promise<never> {
 		void shutdown();
 	}
 	process.stdin.on("end", onInputEnd);
+	const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];
+	for (const signal of signals) {
+		process.on(signal, () => {
+			const exitCode = signal === "SIGHUP" ? 129 : 143;
+			if (++signalCount > 1) process.exit(exitCode);
+			void shutdown(exitCode);
+		});
+	}
 
 	return new Promise<never>(() => {});
 }

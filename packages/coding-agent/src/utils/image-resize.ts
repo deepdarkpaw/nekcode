@@ -71,7 +71,7 @@ async function resizeImageInWorker(
 			);
 		});
 	} finally {
-		void worker.terminate().catch(() => undefined);
+		await worker.terminate().catch(() => undefined);
 	}
 }
 

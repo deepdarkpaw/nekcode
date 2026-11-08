@@ -151,7 +151,7 @@ nek update --channel stable         # 切回 stable 并更新
 | `--check` | 只检查，不改动文件和设置 |
 
 - 操作的是正在运行的 nek 所在的源码目录，不是当前项目目录；
-- stable 选择语义版本最高的 `nek-v*` 标签；dev 跟踪安装时的 `NEK_BRANCH`（默认 `nek`）。本地 dev 检出已经包含远程分支头（例如有更新的本地提交）时视为最新；
+- stable 选择语义版本最高的正式 `nek-v*` 标签（排除预发布）；dev 跟踪安装时的 `NEK_BRANCH`（默认 `nek`）。本地 dev 检出已经包含远程分支头（例如有更新的本地提交）时视为最新；
 - `--check` 只对 `origin` 执行 `git ls-remote`，不 fetch、不检出文件、不调用 GitHub API。打印当前标签或提交、目标和是否有更新；
 - `--check` 退出码：`0` 检查成功且无更新，`1` 出错，`2` 有可用更新。stable 没有任何标签也算成功（`0`），并明确提示；
 - 不带 `--check` 时运行源码目录里的安装脚本（Linux/macOS 用 Bash，Windows 用 PowerShell），输出直接显示，返回脚本的退出码。脚本拒绝覆盖已跟踪文件的本地修改和分叉/本地提交，只做 fast-forward；stable 检出保持在标签上（detached）。

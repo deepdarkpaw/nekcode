@@ -59,10 +59,53 @@ nek 独有功能（Plan、Todo、子代理）的配置不在这里，而在 [nek
 | 设置 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `defaultTools` | `string[]` | `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`、`ast_grep`、`web_search` | 启动时启用的内置工具。空数组表示不启用任何内置工具（扩展和 SDK 工具不受影响） |
+| `webSearch` | object | Tavily | 联网搜索的服务商、端点、认证和默认结果数，见 [搜索配置](#web-search) |
 
 可用的内置工具：`read`、`bash`、`powershell`、`edit`、`write`、`grep`、`find`、`ls`、`ast_grep`、`web_search`。nek 扩展的工具（`todo_write`、`subagent` 等）不受 `defaultTools` 控制。
 
 `/reload` 会启用新加入 `defaultTools` 的工具，保留被移除的工具，不会重新启用本会话中手动禁用且未改变的工具。命令行的工具参数（`--tools` 等）优先于这个设置，包括 reload 时。
+
+### 搜索配置 {#web-search}
+
+`web_search` 默认使用 Tavily 官方 JSON API，**需要 Tavily API key**。未配置或无法解析 key 时会明确报错，不会自动退回 Exa。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `webSearch.provider` | `"tavily"` \| `"exa"` | `"tavily"` | 搜索服务商；Exa 必须显式选择 |
+| `webSearch.endpoint` | string | 随 provider 选择 | Tavily：`https://api.tavily.com/search`；Exa MCP：`https://mcp.exa.ai/mcp` |
+| `webSearch.apiKey` | string | Tavily 使用 `TAVILY_API_KEY`；Exa 无 | 支持字面值、`$ENV_VAR` / `${ENV_VAR}` 和 `!command`；只在搜索时解析。仅未配置此字段时才读取标准 Tavily 环境变量 |
+| `webSearch.numResults` | integer | `8` | 默认结果数，1–20；单次调用的 `num_results` 可覆盖 |
+
+在本机 `~/.nek/agent/settings.json` 中配置，或仅设置 `TAVILY_API_KEY` 环境变量：
+
+```json
+{
+  "webSearch": {
+    "provider": "tavily",
+    "apiKey": "$TAVILY_API_KEY",
+    "numResults": 8
+  }
+}
+```
+
+已有设置只要填写了端点或 API key，就必须显式选择 `provider`，否则会在解析凭据之前报错，避免把旧 Exa 密钥发给新的 Tavily 默认服务。只修改 `numResults` 的设置仍正常使用 Tavily 默认值。
+
+继续使用 Exa 需要显式配置：
+
+```json
+{
+  "webSearch": {
+    "provider": "exa",
+    "apiKey": "$EXA_API_KEY"
+  }
+}
+```
+
+Exa 不配置 `apiKey` 时可使用其托管服务的免 key 限额；配置了但无法解析的 key 则报错，不会改为免 key 请求。Tavily 使用 `Authorization: Bearer` 请求头，Exa 使用 `x-api-key` 请求头，密钥不得写在端点 URL 中。自定义端点必须实现所选 provider 的协议；仅设置 `endpoint` 不会改变 provider。切换 provider 时还应移除旧的显式端点。设置和密钥只保存在本机，不要提交到版本控制。
+
+域名过滤原生下推：Tavily 使用 `include_domains` / `exclude_domains`；Exa 使用 `web_search_advanced_exa` 的 `includeDomains` / `excludeDomains`，并通过非密钥的 `tools` URL 参数启用该工具。自定义 Exa 服务器也必须提供高级搜索工具；工具缺失和响应格式异常都会明确报错。
+
+单次搜索的认证、连接、读取及指数退避共用 25 秒预算。凭据命令异步执行、支持取消，单独限制为 10 秒和 8 KB 标准输出。429 遵守 `Retry-After`（秒数或 HTTP 日期）；等待超过剩余预算会报错，不会立刻重连或切换 provider。HTTP 错误只显示状态，不回显可能包含密钥的服务端正文。响应读取上限为 2 MB，每条摘录最多 4 KB；模型内容和渲染详情各自上限为 50 KB，裁剪摘录时保留来源标题与完整 URL，预算不足以容纳来源信息时明确报错。
 
 ## 会话与上下文 {#sessions}
 

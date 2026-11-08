@@ -5,6 +5,7 @@ import {
 	type McpAuthRequiredError,
 	McpClient,
 	type McpFetch,
+	McpHttpError,
 	McpSessionExpiredError,
 	StreamableHttpTransport,
 } from "../src/index.ts";
@@ -86,6 +87,25 @@ async function protocolHandler(
 	);
 }
 
+/** Exercise response consumption with a mocked fetch, without connecting to any server. */
+async function receiveResponse(response: Response, maxMessageBytes?: number): Promise<unknown[]> {
+	const transport = new StreamableHttpTransport({
+		url: "http://127.0.0.1/mcp",
+		maxMessageBytes,
+		openGetStream: false,
+		fetch: async () => response,
+	});
+	const messages: unknown[] = [];
+	transport.onMessage((message) => messages.push(message));
+	await transport.start();
+	try {
+		await transport.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+		return messages;
+	} finally {
+		await transport.close();
+	}
+}
+
 afterEach(closeServers);
 
 describe("consumeSseStream", () => {
@@ -117,6 +137,89 @@ describe("consumeSseStream", () => {
 			"MCP SSE event exceeds 256 bytes",
 		);
 		expect(sent).toBeLessThan(100);
+	});
+
+	it.each([false, true])("cancels oversized SSE (cancel fails: %s)", async (failCancel) => {
+		let cancelled = false;
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				// Leave the body open after the oversized event, just as a server sending heartbeats would.
+				controller.enqueue(new TextEncoder().encode(`data: ${"x".repeat(512)}\n\n`));
+			},
+			cancel() {
+				cancelled = true;
+				if (failCancel) throw new Error("cancel failed");
+			},
+		});
+		await expect(consumeSseStream(stream, { maxEventBytes: 128, onEvent: () => {} })).rejects.toThrow(
+			"MCP SSE event exceeds 128 bytes",
+		);
+		expect(cancelled).toBe(true);
+		expect(stream.locked).toBe(false);
+	});
+
+	it("cancels a stream when its event handler throws", async () => {
+		const failure = new Error("invalid event");
+		const cancel = vi.fn();
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode("data: invalid\n\n"));
+			},
+			cancel,
+		});
+		await expect(
+			consumeSseStream(stream, {
+				onEvent: () => {
+					throw failure;
+				},
+			}),
+		).rejects.toBe(failure);
+		expect(cancel).toHaveBeenCalledOnce();
+	});
+});
+
+describe("McpHttpError Retry-After", () => {
+	it("keeps the original three constructor parameters compatible", () => {
+		const error = new McpHttpError(400, "failure", "body");
+		expect(error).toMatchObject({ status: 400, message: "failure", body: "body", retryAfter: null });
+		expect(error.retryAfterMs).toBeUndefined();
+	});
+
+	it.each([
+		["0", 0],
+		["2", 2_000],
+		["0002", 2_000],
+		[" 12 ", 12_000],
+	])("parses delay-seconds %s", (value, delay) => {
+		expect(new McpHttpError(429, "rate limited", "", { "Retry-After": value }).retryAfterMs).toBe(delay);
+	});
+
+	it("parses an HTTP date relative to now and clamps past dates to zero", () => {
+		const now = Date.UTC(2026, 10, 5, 12);
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const future = new Date(now + 45_000).toUTCString();
+			const past = new Date(now - 45_000).toUTCString();
+			expect(new McpHttpError(503, "busy", "", { "retry-after": future }).retryAfterMs).toBe(45_000);
+			expect(new McpHttpError(503, "busy", "", { "retry-after": past }).retryAfterMs).toBe(0);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	it.each([
+		"",
+		"not a date",
+		"-1",
+		"+1",
+		"1.5",
+		"1e3",
+		"Infinity",
+		"999999999999999999999999999999999999",
+		"Fri, 30 Feb 2026 12:00:00 GMT",
+		"2026-11-05T12:00:00Z",
+	])("ignores invalid Retry-After %s", (value) => {
+		expect(new McpHttpError(429, "rate limited", "", { "retry-after": value }).retryAfterMs).toBeUndefined();
 	});
 });
 
@@ -289,6 +392,128 @@ describe("StreamableHttpTransport", () => {
 		await client.connect(new StreamableHttpTransport({ url, openGetStream: false }));
 		await expect(client.callTool("echo")).rejects.toThrow("without a response");
 		await client.close();
+	});
+
+	it("applies maxMessageBytes to JSON responses", async () => {
+		const response = (length: number) =>
+			new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { text: "x".repeat(length) } }), {
+				headers: { "content-type": "application/json" },
+			});
+		expect(await receiveResponse(response(32), 512)).toHaveLength(1);
+		await expect(receiveResponse(response(2048), 512)).rejects.toThrow("MCP JSON response exceeds 512 bytes");
+	});
+
+	it.each([false, true])("cancels oversized chunked JSON (cancel fails: %s)", async (failCancel) => {
+		let cancelled = false;
+		let chunks = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				chunks++;
+				controller.enqueue(new TextEncoder().encode("x".repeat(128)));
+			},
+			cancel() {
+				cancelled = true;
+				if (failCancel) throw new Error("cancel failed");
+			},
+		});
+		const response = new Response(body, { headers: { "content-type": "application/json" } });
+		const json = vi.spyOn(response, "json");
+		expect(response.headers.has("content-length")).toBe(false);
+		await expect(receiveResponse(response, 512)).rejects.toThrow("MCP JSON response exceeds 512 bytes");
+		expect(cancelled).toBe(true);
+		expect(body.locked).toBe(false);
+		expect(chunks).toBeLessThan(8);
+		expect(json).not.toHaveBeenCalled();
+	});
+
+	it("decodes a split BOM and UTF-8 characters, accepting a body exactly at the byte limit", async () => {
+		const message = { jsonrpc: "2.0", id: 1, result: { text: "é€😀" } };
+		const bytes = new TextEncoder().encode(`\uFEFF${JSON.stringify(message)}`);
+		const response = () => {
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					for (const byte of bytes) controller.enqueue(new Uint8Array([byte]));
+					controller.close();
+				},
+			});
+			return new Response(body, { headers: { "content-type": "application/json; charset=utf-8" } });
+		};
+		expect(await receiveResponse(response(), bytes.byteLength)).toEqual([message]);
+		await expect(receiveResponse(response(), bytes.byteLength - 1)).rejects.toThrow(
+			`MCP JSON response exceeds ${bytes.byteLength - 1} bytes`,
+		);
+	});
+
+	it.each([false, true])("caps endless HTTP errors at 8 KB (cancel fails: %s)", async (failCancel) => {
+		let cancelled = false;
+		let chunks = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				chunks++;
+				controller.enqueue(new TextEncoder().encode("x".repeat(1024)));
+			},
+			cancel() {
+				cancelled = true;
+				if (failCancel) throw new Error("cancel failed");
+			},
+		});
+		const response = new Response(body, { status: 500 });
+		const text = vi.spyOn(response, "text");
+		const error = await receiveResponse(response).catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(McpHttpError);
+		expect((error as McpHttpError).body).toBe("x".repeat(8 * 1024));
+		expect(cancelled).toBe(true);
+		expect(body.locked).toBe(false);
+		expect(chunks).toBeLessThanOrEqual(9);
+		expect(text).not.toHaveBeenCalled();
+	});
+
+	it("stops immediately at the error excerpt limit without waiting for another chunk", async () => {
+		const cancel = vi.fn();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode("x".repeat(8 * 1024)));
+				// The server neither ends the response nor sends more data.
+			},
+			cancel,
+		});
+		await expect(receiveResponse(new Response(body, { status: 500 }))).rejects.toMatchObject({
+			name: "McpHttpError",
+			body: "x".repeat(8 * 1024),
+		});
+		expect(cancel).toHaveBeenCalledOnce();
+	});
+
+	it("decodes split UTF-8 error excerpts without keeping a partial character at the boundary", async () => {
+		const expected = `é€😀${"x".repeat(8 * 1024 - 13)}`;
+		const bytes = new TextEncoder().encode(`\uFEFF${expected}étail`);
+		const cancel = vi.fn();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const byte of bytes) controller.enqueue(new Uint8Array([byte]));
+			},
+			cancel,
+		});
+		const error = await receiveResponse(new Response(body, { status: 500 })).catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(McpHttpError);
+		expect((error as McpHttpError).body).toBe(expected);
+		expect(cancel).toHaveBeenCalledOnce();
+	});
+
+	it("exposes only Retry-After response metadata, not tokens or sensitive headers", async () => {
+		const response = new Response("busy", {
+			status: 429,
+			headers: {
+				"retry-after": "2",
+				authorization: "Bearer sensitive-token",
+				"set-cookie": "session=sensitive-cookie",
+			},
+		});
+		const error = await receiveResponse(response).catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(McpHttpError);
+		expect(error).toMatchObject({ status: 429, body: "busy", retryAfter: "2", retryAfterMs: 2_000 });
+		expect(JSON.stringify(error)).not.toContain("sensitive");
+		expect(String(error)).not.toContain("sensitive");
 	});
 
 	it("includes the response body in HTTP errors", async () => {

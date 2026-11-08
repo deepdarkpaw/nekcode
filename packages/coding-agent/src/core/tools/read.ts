@@ -10,9 +10,10 @@ import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { normalizeToLF } from "./edit-diff.ts";
 import { detectEncoding } from "./file-text.ts";
 import { resolveReadPathAsync } from "./path-utils.ts";
-import { buildReadChunks, formatReadChunkLines, type ReadChunk } from "./read-chunks.ts";
-import { buildReadOutline, type ReadOutline } from "./read-outline.ts";
+import { buildReadChunks, CHUNK_FALLBACK_LINES, formatReadChunkLines, type ReadChunk } from "./read-chunks.ts";
+import { buildReadOutline, getReadOutlineLanguage, type ReadOutline } from "./read-outline.ts";
 import type { ReadStateStore } from "./read-state.ts";
+import { type ReadStreamFactory, readLocalFileChunks, selectReadStream } from "./read-stream.ts";
 import { readRenderers } from "./renderers/read.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -79,10 +80,18 @@ export interface ReadOperations {
 	detectImageMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
 	/** Return file mtime for read-state freshness checks. */
 	stat?: (absolutePath: string) => Promise<{ mtimeMs: number }>;
+	/**
+	 * Open a fresh byte stream, honoring signal and releasing resources when iteration ends or aborts.
+	 * Ranged text and files without an outline language use bounded streaming when provided; negative
+	 * offsets open it twice. Custom backends without it still use readFile. Images and unranged source
+	 * files retain readFile for image processing and AST folding. Local ranged reads always stream.
+	 */
+	createReadStream?: ReadStreamFactory;
 }
 
 const defaultReadOperations: ReadOperations = {
 	readFile: (path) => fsReadFile(path),
+	createReadStream: readLocalFileChunks,
 	access: (path) => fsAccess(path, constants.R_OK),
 	detectImageMimeType: detectSupportedImageMimeTypeFromFile,
 	stat: async (path) => ({ mtimeMs: (await fsStat(path)).mtimeMs }),
@@ -172,15 +181,16 @@ function renderSelectedText(
 
 function applyTextTruncation(
 	selected: ReturnType<typeof renderSelectedText>,
-	allLines: string[],
+	totalFileLines: number,
+	firstLineBytes: number,
 	path: string,
 	offset: number | undefined,
 	limit: number | undefined,
+	truncation = truncateHead(selected.text),
 ): { text: string; truncation?: TruncationResult } {
-	const truncation = truncateHead(selected.text);
 	if (truncation.firstLineExceedsLimit) {
 		const firstLine = selected.firstLine;
-		const firstLineSize = formatSize(Buffer.byteLength(allLines[firstLine - 1] ?? "", "utf-8"));
+		const firstLineSize = formatSize(firstLineBytes);
 		return {
 			text: `[Line ${firstLine} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${firstLine}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`,
 			truncation,
@@ -194,23 +204,103 @@ function applyTextTruncation(
 		const nextOffset = endLine + 1;
 		let text = truncation.content;
 		if (truncation.truncatedBy === "lines") {
-			text += `\n\n[Showing lines ${selected.firstLine}-${endLine} of ${allLines.length}. Use offset=${nextOffset} to continue.]`;
+			text += `\n\n[Showing lines ${selected.firstLine}-${endLine} of ${totalFileLines}. Use offset=${nextOffset} to continue.]`;
 		} else {
-			text += `\n\n[Showing lines ${selected.firstLine}-${endLine} of ${allLines.length} (${formatSize(DEFAULT_MAX_BYTES)} limit). Use offset=${nextOffset} to continue.]`;
+			text += `\n\n[Showing lines ${selected.firstLine}-${endLine} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Use offset=${nextOffset} to continue.]`;
 		}
 		return { text, truncation };
 	}
 	if (limit !== undefined) {
-		const startLine = getStartLine(offset, allLines.length);
-		const selectedLines = Math.max(0, Math.min(allLines.length, startLine + Math.max(0, limit)) - startLine);
-		if (startLine + selectedLines < allLines.length) {
-			const remaining = allLines.length - (startLine + selectedLines);
+		const startLine = getStartLine(offset, totalFileLines);
+		const selectedLines = Math.max(0, Math.min(totalFileLines, startLine + Math.max(0, limit)) - startLine);
+		if (startLine + selectedLines < totalFileLines) {
+			const remaining = totalFileLines - (startLine + selectedLines);
 			return {
 				text: `${selected.text}\n\n[${remaining} more lines in file. Use offset=${startLine + selectedLines + 1} to continue.]`,
 			};
 		}
 	}
 	return { text: truncation.content };
+}
+
+/** Keep fixed-window metadata bounded too: at most one metadata entry per allowed output line. */
+function fixedChunkDetails(totalLines: number): ReadChunkDetails[] {
+	const count = Math.min(Math.ceil(totalLines / CHUNK_FALLBACK_LINES), DEFAULT_MAX_LINES);
+	return Array.from({ length: count }, (_, index) => ({
+		startLine: index * CHUNK_FALLBACK_LINES + 1,
+		endLine: Math.min(totalLines, (index + 1) * CHUNK_FALLBACK_LINES),
+		label: `${CHUNK_FALLBACK_LINES}-line`,
+	}));
+}
+
+/** Preserve AST folding for unranged source files, while ranges and non-outline text never load whole local files. */
+async function readTextFile(
+	ops: ReadOperations,
+	absolutePath: string,
+	offset: number | undefined,
+	limit: number | undefined,
+	signal?: AbortSignal,
+) {
+	const ranged = offset !== undefined || limit !== undefined;
+	if (ops.createReadStream && (ranged || !getReadOutlineLanguage(absolutePath))) {
+		let startLine = getStartLine(offset, 0);
+		if (offset !== undefined && offset < 0) {
+			const counts = await selectReadStream(ops.createReadStream(absolutePath, { signal }), 0, 0, signal);
+			startLine = getStartLine(offset, counts.totalFileLines);
+			if (startLine < 0) {
+				throw new Error(`Offset ${offset} is beyond end of file (${counts.totalFileLines} lines total)`);
+			}
+		}
+		const streamed = await selectReadStream(ops.createReadStream(absolutePath, { signal }), startLine, limit, signal);
+		if (startLine < 0 || startLine >= streamed.totalFileLines) {
+			throw new Error(`Offset ${offset} is beyond end of file (${streamed.totalFileLines} lines total)`);
+		}
+		const selected: ReturnType<typeof renderSelectedText> = {
+			text: streamed.truncation.content,
+			representation: ranged || streamed.totalCharacters <= 10_000 ? "full" : "50-line",
+			firstLine: startLine + 1,
+			outputLines: streamed.truncation.totalLines,
+		};
+		if (selected.representation === "50-line") selected.chunks = fixedChunkDetails(streamed.totalFileLines);
+		return {
+			selected,
+			rendered: applyTextTruncation(
+				selected,
+				streamed.totalFileLines,
+				streamed.firstLineBytes,
+				absolutePath,
+				offset,
+				limit,
+				streamed.truncation,
+			),
+			stateContent: streamed.fullContent ?? "",
+			timestamp: ops.stat ? (await ops.stat(absolutePath)).mtimeMs : Date.now(),
+		};
+	}
+	const textContent = decodeText(await ops.readFile(absolutePath));
+	if (signal?.aborted) throw new Error("Operation aborted");
+	const allLines = textContent.split("\n");
+	const timestamp = ops.stat ? (await ops.stat(absolutePath)).mtimeMs : Date.now();
+	const outline =
+		!ranged && textContent.length > 10_000
+			? await buildReadOutline(absolutePath, textContent, {
+					cacheKey: `${absolutePath}:${timestamp}:${textContent.length}`,
+				})
+			: undefined;
+	const selected = renderSelectedText(allLines, offset, limit, outline);
+	return {
+		selected,
+		rendered: applyTextTruncation(
+			selected,
+			allLines.length,
+			Buffer.byteLength(allLines[selected.firstLine - 1] ?? "", "utf-8"),
+			absolutePath,
+			offset,
+			limit,
+		),
+		stateContent: Buffer.byteLength(textContent, "utf-8") <= DEFAULT_MAX_BYTES ? textContent : "",
+		timestamp,
+	};
 }
 
 /** Create the Cursor-compatible read tool definition. */
@@ -264,25 +354,21 @@ export function createReadToolDefinition(
 					];
 				}
 			} else {
-				const buffer = await ops.readFile(absolutePath);
-				const textContent = decodeText(buffer);
-				const allLines = textContent.split("\n");
-				const timestamp = ops.stat ? (await ops.stat(absolutePath)).mtimeMs : Date.now();
-				const outline =
-					offset === undefined && limit === undefined && textContent.length > 10_000
-						? await buildReadOutline(absolutePath, textContent, {
-								cacheKey: `${absolutePath}:${timestamp}:${textContent.length}`,
-							})
-						: undefined;
-				const selected = renderSelectedText(allLines, offset, limit, outline);
-				const rendered = applyTextTruncation(selected, allLines, absolutePath, offset, limit);
+				const { selected, rendered, stateContent, timestamp } = await readTextFile(
+					ops,
+					absolutePath,
+					offset,
+					limit,
+					signal,
+				);
 				details = {
 					representation: selected.representation,
 					chunks: selected.chunks,
 					...(rendered.truncation ? { truncation: rendered.truncation } : {}),
 				};
+				if (signal?.aborted) throw new Error("Operation aborted");
 				if (options?.readState) {
-					options.readState.set(absolutePath, { content: textContent, timestamp, offset, limit });
+					options.readState.set(absolutePath, { content: stateContent, timestamp, offset, limit });
 				}
 				content = [{ type: "text", text: rendered.text }];
 			}

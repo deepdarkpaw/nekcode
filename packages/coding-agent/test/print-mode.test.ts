@@ -91,6 +91,43 @@ afterEach(() => {
 });
 
 describe("runPrintMode", () => {
+	it("waits for final disposal when one signal arrives and only forces exit on a repeated signal", async () => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+		const host = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		let finishDispose!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			finishDispose = resolve;
+		});
+		host.dispose.mockReturnValue(pending);
+		const listenersBefore = process.listenerCount("SIGTERM");
+		const running = runPrintMode(host as unknown as Parameters<typeof runPrintMode>[0], { mode: "text" });
+		try {
+			await vi.waitFor(() => expect(host.dispose).toHaveBeenCalledTimes(1));
+			expect(process.listenerCount("SIGTERM")).toBe(listenersBefore + 1);
+			process.emit("SIGTERM");
+			await Promise.resolve();
+			expect(exitSpy).not.toHaveBeenCalled();
+			process.emit("SIGTERM");
+			expect(exitSpy).toHaveBeenCalledWith(143);
+		} finally {
+			finishDispose();
+			await running;
+		}
+		expect(host.dispose).toHaveBeenCalledTimes(1);
+		expect(process.listenerCount("SIGTERM")).toBe(listenersBefore);
+	});
+
+	it("removes shutdown signal handlers even when disposal fails", async () => {
+		const host = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		const failure = new Error("credential persistence failed");
+		host.dispose.mockRejectedValue(failure);
+		const listenersBefore = process.listenerCount("SIGTERM");
+		await expect(runPrintMode(host as unknown as Parameters<typeof runPrintMode>[0], { mode: "text" })).rejects.toBe(
+			failure,
+		);
+		expect(process.listenerCount("SIGTERM")).toBe(listenersBefore);
+	});
+
 	it("emits session_shutdown in text mode", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const { session } = runtimeHost;

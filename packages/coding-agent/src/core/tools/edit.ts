@@ -5,8 +5,9 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { atomicWriteFileAsync } from "./atomic-write.ts";
-import { generateDiffString, generateUnifiedPatch } from "./edit-diff.ts";
-import { applyEditToFile, validateEditText } from "./edit-validate.ts";
+import { type EditDiff, generateEditDiff } from "./edit-diff.ts";
+import { applyReplacementsToOriginal, applyTextReplacements } from "./edit-replacements.ts";
+import { getEditReplacements, validateEditText } from "./edit-validate.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { decodeFileText } from "./file-text.ts";
 import { resolveToCwd } from "./path-utils.ts";
@@ -74,11 +75,6 @@ function normalizeReplaceAll(value: boolean | "true" | "false" | undefined): boo
 	return value === true || value === "true";
 }
 
-function restoreContent(content: string, bom: string, lineEnding: "\r\n" | "\n"): string {
-	const withBom = bom + content;
-	return lineEnding === "\r\n" ? withBom.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n") : withBom;
-}
-
 /** edit description: matching rules, uniqueness, multiple changes, and what is and is not required. */
 function getEditDescription(): string {
 	return `Replace exact text in a file.
@@ -134,6 +130,10 @@ export function createEditToolDefinition(
 						throw new Error(`File does not exist. Note: your current working directory is ${ctx?.cwd || cwd}.`);
 					}
 					const newContent = input.new_string;
+					const diff = generateEditDiff(filePath, "", newContent, [
+						{ matchIndex: 0, matchLength: 0, newText: newContent },
+					]);
+					if (signal?.aborted) throw new Error("Operation aborted");
 					await ops.writeFile(absolutePath, newContent, "utf8");
 					const statResult = await fsStat(absolutePath);
 					const content = Buffer.from(input.new_string, "utf8").toString("utf8");
@@ -143,7 +143,7 @@ export function createEditToolDefinition(
 						offset: undefined,
 						limit: undefined,
 					});
-					return successResult(filePath, "", newContent, "", newContent);
+					return successResult(filePath, diff, "", newContent);
 				}
 				if (fileStat.isDirectory())
 					throw new Error(`Cannot edit '${filePath}': the specified path is an existing directory.`);
@@ -164,15 +164,24 @@ export function createEditToolDefinition(
 					newString: input.new_string,
 					replaceAll,
 				});
-				const newContent = applyEditToFile(
+				const replacements = getEditReplacements(
 					metadata.content,
 					validated.actualOldString,
 					validated.newString,
 					replaceAll,
 				);
+				const newContent = applyTextReplacements(metadata.content, replacements);
 				if (newContent === metadata.content)
 					throw new Error("No changes to make: old_string and new_string are exactly the same.");
-				const finalContent = restoreContent(newContent, metadata.bom, metadata.lineEnding);
+				// Compute both diff formats before writing, so a diff failure leaves the file and read state intact.
+				const diff = generateEditDiff(filePath, metadata.content, newContent, replacements);
+				const originalContent = metadata.raw.slice(metadata.bom.length);
+				const finalContent =
+					metadata.bom +
+					(originalContent === metadata.content
+						? newContent
+						: applyReplacementsToOriginal(originalContent, replacements));
+				if (signal?.aborted) throw new Error("Operation aborted");
 				await ops.writeFile(absolutePath, finalContent, metadata.encoding);
 				const updatedStat = await fsStat(absolutePath);
 				readState.set(absolutePath, {
@@ -182,29 +191,14 @@ export function createEditToolDefinition(
 					limit: undefined,
 				});
 				if (signal?.aborted) throw new Error("Operation aborted");
-				return successResult(
-					filePath,
-					metadata.content,
-					newContent,
-					validated.actualOldString,
-					validated.newString,
-					replaceAll,
-				);
+				return successResult(filePath, diff, validated.actualOldString, validated.newString, replaceAll);
 			});
 		},
 		...editRenderers,
 	};
 }
 
-function successResult(
-	filePath: string,
-	oldContent: string,
-	newContent: string,
-	oldString: string,
-	newString: string,
-	replaceAll = false,
-) {
-	const diff = generateDiffString(oldContent, newContent);
+function successResult(filePath: string, diff: EditDiff, oldString: string, newString: string, replaceAll = false) {
 	return {
 		content: [
 			{
@@ -215,9 +209,7 @@ function successResult(
 			},
 		],
 		details: {
-			diff: diff.diff,
-			patch: generateUnifiedPatch(filePath, oldContent, newContent),
-			firstChangedLine: diff.firstChangedLine,
+			...diff,
 			oldString,
 			newString,
 		},

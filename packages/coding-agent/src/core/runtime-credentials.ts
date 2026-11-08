@@ -4,6 +4,8 @@ import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore 
 export class RuntimeCredentials implements CredentialStore {
 	private readonly store: CredentialStore;
 	private readonly overrides = new Map<string, string>();
+	/** Modifications not yet written or failed, such as an OAuth refresh. */
+	private readonly pendingModifications = new Set<Promise<void>>();
 
 	constructor(store: CredentialStore) {
 		this.store = store;
@@ -41,7 +43,24 @@ export class RuntimeCredentials implements CredentialStore {
 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
 		options?: AuthOperationOptions,
 	): Promise<Credential | undefined> {
-		return this.store.modify(providerId, fn, options);
+		const modification = this.store.modify(providerId, fn, options);
+		// Observe failures immediately without changing the promise returned to the caller.
+		const pending = modification.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.pendingModifications.add(pending);
+		void pending.then(() => this.pendingModifications.delete(pending));
+		return modification;
+	}
+
+	/**
+	 * Wait for modifications already started to be written or fail. OAuth refreshes may have spent
+	 * a single-use refresh token, so exiting before its replacement is saved would lose the login.
+	 * Failures are still reported by the original modify() promise; this does not start new work.
+	 */
+	async settled(): Promise<void> {
+		await Promise.all(this.pendingModifications);
 	}
 
 	async delete(providerId: string, options?: AuthOperationOptions): Promise<void> {

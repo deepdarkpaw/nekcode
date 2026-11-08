@@ -90,6 +90,7 @@ const OpenAICompletionsCompatSchema = Type.Object({
 	maxTokensField: Type.Optional(Type.Union([Type.Literal("max_completion_tokens"), Type.Literal("max_tokens")])),
 	requiresToolResultName: Type.Optional(Type.Boolean()),
 	requiresAssistantAfterToolResult: Type.Optional(Type.Boolean()),
+	requiresToolsWithToolHistory: Type.Optional(Type.Boolean()),
 	requiresThinkingAsText: Type.Optional(Type.Boolean()),
 	requiresReasoningContentOnAssistantMessages: Type.Optional(Type.Boolean()),
 	thinkingFormat: Type.Optional(
