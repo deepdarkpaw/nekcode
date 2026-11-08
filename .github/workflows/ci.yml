@@ -326,9 +326,20 @@ jobs:
             actual_prerelease="$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)"
             [[ "$actual_prerelease" == "$PRERELEASE" ]] || { echo 'Release channel does not match tag' >&2; exit 1; }
           elif [[ "$PRERELEASE" == true ]]; then
-            gh release create "$RELEASE_TAG" --verify-tag --prerelease --latest=false --generate-notes
+            gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease --latest=false --generate-notes
           else
-            gh release create "$RELEASE_TAG" --verify-tag --generate-notes
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes
           fi
           # No --clobber: a retry never silently replaces public release files.
           gh release upload "$RELEASE_TAG" "${assets[@]}" SHA256SUMS
+          remote_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for asset in "${assets[@]}" SHA256SUMS; do
+            [[ $'\n'"$remote_assets"$'\n' == *$'\n'"$asset"$'\n'* ]] || { echo "Release is missing $asset" >&2; exit 1; }
+          done
+          if [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" == true ]]; then
+            if [[ "$PRERELEASE" == true ]]; then
+              gh release edit "$RELEASE_TAG" --draft=false --latest=false
+            else
+              gh release edit "$RELEASE_TAG" --draft=false
+            fi
+          fi
