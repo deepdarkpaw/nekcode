@@ -1,42 +1,334 @@
-name: CI
+name: nek CI
 
 on:
   push:
-    branches: [main]
+    branches: [nek]
+    tags: ['nek-v*', 'nek-beta-v*']
   pull_request:
-    branches: [main]
+    branches: [nek]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing nek release tag to build; leave empty for CI only'
+        required: false
+        type: string
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: nek-ci-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: ${{ inputs.release_tag == '' && !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  NEK_OFFLINE: '1'
+  PI_NO_LOCAL_LLM: '1'
+  NEK_TELEMETRY: '0'
+  RELEASE_TAG: ${{ inputs.release_tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
 
 jobs:
-  build-check-test:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+      version: ${{ steps.metadata.outputs.version }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Workflow helpers come from the workflow revision; the product always
+      # comes from the exact requested tag (including historical backfills).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 22
+          path: ci-control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag || github.sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
           cache: npm
-
-      - name: Install system dependencies
+          cache-dependency-path: source/package-lock.json
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Install system tools
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
-          sudo ln -s $(which fdfind) /usr/local/bin/fd
+      - name: Install locked dependencies
+        working-directory: source
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Validate source and release identity
+        id: metadata
+        working-directory: source
+        run: |
+          set -euo pipefail
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [[ -n "$RELEASE_TAG" ]]; then
+            node ../ci-control/scripts/nek-tag.mjs parse --tag "$RELEASE_TAG" --github-output "$GITHUB_OUTPUT"
+          fi
+      - name: Hydrate and validate model data
+        working-directory: source
+        run: |
+          npm run hydrate:model-data
+          npm run check:model-data
+      - name: Build and check
+        working-directory: source
+        run: |
+          npm run build:offline
+          npm run check
+          git diff --exit-code
+      - name: Run script tests
+        working-directory: source
+        run: npm run test:scripts
+      - name: Discover test matrix
+        id: matrix
+        working-directory: source
+        run: node ../ci-control/scripts/test-workspaces.mjs . "$GITHUB_OUTPUT"
+      - name: Pack shared build outputs
+        working-directory: source
+        run: tar -czf "$RUNNER_TEMP/nek-build.tar.gz" packages/*/dist packages/session-backends/*/dist packages/ai/src/providers/data
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nek-build
+          path: ${{ runner.temp }}/nek-build.tar.gz
+          if-no-files-found: error
+          retention-days: 3
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Install system tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
+      - name: Install locked dependencies
+        working-directory: source
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nek-build
+          path: shared-build
+      - name: Restore shared build
+        run: tar -xzf shared-build/nek-build.tar.gz -C source
+      - name: Run workspace tests
+        working-directory: source
+        env:
+          TEST_WORKSPACE: ${{ matrix.workspace }}
+          TEST_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$TEST_SHARD" ]]; then
+            npm run test --workspace "$TEST_WORKSPACE" -- "--shard=$TEST_SHARD"
+          else
+            npm run test --workspace "$TEST_WORKSPACE"
+          fi
 
-      - name: Build
-        run: npm run build
+  native-test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - working-directory: source
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nek-build
+          path: shared-build
+      - run: tar -xzf shared-build/nek-build.tar.gz -C source
+      - name: Test native OpenTUI
+        working-directory: source/packages/opentui
+        run: bun test ./test/native
 
-      - name: Check
-        run: npm run check
+  docker-cache:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nek-build
+          path: shared-build
+      - name: Restore the model-data snapshot used by the build
+        run: tar -xzf shared-build/nek-build.tar.gz -C source packages/ai/src/providers/data
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build evaluator image with reusable BuildKit layers
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./source
+          file: ./ci-control/packages/evals/docker/Dockerfile
+          target: with_docs
+          tags: nek-eval-ci:latest
+          load: true
+          push: false
+          cache-from: type=gha,scope=nek-eval
+          cache-to: type=gha,mode=max,scope=nek-eval
+      - name: Smoke-test the image without model credentials
+        run: docker run --rm --network none --entrypoint node nek-eval-ci:latest -e "require('/repo/node_modules/@earendil-works/pi-coding-agent/package.json')"
 
-      - name: Test
-        run: npm test
+  binaries:
+    if: ${{ inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/nek-') }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [darwin-arm64, darwin-x64, linux-arm64, linux-x64, windows-arm64, windows-x64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - working-directory: source
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nek-build
+          path: shared-build
+      - run: tar -xzf shared-build/nek-build.tar.gz -C source
+      - name: Compile and archive
+        working-directory: source
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: bash scripts/build-binaries.sh --skip-install --skip-build --platform "$PLATFORM" --out "$RUNNER_TEMP/nek-binaries"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: binary-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/nek-binaries/*.tar.gz
+            ${{ runner.temp }}/nek-binaries/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  binary-smoke:
+    needs: [build, binaries]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Select host archive
+        id: host
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in x86_64|amd64) arch=x64 ;; arm64|aarch64) arch=arm64 ;; *) exit 1 ;; esac
+          case "$RUNNER_OS" in Linux) os=linux ;; macOS) os=darwin ;; Windows) os=windows ;; *) exit 1 ;; esac
+          echo "platform=$os-$arch" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: binary-${{ steps.host.outputs.platform }}
+          path: archive
+      - name: Verify packaged executable
+        shell: bash
+        env:
+          PLATFORM: ${{ steps.host.outputs.platform }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir extracted
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            export ARCHIVE_PATH="$(cygpath -w "archive/nek-$PLATFORM.zip")"
+            export DESTINATION_PATH="$(cygpath -w extracted)"
+            powershell.exe -NoProfile -NonInteractive -Command 'Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:DESTINATION_PATH -Force'
+            binary=extracted/nek.exe
+          else
+            tar -xzf "archive/nek-$PLATFORM.tar.gz" -C extracted
+            binary=extracted/nek/nek
+          fi
+          output="$("$binary" --version)"
+          printf '%s\n' "$output"
+          [[ "$output" == "nek $VERSION (pi "* ]]
+          "$binary" --help
+
+  release-assets:
+    if: ${{ inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/nek-') }}
+    needs: [build, test, native-test, docker-cache, binaries, binary-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: binary-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify assets, tag, and release; upload without replacing files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          assets=(nek-darwin-arm64.tar.gz nek-darwin-x64.tar.gz nek-linux-arm64.tar.gz nek-linux-x64.tar.gz nek-windows-arm64.zip nek-windows-x64.zip)
+          for asset in "${assets[@]}"; do test -s "$asset"; done
+          remote_sha="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
+          [[ "$remote_sha" == "$SOURCE_SHA" ]] || { echo 'Release tag moved during build' >&2; exit 1; }
+          sha256sum "${assets[@]}" > SHA256SUMS
+          if gh release view "$RELEASE_TAG" --json tagName >/dev/null 2>&1; then
+            actual_prerelease="$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)"
+            [[ "$actual_prerelease" == "$PRERELEASE" ]] || { echo 'Release channel does not match tag' >&2; exit 1; }
+          elif [[ "$PRERELEASE" == true ]]; then
+            gh release create "$RELEASE_TAG" --verify-tag --prerelease --latest=false --generate-notes
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --generate-notes
+          fi
+          # No --clobber: a retry never silently replaces public release files.
+          gh release upload "$RELEASE_TAG" "${assets[@]}" SHA256SUMS

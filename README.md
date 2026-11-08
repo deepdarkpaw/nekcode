@@ -42,7 +42,11 @@ irm https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.ps
 nek --version
 ```
 
-> nek 直接从源码运行，不需要构建。如果脚本提示安装目录不在 PATH 里，按提示把那一行加入 `~/.bashrc` 或 `~/.zshrc`。
+> 上述方式直接从源码运行，不需要本机编译。如果脚本提示安装目录不在 PATH 里，按提示把那一行加入 `~/.bashrc` 或 `~/.zshrc`。
+
+### 预编译压缩包
+
+也可在 [GitHub Releases](https://github.com/deepdarkpaw/nekcode/releases) 的 Assets 中选择对应系统与架构的 `nek-*.zip`（Windows）或 `nek-*.tar.gz`（Linux/macOS）。下载后可使用同一页面的 `SHA256SUMS` 校验，再**完整解压整个目录**并运行其中的 `nek.exe` 或 `nek`。这些是便携包，不是 MSI/图形安装程序，不会自动修改 PATH；搜索工具需另行准备。预发布版本需展开对应的 prerelease 页面，构建完成后才会出现 Assets。
 
 ## 更新
 

@@ -42,7 +42,11 @@ Open a new terminal and verify:
 nek --version
 ```
 
-> nek runs directly from source; there is no build step. If the installer reports that the bin directory is not on PATH, add the printed line to `~/.bashrc` or `~/.zshrc`.
+> The source install runs directly without a local build step. If the installer reports that the bin directory is not on PATH, add the printed line to `~/.bashrc` or `~/.zshrc`.
+
+### Precompiled archives
+
+Alternatively, choose the matching `nek-*.zip` (Windows) or `nek-*.tar.gz` (Linux/macOS) under [GitHub Releases](https://github.com/deepdarkpaw/nekcode/releases). Verify it against the release's `SHA256SUMS`, extract the **entire directory**, and run `nek.exe` or `nek` inside it. These are portable archives, not graphical/MSI installers; they do not change PATH or install search tools. Open the specific prerelease page for beta assets, which appear once its build succeeds.
 
 ## Update
 

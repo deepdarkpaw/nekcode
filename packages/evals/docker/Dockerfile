@@ -1,12 +1,31 @@
-FROM node:24-slim AS builder
-WORKDIR /work
-# Build against an ephemeral repository mount. Only outputs staged under
-# /opt/evaluator persist; node_modules and dist created in /repo are discarded.
-RUN --mount=type=bind,source=.,target=/repo,rw \
-    --mount=type=cache,target=/root/.npm \
-    cd /repo \
-    && npm ci --ignore-scripts \
-    && npm run build:offline \
+# Copy workspace manifests before source so ordinary code edits do not invalidate
+# the npm dependency layer. Keep this list in sync with root package.json.
+FROM node:24-slim AS dependencies
+WORKDIR /repo
+COPY package.json package-lock.json ./
+COPY packages/agent/package.json packages/agent/package.json
+COPY packages/ai/package.json packages/ai/package.json
+COPY packages/chord/package.json packages/chord/package.json
+COPY packages/coding-agent/package.json packages/coding-agent/package.json
+COPY packages/durable/package.json packages/durable/package.json
+COPY packages/evals/package.json packages/evals/package.json
+COPY packages/mcp/package.json packages/mcp/package.json
+COPY packages/opentui/package.json packages/opentui/package.json
+COPY packages/server/package.json packages/server/package.json
+COPY packages/tui/package.json packages/tui/package.json
+COPY packages/session-backends/sqlite-node/package.json packages/session-backends/sqlite-node/package.json
+COPY packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+COPY packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+COPY packages/coding-agent/examples/extensions/gondolin/package.json packages/coding-agent/examples/extensions/gondolin/package.json
+COPY packages/coding-agent/examples/extensions/sandbox/package.json packages/coding-agent/examples/extensions/sandbox/package.json
+COPY packages/coding-agent/examples/extensions/with-deps/package.json packages/coding-agent/examples/extensions/with-deps/package.json
+RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
+
+# Builder sources and dependencies never enter the final evaluator image; only
+# the explicitly installed runtime below is copied into it.
+FROM dependencies AS builder
+COPY . .
+RUN npm run build:offline \
     && node packages/evals/docker/install-runtime.mjs /opt/evaluator
 
 # Both variants use the same installed runtime. The control removes only the

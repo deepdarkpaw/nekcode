@@ -53,6 +53,12 @@ nek --version
 Linux/macOS 上如果脚本提示 `~/.local/bin` 不在 PATH 里，把它打印的那一行加入 `~/.bashrc` 或 `~/.zshrc`，然后重开终端。Windows 上新开一个 PowerShell 窗口即可，旧窗口不会读取新的 PATH。
 :::
 
+## 预编译压缩包 {#binary-archives}
+
+[GitHub Releases](https://github.com/deepdarkpaw/nekcode/releases) 的 Assets 提供 Windows `nek-*.zip`、Linux/macOS `nek-*.tar.gz` 便携包。选择匹配系统和 CPU 架构的文件，用同页 `SHA256SUMS` 校验，**完整解压整个目录**后运行其中的 `nek.exe` 或 `nek`。预发布版本要打开对应 prerelease 页面；构建成功后才会出现文件。
+
+这些不是 MSI 或图形安装程序，不会自动加入 PATH，也不会自动准备 fd、rg、ast-grep。若使用源码安装和 `nek update`，仍按上面的安装脚本操作。
+
 ## 安装选项 {#install-options}
 
 运行安装脚本前设置这些环境变量，可以改变默认行为：
