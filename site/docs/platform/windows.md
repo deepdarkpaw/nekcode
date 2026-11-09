@@ -36,19 +36,21 @@ nek 按以下顺序查找 Bash：
 
 可选的 `powershell` 工具优先通过 `pwsh.exe`（PowerShell 7）执行命令，没有时退回 Windows PowerShell，以 `-NoProfile -NonInteractive -ExecutionPolicy Bypass` 启动。它只在原生 Windows 进程中可用。
 
-**同时提供 bash 和 powershell**：
+**同时提供 bash 和 powershell**（在默认工具基础上加 `+powershell`）：
 
 ```json
 {
-  "defaultTools": ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls", "ast_grep", "web_search"]
+  "defaultTools": ["+powershell"]
 }
 ```
+
+也可以写出完整列表：`["read", "bash", "powershell", "edit", "write", "grep", "find", "ls", "ast_grep", "web_search"]`。
 
 **用 powershell 代替 bash**：
 
 ```json
 {
-  "defaultTools": ["read", "powershell", "edit", "write", "grep", "find", "ls", "ast_grep", "web_search"]
+  "defaultTools": ["-bash", "+powershell"]
 }
 ```
 

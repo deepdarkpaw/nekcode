@@ -19,6 +19,22 @@ nek --mode rpc --no-session
 
 RPC 模式不接受 `@文件` 参数，请通过 [`prompt`](/reference/rpc-commands#prompt) 命令发送提示词。
 
+## 控制进程 {#control-process}
+
+```bash
+nek --mode rpc --control
+```
+
+控制进程用来回答配置和会话目录查询，**不创建会话、不加载扩展或 MCP 服务器**，让设置窗口轻量且无副作用。它像普通会话进程一样从 stdin 读取 JSONL 命令，但只接受控制命令子集：`get_info`、`reload`、`validate_config`、`get_changelog`、`get_mention_targets`、`list_builtin_tools`、会话目录命令（`list_sessions`、`delete_session`、`rename_session`、`read_session_snapshot`、`import_session`）、认证命令（`auth_status`、`auth_login`、`auth_logout`）、模型命令（`get_model_catalog`、`fetch_provider_models`、`test_provider`、`get_available_models`）、项目信任命令（`get_project_trust`、`set_project_trust`），以及 `test_web_search`、`mcp_test`。发送其他命令会返回：
+
+```json
+{"id":"req-1","type":"response","command":"prompt","success":false,"error":"Command not available in control mode: prompt"}
+```
+
+仅限会话的命令（`export_session`、`share_session`、`navigate_tree`、`set_entry_label`、`extension_call`、提示词与运行控制命令）需要普通会话进程。每条命令的格式见 [RPC 命令](/reference/rpc-commands#gui-commands)。
+
+用 `nek gui-info --json` 获取启动这两种进程所需的完整参数，见 [命令行](/reference/cli#gui-integration)。
+
 ## 记录类型
 
 | 方向 | 记录 | 用途 |

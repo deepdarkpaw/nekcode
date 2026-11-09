@@ -195,6 +195,49 @@ RPC 的 [`bash`](/reference/rpc-commands#bash) 命令每个输出块发一条 `b
 
 扩展界面记录是独立的子协议，见 [RPC 扩展 UI](/reference/rpc-extension-ui)。
 
+### extension_event {#extension-event}
+
+扩展调用 `pi.emitRpcEvent(name, payload)` 时，RPC 模式会输出一条带扩展事件名和负载的记录；其他模式忽略该调用，所以扩展可以无条件调用。
+
+```json
+{"type":"extension_event","name":"nek.state","payload":{"mode":"agent","todos":[]}}
+```
+
+事件名和 `payload` 结构由扩展定义，客户端应忽略不认识的事件名。内置扩展发出的事件包括：
+
+- `nek.state`：`{mode:"agent"|"plan", todos:[{id,content,status}], plans:[{path,name,overview,revision,status,todos}], activePlanPath?, subagents:[...]}`；
+- `nek.subagent`：单条子代理记录 `{id,description,type,background,status,model?,activity?,usage?,startedAt,endedAt?,lastActivityAt?,sessionFile?,error?,finalText?}`（不含内部 `observed` 标记）。包含后台活动进度，每个子代理最多每秒节流发送 10 条；
+- `mcp.status_changed`：`{servers:[{name,scope:"global"|"project",transport:"stdio"|"http",enabled,exposure:"deferred"|"direct"|"hidden",state:"disabled"|"connecting"|"connected"|"failed"|"needs_auth",error?,tools:[{name,exposure}],auth?:{required,loggedIn}}]}`。
+
+### auth_event {#auth-event}
+
+执行 [`auth_login`](/reference/rpc-commands#auth-login) 期间，nek 会转发服务商登录流程的通知：
+
+```json
+{"type":"auth_event","provider":"anthropic","event":{"type":"auth_url","url":"https://example.com/authorize","instructions":"Open the URL to continue"}}
+```
+
+`event` 取值：
+
+| `event.type` | 字段 | 含义 |
+|---|---|---|
+| `info` | `message`、`links?` | 说明或上下文信息，每个链接含 `url` 和可选 `label` |
+| `auth_url` | `url`、`instructions?` | 需要用户打开的授权地址 |
+| `device_code` | `userCode`、`verificationUri`、`intervalSeconds?`、`expiresInSeconds?` | 设备码登录正在等待授权 |
+| `progress` | `message` | 流程推进（例如浏览器回调完成后） |
+
+登录过程中还会通过 `auth.prompt` 结构化请求索取输入；客户端回复 `cancelled: true` 会结束流程并让 `auth_login` 返回失败响应。
+
+### extension_ui_cancel {#extension-ui-cancel}
+
+当已发出的对话框因请求中止、超时或进程退出而被关闭时，nek 会主动发出：
+
+```json
+{"type":"extension_ui_cancel","id":"uuid-3"}
+```
+
+客户端应关闭该 `id` 对应的对话框，不再发送响应。见 [RPC 扩展 UI](/reference/rpc-extension-ui#cancellation)。
+
 ## TypeScript 类型
 
 SDK 的 `AgentSessionEvent` 为进程内使用者提供累积的流式快照。JSON 和 RPC 只转换 `message_update`：

@@ -58,10 +58,12 @@ nek 独有功能（Plan、Todo、子代理）的配置不在这里，而在 [nek
 
 | 设置 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `defaultTools` | `string[]` | `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`、`ast_grep`、`web_search` | 启动时启用的内置工具。空数组表示不启用任何内置工具（扩展和 SDK 工具不受影响） |
+| `defaultTools` | `string[]` | `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`、`ast_grep`、`web_search` | 启动时启用的内置工具。支持直接列出工具名，或用 `+name` 增加、`-name` 移除。空数组表示不启用任何内置工具（扩展和 SDK 工具不受影响） |
 | `webSearch` | object | Tavily | 联网搜索的服务商、端点、认证和默认结果数，见 [搜索配置](#web-search) |
 
 可用的内置工具：`read`、`bash`、`powershell`、`edit`、`write`、`grep`、`find`、`ls`、`ast_grep`、`web_search`。nek 扩展的工具（`todo_write`、`subagent` 等）不受 `defaultTools` 控制。
+
+`defaultTools` 中的条目可以是工具名，也可以是 `+name`（添加）和 `-name`（移除）。不带前缀的条目组成基础列表；如果全部条目都带 `+` / `-` 前缀，则以默认内置工具列表为基础，因此 `["+powershell"]` 表示默认工具加上 `powershell`，`["-web_search"]` 表示默认工具去掉 `web_search`。添加项保持书写顺序且不会重复已选工具；空数组 `[]` 仍表示不启用任何内置工具。未知工具名会在启动时给出警告并被忽略。
 
 `/reload` 会启用新加入 `defaultTools` 的工具，保留被移除的工具，不会重新启用本会话中手动禁用且未改变的工具。命令行的工具参数（`--tools` 等）优先于这个设置，包括 reload 时。
 

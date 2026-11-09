@@ -96,6 +96,10 @@ nek 用非交互的 Bash 执行命令，默认不展开别名。用 `shellComman
 
 nek 的提示词已要求模型只在真正需要你决定时才提问。如果仍然觉得打扰，可以在 `AGENTS.md` 中写明你的偏好，或用 `--exclude-tools ask_question` 禁用提问工具。
 
+### 联网搜索 `web_search` 报错提示缺少 API key 或 provider
+
+`web_search` 默认使用 Tavily，需要设置环境变量 `TAVILY_API_KEY`，或在 `~/.nek/agent/settings.json` 中配置 `webSearch.apiKey`。想继续使用 Exa，必须在 `settings.json` 中显式设置 `"webSearch": { "provider": "exa" }`；已有自定义 `endpoint` 或 `apiKey` 的配置也必须显式写出 `provider`。见 [搜索配置](/reference/settings#web-search)。
+
 ## 子代理
 
 ### `/agents` 默认有哪些类型？
@@ -120,7 +124,7 @@ nek 的提示词已要求模型只在真正需要你决定时才提问。如果�
 
 ### nek 被强制结束后，之前的工作还在吗？
 
-在。用 `nek -c`（或 `/resume`）重新打开会话，中断的那一轮会继续。会修改外部状态的工具（`bash`、`edit`、`write` 等）不会被自动重跑，模型会看到“已中断”的结果并决定下一步。见 [Durable 会话](/reference/durable-sessions)。
+在。每一步都会先写入 SQLite 会话数据库。用 `nek -c`（或 `/resume`）重新打开会话时，已完成的消息、工具结果和未完成的部分回复都会恢复，会话保持空闲等你发送下一条消息，**不会**在重开时静默重发模型请求或自动重跑 `bash`、`edit`、`write` 等工具。SDK 嵌入默认保留崩溃自动续跑能力。见 [Durable 会话与恢复策略](/reference/durable-sessions)。
 
 ### 提示会话已被其他进程打开
 

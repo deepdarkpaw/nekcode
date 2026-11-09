@@ -106,6 +106,13 @@ pi.registerTool({
 
 动态切换工具时，先注册所有工具，再用 `pi.setActiveTools()` 选择激活哪些。nek 在下一次请求前把工具变化追加到对话记录里；不支持中途变更的服务商会收到完整的检查点，可能使缓存失效。
 
+### 内置文件与搜索操作接口 {#builtin-file-ops}
+
+替换或包装内置工具的底层操作时，注意以下约定：
+
+- **`ReadOperations.createReadStream(absolutePath, { signal })`**：可选，返回 `AsyncIterable<Uint8Array>`（Node `Readable` 即可）。每次调用都必须返回一个全新的流：负 `offset` 会执行两次有界扫描（先统计总行数，再按范围选取）。流需要响应取消并在迭代结束或中断时释放资源。按范围读取文本和无代码大纲的文件使用该流；图片和无范围的源代码文件仍走 `readFile`（用于图片处理和 AST 折叠）。未提供该钩子的自定义 `ReadOperations` 保持整文件 `readFile` 行为；默认的本地范围文本读取始终走流式路径。
+- **`GrepOperations`**：只定制目录检查，搜索后端始终执行本地 `rg`。上下文行直接来自 `rg` 的 JSON 输出，已废弃的可选 `readFile` 钩子会被忽略，命中文件不会被再次整文件读取。要在远程环境执行搜索，请直接替换工具的 `execute()`。目录搜索的 `glob` 相对于搜索 `path`（包括符号链接目录），前导 `./`（以及 `!./` 中的 `./`）会被忽略。
+
 ## 拦截工具调用 {#tool-call}
 
 `tool_call` 事件可以修改输入或阻止执行。下面的扩展在执行危险命令前要求确认：
@@ -149,6 +156,7 @@ export default function (pi: ExtensionAPI) {
 | 添加模型服务商 | `pi.registerProvider()` |
 | 注册 MCP 服务器 | `pi.registerMcpServer()` |
 | 自定义渲染 | `pi.registerMessageRenderer()`、`pi.registerEntryRenderer()`、`pi.registerMarkdownTransformer()`，以及 `ctx.ui` |
+| 暴露扩展 RPC 方法与事件 | `pi.registerRpcHandler()`、`pi.emitRpcEvent()`，见 [RPC 扩展 UI](/reference/rpc-extension-ui#extension-rpc) |
 | 和其他扩展通信 | `pi.events` |
 
 确切的事件、上下文、工具和结果类型见 [`extensions/types.ts`](https://github.com/deepdarkpaw/nekcode/blob/nek/packages/coding-agent/src/core/extensions/types.ts)。

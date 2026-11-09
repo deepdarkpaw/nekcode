@@ -46,7 +46,7 @@ irm https://raw.githubusercontent.com/deepdarkpaw/nekcode/nek/scripts/install.ps
 
 ```bash
 nek --version
-# nek 0.3.0 (pi 1.0.2)
+# nek 0.5.0-beta.2 (pi 1.0.2)
 ```
 
 ::: tip 找不到 nek 命令？

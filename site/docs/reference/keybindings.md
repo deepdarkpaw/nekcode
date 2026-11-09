@@ -55,8 +55,8 @@ nek 的快捷键绑定在一个个命名的**动作**上（例如 `app.session.n
 | `tui.editor.cursorRight` | `right`、`ctrl+f` | 右移 |
 | `tui.editor.cursorWordLeft` | `alt+left`、`ctrl+left`、`alt+b` | 左移一个词 |
 | `tui.editor.cursorWordRight` | `alt+right`、`ctrl+right`、`alt+f` | 右移一个词 |
-| `tui.editor.cursorLineStart` | `home`、`ctrl+home`、`ctrl+a` | 到行首 |
-| `tui.editor.cursorLineEnd` | `end`、`ctrl+end`、`ctrl+e` | 到行尾 |
+| `tui.editor.cursorLineStart` | `home`、`ctrl+a` | 到行首 |
+| `tui.editor.cursorLineEnd` | `end`、`ctrl+e` | 到行尾 |
 | `tui.editor.jumpForward` | `ctrl+]` | 向前跳到指定字符 |
 | `tui.editor.jumpBackward` | `ctrl+alt+]` | 向后跳到指定字符 |
 | `tui.editor.pageUp` | `pageUp`、`ctrl+pageUp` | 向上翻页 |
@@ -111,8 +111,8 @@ nek 的快捷键绑定在一个个命名的**动作**上（例如 `app.session.n
 | `tui.altScreen.searchNext` | `enter`、`ctrl+g` | 搜索时跳到下一个匹配 |
 | `tui.altScreen.searchPrevious` | `shift+enter`、`ctrl+shift+g` | 搜索时跳到上一个匹配 |
 | `tui.altScreen.searchClose` | `escape` | 关闭搜索 |
-| `tui.altScreen.top` | `home` | 滚动到对话开头 |
-| `tui.altScreen.bottom` | `end` | 滚动到末尾并跟随新输出 |
+| `tui.altScreen.top` | `ctrl+home` | 滚动到对话开头 |
+| `tui.altScreen.bottom` | `ctrl+end` | 滚动到末尾并跟随新输出 |
 
 ## 应用
 

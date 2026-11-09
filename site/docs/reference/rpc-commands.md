@@ -34,11 +34,12 @@
 | [`fork`](#fork) | 从较早的用户消息分叉 |
 | [`clone`](#clone) | 复制当前活动分支为新会话 |
 | [`get_fork_messages`](#get-fork-messages) | 可用于分叉的用户消息 |
-| [`get_entries`](#get-entries) | 所有会话条目（支持游标） |
+| [`get_entries`](#get-entries) | 所有会话条目（支持游标与分页） |
 | [`get_tree`](#get-tree) | 会话树 |
 | [`get_last_assistant_text`](#get-last-assistant-text) | 最后一条助手文本 |
 | [`set_session_name`](#set-session-name) | 设置会话显示名 |
 | [`get_commands`](#get-commands) | 可用的扩展命令、模板和 Skills |
+| [GUI 与控制进程命令](#gui-commands) | 进程信息、配置校验、会话目录管理、认证、模型探测、项目信任、搜索/MCP 测试、`extension_call` |
 
 ## 提示词
 
@@ -398,14 +399,47 @@ drwxr-xr-x ...
 按追加顺序返回所有会话条目（不含会话头）。会话是只追加的条目树，条目 ID 稳定，所以可以把最后见过的条目 ID 作为 `since` 游标，只获取它之后的条目，即使客户端重启也有效。与 `get_messages` 不同，这里包括压缩前的历史和被放弃的分支。
 
 ```json
+{"type": "get_entries"}
+```
+
+带游标：
+
+```json
 {"type": "get_entries", "since": "abc123"}
 ```
 
+取最新一页：
+
 ```json
-{"type": "response", "command": "get_entries", "success": true, "data": {"entries": [{"type": "message", "id": "def456", "parentId": "abc123", "timestamp": "...", "message": {"role": "user"}}], "leafId": "def456"}}
+{"type": "get_entries", "limit": 50}
+```
+
+取某个条目之前的一页：
+
+```json
+{"type": "get_entries", "limit": 50, "beforeEntryId": "abc123"}
+```
+
+响应：
+
+```json
+{
+  "type": "response",
+  "command": "get_entries",
+  "success": true,
+  "data": {
+    "entries": [
+      {"type": "message", "id": "def456", "parentId": "abc123", "timestamp": "...", "message": {"role": "user"}}
+    ],
+    "leafId": "def456",
+    "hasMore": false
+  }
+}
 ```
 
 `leafId` 是当前叶节点 ID（空会话为 `null`），一次往返就能判断活动分支是否移动。`since` 不匹配任何条目时返回 `success: false`。
+
+`limit` 和 `beforeEntryId` 在同一列表上分页：一页是 `beforeEntryId` 之前最新的 `limit` 条记录，因此 `{"limit": 50}` 取最后 50 条，再用这页第一条记录的 ID 作为 `beforeEntryId` 就能继续向前翻页。只传 `beforeEntryId` 会返回它之前的全部条目，`hasMore` 表示该页之前是否还有更早的条目。两个分页参数都不传时，返回完整列表且 `hasMore: false`；`since` 仍会先过滤，再在游标之后的范围内分页。非正整数的 `limit` 或匹配不到条目的 `beforeEntryId` 都会返回 `success: false`。
 
 ### get_tree {#get-tree}
 
@@ -451,6 +485,279 @@ drwxr-xr-x ...
 - `sourceInfo`：注册该命令的资源的元数据，包括 `path`、`source`（`"local"`、`"auto"`、`"cli"` 等）、`scope`（`"user"`、`"project"`、`"temporary"`）、`origin`（`"top-level"` 或 `"package"`），以及适用时的 `baseDir`。
 
 内置的界面命令（`/settings`、`/hotkeys` 等）不包括在内，它们只在交互模式中处理，通过 `prompt` 发送也不会执行。
+
+## GUI 与控制进程命令 {#gui-commands}
+
+这些命令面向桌面端和 IDE 客户端，用于管理配置、模型、认证和会话列表。每条命令都返回标准的 `response` 记录；除单独说明把失败作为结构化数据返回的探测命令外，错误均返回 `success: false` 和 `error`。
+
+`nek --mode rpc --control` 启动**无会话控制进程**：不创建会话、不加载扩展、不连接 MCP 服务器。它只接受以下控制命令及 `get_available_models`，其他命令一律返回 `{"success": false, "error": "Command not available in control mode: <type>"}`。
+
+### get_info {#get-info}
+
+获取当前运行进程的身份信息：
+
+```json
+{"type": "get_info"}
+```
+
+响应 `data`：`protocolVersion`、`nekVersion`、`piVersion`、`mode`（`"session"` 或 `"control"`）、`agentDir`、`sessionDir`、`cwd`、`platform`、`nodeVersion`。
+
+### reload {#reload}
+
+重新读取 `settings.json`、`models.json`、凭据和 MCP 配置；在会话进程中还会重新加载扩展、Skills、提示词模板、主题和指令文件。
+
+```json
+{"type": "reload"}
+```
+
+响应 `data`：`deferred` 和 `diagnostics`。`deferred: true` 表示当前有运行正在进行：重载会排队到 `agent_settled` 之后执行，本次响应先返回对当前配置的校验结果。
+
+### validate_config {#validate-config}
+
+校验配置文件但不应用：
+
+```json
+{"type": "validate_config", "cwd": "/home/user/project"}
+```
+
+响应 `data`：`diagnostics`（`{file, severity, message}` 数组）。不传 `cwd` 时只检查全局文件（`models.json` schema、全局 `settings.json`、`mcp.json`、`nek.yaml`、`agents/*.md`）；传入 `cwd` 且项目已受信任时，一并检查项目下的同类文件。
+
+### get_changelog {#get-changelog}
+
+获取内置的 `CHANGELOG.md`（按版本从新到旧）：
+
+```json
+{"type": "get_changelog", "sinceVersion": "0.3.0"}
+```
+
+响应 `data`：`markdown`。`sinceVersion` 可选，只返回比该版本更新的记录。
+
+### get_mention_targets {#get-mention-targets}
+
+获取 `@agent:<类型>` 和 `@skill:<名字>` 可补全的目标：
+
+```json
+{"type": "get_mention_targets", "cwd": "/home/user/project"}
+```
+
+响应 `data`：`targets`，每项含 `kind`（`"agent"` 或 `"skill"`）、`name`、可选 `description`，以及 Skill 的 `location`（`SKILL.md` 路径）。子代理类型排在前面（内置、用户、项目），后面是已加载的 Skills。
+
+### list_builtin_tools {#list-builtin-tools}
+
+列出可在 `defaultTools` 中选择的内置工具：
+
+```json
+{"type": "list_builtin_tools"}
+```
+
+响应 `data`：`tools`，每项含 `name`、`description`（模型看到的描述）和 `defaultActive`（新会话默认是否启用）。
+
+### list_sessions {#list-sessions}
+
+按修改时间从新到旧列出会话：
+
+```json
+{"type": "list_sessions", "cwd": "/home/user/project", "all": true, "limit": 100}
+```
+
+`cwd` 指定项目目录（默认当前进程工作目录），`all: true` 列出所有项目的会话，`limit` 默认 500。响应 `data.sessions` 每项含：`path`、`id`、`cwd`、`name?`、`parentSessionPath?`、`createdAt`、`modifiedAt`、`messageCount`、`firstMessage`（最多 200 字符）和 `locked`（是否有存活进程持有锁）。
+
+### delete_session {#delete-session}
+
+删除会话及其全部附属文件（`.sqlite`、`.meta.json` 和 SQLite 日志文件）：
+
+```json
+{"type": "delete_session", "sessionPath": "/path/to/session.sqlite"}
+```
+
+当前正在使用的会话或被存活进程锁定的会话会被拒绝。
+
+### rename_session {#rename-session}
+
+修改会话显示名（写入与 `/resume` 相同的 `session_info` 条目；被锁定的会话会被拒绝）：
+
+```json
+{"type": "rename_session", "sessionPath": "...sqlite", "name": "Refactor the parser"}
+```
+
+### read_session_snapshot {#read-session-snapshot}
+
+在不打开会话、不获取会话锁的情况下读取会话快照：
+
+```json
+{"type": "read_session_snapshot", "sessionPath": "...sqlite"}
+```
+
+响应 `data`：`session`（同 `list_sessions`）、`entries`（同 `get_entries`）、`leafId`、`messages`（叶节点分支上的消息），以及会话被存活进程锁定时附带的 `lockedBy`（`{pid, hostname, kind: "tui"|"rpc"|"print"|"json", startedAt}`）。未锁定或锁过期时省略 `lockedBy`，是否锁定仍以 `session.locked` 为准。
+
+### import_session {#import-session}
+
+把 `.jsonl` 或 `.sqlite` 会话导入为指定工作目录的新会话（原文件保持不变）：
+
+```json
+{"type": "import_session", "inputPath": "/home/user/export.jsonl", "cwd": "/home/user/project"}
+```
+
+响应 `data`：`sessionPath`。
+
+### export_session {#export-session}
+
+导出当前会话（仅限会话进程）：
+
+```json
+{"type": "export_session", "format": "html"}
+```
+
+`format` 为 `"html"` 或 `"jsonl"`，可选 `outputPath`。响应 `data`：`path`。
+
+### share_session {#share-session}
+
+上传当前会话并返回查看链接（优先使用已配置的 Radius，否则通过 `gh` 创建私密 GitHub gist；仅限会话进程）。响应 `data`：`url`。
+
+### navigate_tree {#navigate-tree}
+
+将会话叶节点移动到指定条目，可选对离开的分支生成摘要（仅限会话进程）：
+
+```json
+{"type": "navigate_tree", "entryId": "a1b2c3d4", "summarize": true, "label": "checkpoint"}
+```
+
+响应 `data`：`cancelled`，以及恢复编辑器文本时的 `editorText`。
+
+### set_entry_label {#set-entry-label}
+
+设置或清除条目标签（仅限会话进程）：
+
+```json
+{"type": "set_entry_label", "entryId": "a1b2c3d4", "label": "before refactor"}
+```
+
+### auth_status {#auth-status}
+
+查询所有已知服务商的凭据状态：
+
+```json
+{"type": "auth_status"}
+```
+
+响应 `data.providers` 每项含：`provider`、`name`、`kind`（`"oauth"`、`"api_key"`、`"env"`、`"none"`）、`loginMethods`、OAuth 凭据的 `expiresAt`，以及 `state`（已保存的 OAuth access token 过期时为 `"expired"`，其余为 `"ok"`；nek 会在请求时自动刷新即将过期的 OAuth token）。
+
+### auth_login {#auth-login}
+
+执行服务商的交互式登录：
+
+```json
+{"type": "auth_login", "provider": "anthropic", "method": "oauth"}
+```
+
+流程进行中会写出 [`auth_event`](/reference/json#auth-event) 记录，并通过 [`structured`](/reference/rpc-extension-ui#structured)（`kind: "auth.prompt"`）请求输入。取消或中止会以错误响应结束登录。响应 `data`：`provider`。
+
+### auth_logout {#auth-logout}
+
+删除某个服务商保存的凭据：
+
+```json
+{"type": "auth_logout", "provider": "anthropic"}
+```
+
+### get_model_catalog {#get-model-catalog}
+
+查询内置与 `models.json` 中的模型定义：
+
+```json
+{"type": "get_model_catalog", "provider": "anthropic", "ids": ["claude-sonnet-4-5"]}
+```
+
+响应 `data.models` 每项含：`provider`、`id`、`name`、`api`、`contextWindow`、`maxTokens`、`reasoning`、`thinkingLevels`、可选 `thinkingLevelMap`、`input`、`cost`。
+
+### fetch_provider_models {#fetch-provider-models}
+
+向已保存的服务商或未保存的草稿端点请求模型列表（15 秒超时，支持 Anthropic `after_id` 与 Gemini `pageToken` 分页，最多 20 页 / 2000 个模型）：
+
+```json
+{
+  "type": "fetch_provider_models",
+  "draft": {"api": "openai-completions", "baseUrl": "https://api.example.com/v1", "apiKey": "$EXAMPLE_KEY"}
+}
+```
+
+也可以指定已保存的 `provider` 并用可选 `overrides`（`api`、`baseUrl`、`apiKey`、`headers`、`authHeader`）临时覆盖字段：
+
+```json
+{
+  "type": "fetch_provider_models",
+  "provider": "my-endpoint",
+  "overrides": {"baseUrl": "https://staging.example.com/v1", "headers": {"X-Debug": "1"}}
+}
+```
+
+响应 `data` 为 `{"ok": true, "endpoint": "<url>", "models": [...]}` 或 `{"ok": false, "endpoint": "<url>", "status": 401, "message": "..."}`（探测失败作为结构化数据返回，方便界面展示 HTTP 状态码）。
+
+### test_provider {#test-provider}
+
+发送一次最小补全请求来验证端点和模型（30 秒超时，支持 `provider` + 可选 `overrides` 或 `draft`）：
+
+```json
+{"type": "test_provider", "provider": "anthropic", "modelId": "claude-sonnet-4-5"}
+```
+
+响应 `data`：`{"ok": true, "latencyMs": 812}` 或 `{"ok": false, "status": 401, "message": "..."}`。
+
+### get_project_trust / set_project_trust {#project-trust}
+
+查询或保存目录的项目信任状态及受保护资源清单：
+
+```json
+{"type": "get_project_trust", "cwd": "/home/user/project"}
+{"type": "set_project_trust", "cwd": "/home/user/project", "trusted": true}
+```
+
+`get_project_trust` 返回 `cwd`、`trusted`（`true`、`false` 或未保存时的 `null`）、`defaultProjectTrust` 和 `resources`（`{kind, path}` 数组）。
+
+### test_web_search {#test-web-search}
+
+用当前的 `webSearch` 设置执行一次联网搜索探测：
+
+```json
+{"type": "test_web_search", "query": "nek rpc"}
+```
+
+响应 `data`：`{"ok": true, "latencyMs": 640, "resultCount": 8}` 或 `{"ok": false, "message": "..."}`。
+
+### mcp_test {#mcp-test}
+
+连接一个 MCP 服务器、列出工具后断开（可按 `name` 查找配置，或直接传未保存的 `config`）：
+
+```json
+{"type": "mcp_test", "name": "docs", "cwd": "/home/user/project"}
+```
+
+响应 `data`：`{"ok": true, "latencyMs": 220, "tools": [{"name": "search", "description": "..."}]}` 或 `{"ok": false, "message": "..."}`。
+
+### extension_call {#extension-call}
+
+调用扩展通过 `pi.registerRpcHandler()` 注册的 RPC 方法（仅限会话进程）：
+
+```json
+{"type": "extension_call", "method": "nek.get_state", "params": {}}
+```
+
+响应 `data`：`{ "result": <处理函数返回值> }`。内置 `nek` 扩展提供的方法：
+
+| 方法 | 参数 | 返回值 |
+|---|---|---|
+| `nek.get_state` | `{}` | `{mode, todos, plans, activePlanPath?, subagents}` |
+| `nek.set_mode` | `{mode: "agent"\|"plan"}` | 完整状态快照 |
+| `nek.stop_subagent` | `{id}` | `{status}` |
+| `nek.get_subagent_transcript` | `{id}` | `{messages}` |
+| `nek.list_agent_types` | `{}` | `{types:[{name,description,source,readonly,background,autonomous,model?,thinking?}]}` |
+| `nek.get_plan` | `{path}` | `{path,name,overview,revision,status,todos,markdown}` |
+
+内置 MCP 扩展在会话进程中提供的方法：
+
+- `mcp.status`（`{}`）：返回 `{servers:[...]}`；
+- `mcp.test`（`{name}`）：连接、列出工具并断开，返回 `{ok:true,latencyMs,tools}` 或 `{ok:false,message}`；
+- `mcp.reconnect`、`mcp.login`、`mcp.logout`（`{name}`）：各返回 `{server:<status>}`。
 
 ## 模型对象 {#model-object}
 

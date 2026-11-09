@@ -67,7 +67,7 @@
 - 用 `/tree` 回到较早的某一点继续，会在同一个会话里长出新分支，原来的分支不会丢。
 - `/fork` 和 `/clone` 把选定的历史复制到一个新会话。
 
-持久化的会话是 SQLite 数据库，由 durable 引擎写入：一轮里的每一步（你的输入、流式文本、每个工具调用和结果、排队消息、压缩）都先落盘再继续。所以进程被杀之后重开会话，中断的那一轮会接着跑。见 [Durable 会话与崩溃续跑](/reference/durable-sessions)。
+持久化的会话是 SQLite 数据库，由 durable 引擎写入：一轮里的每一步（你的输入、流式文本、每个工具调用和结果、排队消息、压缩）都先落盘再继续。CLI 重开被中断的会话时恢复已提交的历史并保持空闲，不自动重发请求；SDK 调用方默认保留自动续跑能力。见 [Durable 会话与恢复策略](/reference/durable-sessions)。
 
 ## 模式 {#modes}
 
@@ -90,7 +90,7 @@ Plan 模式写完计划后由你审阅，批准后切换到 Agent 模式实施�
 | 搜索 | `grep`、`find`、`ls`、`ast_grep`、`web_search` |
 | 命令 | `bash`（Windows 可选 `powershell`） |
 | 规划与协作 | `todo_write`、`switch_mode`、`create_plan`、`update_plan`、`ask_question` |
-| 子代理 | `subagent`、`await` |
+| 子代理 | `subagent`、`await`、`stop_subagent` |
 | 按需加载 | `tool_search`（存在延迟加载的工具时才出现，例如 MCP 工具） |
 
 每个工具的行为见 [内置工具](/guide/tools)。工具以 nek 进程的操作系统权限运行，nek 不提供沙箱。

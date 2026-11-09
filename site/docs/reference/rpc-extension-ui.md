@@ -4,7 +4,7 @@
 
 扩展界面方法分两类：
 
-- **对话框方法**（`select`、`confirm`、`input`、`editor`）：在 stdout 发出 `extension_ui_request`，然后阻塞，直到客户端在 stdin 发回 `id` 相同的 `extension_ui_response`；
+- **对话框方法**（`select`、`confirm`、`input`、`editor`，以及仅限 RPC 的 `structured`）：在 stdout 发出 `extension_ui_request`，然后阻塞，直到客户端在 stdin 发回 `id` 相同的 `extension_ui_response`；
 - **即发即弃方法**（`notify`、`setStatus`、`setWidget`、`setTitle`、`set_editor_text`）：在 stdout 发出 `extension_ui_request`，不需要响应。客户端可以显示，也可以忽略。
 
 对话框请求带有 `timeout` 字段时，超时后 nek 一侧会自动以默认值结束，客户端不需要自己跟踪超时。
@@ -66,7 +66,39 @@ RPC 模式下 `ctx.mode` 为 `"rpc"`、`ctx.hasUI` 为 `true`（对话框和即�
 {"type": "extension_ui_request", "id": "uuid-4", "method": "editor", "title": "Edit some text", "prefill": "Line 1\nLine 2\nLine 3"}
 ```
 
-期望的响应：带 `value` 或 `cancelled: true`。
+期望的响应：带 `value` 或 `cancelled: true`。`ctx.ui.editor(title, prefill, { signal, timeout })` 设置超时后，请求中也会包含 `timeout`。
+
+### structured {#structured}
+
+向客户端发起结构化交互并接收结构化结果。只有 RPC 模式提供 `ctx.ui.structured`，因此扩展以可选调用方式使用：`await ctx.ui.structured?.("my.kind", payload, { signal, timeout })`。
+
+```json
+{
+  "type": "extension_ui_request",
+  "id": "uuid-10",
+  "method": "structured",
+  "kind": "auth.prompt",
+  "payload": {"provider": "anthropic", "prompt": {"type": "secret", "message": "Enter Anthropic API key"}}
+}
+```
+
+`kind` 和 `payload` 的结构由调用方决定。客户端通过 `result` 发回结果：
+
+```json
+{"type": "extension_ui_response", "id": "uuid-10", "result": {"value": "sk-example"}}
+```
+
+回复 `cancelled: true` 时调用解析为 `undefined`。核心登录流程通过 `auth.prompt` 支持 [`auth_login`](/reference/rpc-commands#auth-login)。
+
+#### 内置 nek 结构化交互类型
+
+在 RPC 模式下，内置 `nek` 扩展使用以下 `kind`（TUI 模式仍使用终端组件）：
+
+- `nek.ask_question`：payload `{title?, questions:[{id, prompt, allow_multiple?, options:[{id,label}]}]}`；result `{answers:[{questionId, selected:string[], other?}]}`。
+- `nek.plan_review`：payload `{path, revision, name, overview, markdown, todos:[{id,content}]}`；result `{action}`，`action` 为 `implement`、`implement_fresh`、`keep_planning` 或 `exit`。
+- `nek.switch_mode`：payload `{from, to, explanation?}`；result `{approved:boolean}`。
+
+客户端返回 `cancelled: true` 时，问题或计划审阅被关闭、模式切换被拒绝。若当前回合被中止，nek 会发送 `extension_ui_cancel`，对应工具调用以中止（aborted）结束，而不是当作用户拒绝；客户端收到 `extension_ui_cancel` 时应关闭弹窗。RPC 模式下这些交互固定走 `structured`，不会退回普通的 `select` / `confirm`。
 
 ### notify
 
@@ -116,7 +148,7 @@ RPC 模式下 `ctx.mode` 为 `"rpc"`、`ctx.hasUI` 为 `true`（对话框和即�
 
 ## 发给 nek 的响应
 
-只有对话框方法需要响应，`id` 必须与请求一致。
+只有对话框方法（`select`、`confirm`、`input`、`editor`、`structured`）需要响应，`id` 必须与请求一致。
 
 选择、输入、编辑器的值：
 
@@ -136,7 +168,24 @@ RPC 模式下 `ctx.mode` 为 `"rpc"`、`ctx.hasUI` 为 `true`（对话框和即�
 {"type": "extension_ui_response", "id": "uuid-3", "cancelled": true}
 ```
 
-取消时扩展收到 `undefined`（select/input/editor）或 `false`（confirm）。
+取消时扩展收到 `undefined`（select/input/editor/structured）或 `false`（confirm）。
+
+### 主动取消通知 {#cancellation}
+
+当发起请求的扩展中止了操作（例如运行结束触发 `AbortSignal`）、请求超时或进程退出时，nek 会主动关闭对话框并发送 `extension_ui_cancel`：
+
+```json
+{"type": "extension_ui_cancel", "id": "uuid-3"}
+```
+
+客户端收到后关闭对应对话框即可，无需再发回响应。扩展侧会按取消默认值解析（`select`、`input`、`editor`、`structured` 为 `undefined`，`confirm` 为 `false`）。超时始终由 nek 侧处理，客户端无需自己计时。
+
+## 扩展自定义 RPC 方法 {#extension-rpc}
+
+扩展可以通过两个在所有模式下都可调用、但只在 RPC 模式下产生协议记录的接口暴露自己的 RPC 通道：
+
+- `pi.registerRpcHandler(method, handler)`：注册可通过 [`extension_call`](/reference/rpc-commands#extension-call) 调用的方法。处理函数接收命令的 `params`，返回值会包装为 `{ "result": ... }`。重复注册同名方法会保留第一个并报告扩展错误。
+- `pi.emitRpcEvent(name, payload)`：写出一条 [`extension_event`](/reference/json#extension-event) 记录；其他模式会忽略，因此扩展可以无条件调用。
 
 ## 示例
 

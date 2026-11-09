@@ -139,12 +139,12 @@ nek 默认以全屏模式运行：输入框和状态栏固定在底部，对话�
 | 操作 | 按键 |
 |---|---|
 | 翻页 | `PageUp` / `PageDown`，或鼠标滚轮 |
-| 跳到开头 / 回到最新并跟随输出 | `Home` / `End` |
+| 跳到开头 / 回到最新并跟随输出 | `Ctrl+Home` / `Ctrl+End` |
 | 跳到上一条 / 下一条你的消息 | `Ctrl+Shift+↑` / `Ctrl+Shift+↓`（Windows/WSL 也可用 `Ctrl+↑` / `Ctrl+↓`） |
 | 搜索对话记录 | `Ctrl+Shift+F`（Windows/WSL 为 `Ctrl+F`），`Enter`/`Shift+Enter` 下一个/上一个，`Escape` 关闭 |
 | 选择文字 | 鼠标拖选；默认选中即复制（设置 `fullscreenCopyOnSelect`） |
 
-向上滚动后，nek 停止自动跟随新输出；按 `End` 回到底部并恢复跟随。
+向上滚动后，nek 停止自动跟随新输出；按 `Ctrl+End` 回到底部并恢复跟随。
 
 相关设置：
 

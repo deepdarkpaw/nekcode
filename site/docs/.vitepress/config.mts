@@ -78,7 +78,7 @@ const sidebar = [
 			{ text: "环境变量", link: "/reference/environment-variables" },
 			{ text: "服务商认证", link: "/reference/providers" },
 			{ text: "上下文压缩", link: "/reference/compaction" },
-			{ text: "Durable 会话与崩溃续跑", link: "/reference/durable-sessions" },
+			{ text: "Durable 会话与恢复策略", link: "/reference/durable-sessions" },
 			{ text: "会话文件格式", link: "/reference/session-format" },
 			{ text: "消息类型", link: "/reference/message-types" },
 			{ text: "JSON 事件流", link: "/reference/json" },

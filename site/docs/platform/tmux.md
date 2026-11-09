@@ -58,7 +58,7 @@ nek 支持这些版本使用的 xterm `modifyOtherKeys` 格式。重启 tmux 后
 
 nek 默认以全屏模式启动，在备用屏幕上自己绘制对话，所以 tmux 的回滚（copy mode）里看不到对话内容。
 
-- **键盘始终可用**：`PageUp`/`PageDown` 翻页，`Home` 跳到开头，`End` 回到末尾并跟随新输出。这些按键可在 [快捷键](/reference/keybindings) 中以 `tui.altScreen.*` 修改。
+- **键盘始终可用**：`PageUp`/`PageDown` 翻页，`Ctrl+Home` 跳到开头，`Ctrl+End` 回到末尾并跟随新输出。这些按键可在 [快捷键](/reference/keybindings) 中以 `tui.altScreen.*` 修改。
 - **鼠标滚轮**只有在 tmux 转发鼠标事件时才能到达 nek。在 `~/.tmux.conf` 中加入下面一行，然后运行 `tmux source-file ~/.tmux.conf` 或重启 tmux：
 
 ```sh

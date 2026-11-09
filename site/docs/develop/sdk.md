@@ -37,7 +37,7 @@ try {
 
 `SessionManager` 是最终模型上下文的权威来源。要恢复外部的历史，用包含这些条目的管理器构造会话；给 `session.agent.state.messages` 赋值**不会**替换持久化的上下文。
 
-持久化的会话是由 durable 引擎写入的 SQLite 数据库：打开一个最后一轮因崩溃中断的会话，会接着跑完那一轮。`session.agent` 为兼容而保留会话状态，它自己的循环不再运行，`agent.subscribe()` 的监听器会收到该轮的循环事件。见 [Durable 会话](/reference/durable-sessions)。
+持久化的会话是由 durable 引擎写入的 SQLite 数据库。SDK 默认保留 `resumeInterruptedWork: true`：打开一个最后一轮因崩溃中断的会话时，会自动接着跑完那一轮（CLI 则显式传入 `resumeInterruptedWork: false`，重开时只恢复历史并保持空闲）。`session.agent` 为兼容而保留会话状态，它自己的循环不再运行，`agent.subscribe()` 的监听器会收到该轮的循环事件。见 [Durable 会话与恢复策略](/reference/durable-sessions)。
 
 不需要会话文件时用内存管理器：
 

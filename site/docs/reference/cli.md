@@ -5,6 +5,7 @@
 ```sh
 nek [选项] [--] [@文件...] [消息...]
 nek auth <check|print-api-key|print-bearer-token> [选项]
+nek gui-info [--json]
 nek mcp <add|remove|list|login|logout> [选项]
 nek update [--channel stable|dev] [--check]
 ```
@@ -37,6 +38,7 @@ stdin 和 stdout 都是终端时打开交互界面，除非用 `--print`、`--mo
 | `--mode text` | 文本输出；stdin 和 stdout 都是终端时仍然打开交互界面 |
 | `--mode json` | 执行提示词，把 JSONL 事件写到 stdout，然后退出 |
 | `--mode rpc` | 从 stdin 读取 JSONL 命令，把响应和事件写到 stdout，直到退出 |
+| `--control` | 配合 `--mode rpc`：启动不创建会话、不加载扩展与 MCP 的无会话控制进程，见 [RPC 协议](/reference/rpc#control-process) |
 | `--export <输入> [输出]` | 把会话文件导出为 HTML 并退出；省略输出路径时自动生成 |
 
 RPC 模式不接受 `@文件` 参数。JSON 和 RPC 模式的 stdout 只用于协议记录。见 [脚本与程序集成](/develop/cli-integration)。
@@ -138,7 +140,7 @@ nek --exclude-tools ask_question
 ## nek update {#update}
 
 ```sh
-nek --version                       # nek 0.3.0 (pi 1.0.2)
+nek --version                       # nek 0.5.0-beta.2 (pi 1.0.2)
 nek update --check                  # 只检查
 nek update --channel dev --check    # 检查 dev 通道
 nek update                          # 更新
@@ -156,9 +158,19 @@ nek update --channel stable         # 切回 stable 并更新
 - `--check` 退出码：`0` 检查成功且无更新，`1` 出错，`2` 有可用更新。stable 没有任何标签也算成功（`0`），并明确提示；
 - 不带 `--check` 时运行源码目录里的安装脚本（Linux/macOS 用 Bash，Windows 用 PowerShell），输出直接显示，返回脚本的退出码。脚本拒绝覆盖已跟踪文件的本地修改和分叉/本地提交，只做 fast-forward；stable 检出保持在标签上（detached）。
 
-安装脚本的环境变量（`NEK_INSTALL_DIR`、`NEK_BIN_DIR`、`NEK_REPO_URL`、`NEK_BRANCH`、`NEK_CHANNEL`、`NEK_SKIP_TOOLS=1`、`NEK_INSTALL_BUN=1`）见 [安装](/start/install#install-options)。源码目录中被 git 忽略的 `.nek-install-state.json` 保存 `binDir`、`channel`、`branch`、`skipTools`、`installBun`，更新时复用；显式设置的环境变量优先。
+安装脚本的环境变量（`NEK_INSTALL_DIR`、`NEK_BIN_DIR`、`NEK_REPO_URL`、`NEK_BRANCH`、`NEK_CHANNEL`、`NEK_SKIP_TOOLS=1`、`NEK_INSTALL_BUN=1`、`NEK_NODE_DIR`、`NEK_NODE_MIRROR`、`NEK_NODE_VERSION`）见 [安装](/start/install#install-options)。源码目录中被 git 忽略的 `.nek-install-state.json` 保存 `binDir`、`channel`、`branch`、`skipTools`、`installBun`、`nodeDir`，更新时复用；显式设置的环境变量优先。
 
-维护者发版：`npm run nek:release -- patch|minor|<x.y.z>` 在干净的 `nek` 分支上只修改 `nekConfig.version`，提交 `Release nek v<x.y.z>` 并创建 `nek-v<x.y.z>` 标签。它不会推送，只打印推送命令供检查。
+维护者发版：`npm run nek:release -- patch|minor|<x.y.z[-prerelease]>` 在干净的 `nek` 分支上只修改 `nekConfig.version`，提交 `Release nek v<版本>`，正式版创建 `nek-v<版本>` 标签，预发布版创建独立的 `nek-beta-v<版本>` 标签。它不会推送，只打印推送命令供检查。
+
+## nek gui-info {#gui-integration}
+
+```sh
+nek gui-info --json
+```
+
+输出一个供桌面/IDE 客户端直接启动 nek（无需经过 shell）的 JSON 对象：协议版本、`nekVersion` 和 `piVersion`、Node 可执行文件路径与版本、前置启动参数 `launch.args`、agent 与会话目录，以及平台和 CPU 架构。源码检出下 `launch.args` 会预加载 `src/experimental/source-resolver.ts`，让 Node 的 TypeScript strip 模式能够解析工作区别名；构建后的安装则指向 `dist` 入口。当 CLI 从带有 `.nek-install-state.json` 的源码安装目录运行时，还会包含 `installDir`。
+
+客户端用 `nek --mode rpc`（加会话选项）启动会话进程；做配置和会话列表操作时，用 `nek --mode rpc --control` 启动控制进程。控制进程不创建会话、不加载扩展或 MCP 服务器，只接受 [RPC 命令](/reference/rpc-commands#gui-commands) 中列出的控制命令。见 [RPC 协议](/reference/rpc)。
 
 ## nek mcp {#mcp}
 

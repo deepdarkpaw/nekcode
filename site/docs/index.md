@@ -4,7 +4,7 @@ layout: home
 hero:
   name: nekcode
   text: 运行在终端里的编程助手
-  tagline: 命令名 nek。读代码、跑命令、改文件；先出计划再动手，能把任务派给子代理，进程被杀掉也能接着跑。
+  tagline: 命令名 nek。读代码、跑命令、改文件；先出计划再动手，能把任务派给子代理，每一步写入 Durable SQLite 会话。
   image:
     src: /logo.svg
     alt: nekcode
@@ -29,8 +29,8 @@ features:
   - title: Todo 列表
     details: 多步任务的进度固定显示在输入框上方，模型按步骤更新状态。
     link: /guide/todos
-  - title: 崩溃后续跑
-    details: 每一步都写入会话数据库（SQLite）。进程被杀、终端被关之后，用 nek -c 重新打开，中断的回合会接着跑完。
+  - title: Durable 会话
+    details: 每一步都写入会话数据库（SQLite）。进程被杀或终端关闭后，nek -c 完整恢复历史与分支，不静默重发模型请求或重跑工具；SDK 可按需开启自动续跑。
     link: /reference/durable-sessions
   - title: 好用的文件工具
     details: 带行号和代码大纲的 read、精确替换的 edit、结构化搜索 ast_grep，再加上 grep、find、ls 和默认使用 Tavily 的 web_search（需 API key）。

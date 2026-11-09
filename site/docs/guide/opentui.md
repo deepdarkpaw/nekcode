@@ -54,7 +54,7 @@ nek --ui opentui --model sonnet "解释一下这个仓库"
 | `Ctrl+V`（`Alt+V`） | 从剪贴板粘贴图片（剪贴板是文字时粘贴文字） |
 | `/`、`!`、`!!`、`@` | 命令、bash、不进上下文的 bash、文件路径补全 |
 | `PgUp` / `PgDn` | 滚动对话记录 |
-| `Home` / `End` | 跳到开头 / 最新消息 |
+| `Ctrl+Home` / `Ctrl+End` | 跳到开头 / 最新消息 |
 | `Ctrl+↑` / `Ctrl+↓` | 上一条 / 下一条你的消息 |
 | `Ctrl+Shift+F`（`Ctrl+F`） | 搜索对话记录 |
 

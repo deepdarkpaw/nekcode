@@ -120,7 +120,7 @@ nek -c          # 继续这个目录最近的会话
 nek -r          # 从列表里选一个会话
 ```
 
-在 nek 里用 `/resume` 切换会话，`/new` 开新会话。即使 nek 是被强制杀掉的，`nek -c` 也会把中断的那一轮接着跑完，见 [Durable 会话](/reference/durable-sessions)。
+在 nek 里用 `/resume` 切换会话，`/new` 开新会话。即使进程被强制结束，每一步也已保存在 SQLite 会话里：`nek -c` 会恢复之前的历史并保持空闲，等你发送下一条消息，而不会静默重发模型请求或重复执行工具，见 [Durable 会话](/reference/durable-sessions)。
 
 ## 下一步
 

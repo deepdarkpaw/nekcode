@@ -40,6 +40,9 @@ nek 用环境变量配置进程、传递会话信息和提供服务商凭据。
 | `NEK_REPO_URL` | 仓库地址 |
 | `NEK_SKIP_TOOLS` | 设为 `1` 跳过 fd/rg/ast-grep 的准备 |
 | `NEK_INSTALL_BUN` | 设为 `1` 在没有 Bun 时自动安装 |
+| `NEK_NODE_DIR` | 自动安装 Node.js 时的目录 |
+| `NEK_NODE_MIRROR` | 自动安装 Node.js 时的下载镜像源 |
+| `NEK_NODE_VERSION` | 自动安装 Node.js 的版本号 |
 
 ## 进程标记 {#markers}
 
