@@ -56,18 +56,12 @@ jobs:
         with:
           bun-version: 1.4.2
       - name: Install system tools
-        # The runner-local Azure mirror flakes (2026-11-11: every fetch ignored for 20+ minutes) and used to
-        # burn the job timeout with no output. Bound the step, and fall back to the canonical archive once.
+        # The runner-local Azure mirror stalled on 2026-11-11 (every fetch ignored for 20+ minutes, three runs)
+        # and used to burn the whole job timeout. Bound the step and probe the mirror before apt spends minutes
+        # on ignored fetches.
         timeout-minutes: 12
-        env:
-          APT_OPTS: -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::ForceIPv4=true
-          APT_PACKAGES: libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
         run: |
           set -euo pipefail
-          install_packages() {
-            sudo apt-get update -qq $APT_OPTS
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS $APT_PACKAGES
-          }
           # The runner mirror serves the same archive; only the host changes.
           rewrite_sources() {
             local files=(/etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list)
@@ -80,11 +74,16 @@ jobs:
               sudo sed -i -E 's|//azure\.archive\.ubuntu\.com/ubuntu|//archive.ubuntu.com/ubuntu|g' "${existing[@]}"
             fi
           }
-          if ! install_packages; then
-            echo "runner mirror failed; retrying against the canonical Ubuntu archive" >&2
+          # Probe first: a stalled mirror makes apt spend minutes on ignored fetches before it gives up.
+          if ! curl -fsS -m 20 -o /dev/null http://azure.archive.ubuntu.com/ubuntu/dists/noble/Release; then
+            echo "runner mirror is unreachable; using the canonical Ubuntu archive" >&2
             rewrite_sources
-            install_packages
           fi
+          sudo apt-get update -qq $APT_OPTS
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS $APT_PACKAGES
+        env:
+          APT_OPTS: -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::ForceIPv4=true
+          APT_PACKAGES: libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
       - name: Install locked dependencies
         working-directory: source
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -145,18 +144,12 @@ jobs:
           cache: npm
           cache-dependency-path: source/package-lock.json
       - name: Install system tools
-        # The runner-local Azure mirror flakes (2026-11-11: every fetch ignored for 20+ minutes) and used to
-        # burn the job timeout with no output. Bound the step, and fall back to the canonical archive once.
+        # The runner-local Azure mirror stalled on 2026-11-11 (every fetch ignored for 20+ minutes, three runs)
+        # and used to burn the whole job timeout. Bound the step and probe the mirror before apt spends minutes
+        # on ignored fetches.
         timeout-minutes: 12
-        env:
-          APT_OPTS: -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::ForceIPv4=true
-          APT_PACKAGES: libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
         run: |
           set -euo pipefail
-          install_packages() {
-            sudo apt-get update -qq $APT_OPTS
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS $APT_PACKAGES
-          }
           # The runner mirror serves the same archive; only the host changes.
           rewrite_sources() {
             local files=(/etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list)
@@ -169,11 +162,16 @@ jobs:
               sudo sed -i -E 's|//azure\.archive\.ubuntu\.com/ubuntu|//archive.ubuntu.com/ubuntu|g' "${existing[@]}"
             fi
           }
-          if ! install_packages; then
-            echo "runner mirror failed; retrying against the canonical Ubuntu archive" >&2
+          # Probe first: a stalled mirror makes apt spend minutes on ignored fetches before it gives up.
+          if ! curl -fsS -m 20 -o /dev/null http://azure.archive.ubuntu.com/ubuntu/dists/noble/Release; then
+            echo "runner mirror is unreachable; using the canonical Ubuntu archive" >&2
             rewrite_sources
-            install_packages
           fi
+          sudo apt-get update -qq $APT_OPTS
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS $APT_PACKAGES
+        env:
+          APT_OPTS: -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::ForceIPv4=true
+          APT_PACKAGES: libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
       - name: Install locked dependencies
         working-directory: source
         run: npm ci --ignore-scripts --no-audit --no-fund
