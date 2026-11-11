@@ -14,14 +14,10 @@ import { BUILTIN_AGENT_TYPES, describeAgentTypes, discoverAgentTypes } from "./s
 import { childToolNames, createChildSession, modelRef } from "./services/child-session.ts";
 import { SubagentRegistry } from "./services/subagent-registry.ts";
 import { todosAreActive } from "./state/session-state.ts";
+import { findBranchSubagentRecord } from "./state/subagents.ts";
 import { createAwaitToolDefinition } from "./tools/await.ts";
 import { createStopSubagentToolDefinition } from "./tools/stop-subagent.ts";
-import {
-	type BranchSubagent,
-	type ChildSessionRequest,
-	createSubagentToolDefinition,
-	SUBAGENT_TOOL_NAME,
-} from "./tools/subagent.ts";
+import { type BranchSubagent, type ChildSessionRequest, createSubagentToolDefinition } from "./tools/subagent.ts";
 import type { AgentType, SubagentNoticeData, SubagentRecord } from "./types.ts";
 import { applySubagentWidget, renderSubagentNotice, SUBAGENT_NOTICE_TYPE, showSubagents } from "./ui/subagent-view.ts";
 
@@ -214,7 +210,12 @@ function registerSubagentTools(wiring: SubagentWiring): void {
 				session.setActiveToolsByName(childToolNames(type, forceReadonly)),
 		}),
 	);
-	pi.registerTool(createAwaitToolDefinition({ getRegistry: () => getRegistry(wiring) }));
+	pi.registerTool(
+		createAwaitToolDefinition({
+			getRegistry: () => getRegistry(wiring),
+			findBranchSubagent: (id, ctx) => findBranchSubagentRecord(ctx.sessionManager.getBranch(), id),
+		}),
+	);
 	pi.registerTool(createStopSubagentToolDefinition({ getRegistry: () => getRegistry(wiring) }));
 }
 
@@ -249,26 +250,11 @@ function createSubagentSession(
 	});
 }
 
-/** The last subagent result on the current branch for `id` that names a session file (resume after eviction/restart). */
+/** The latest saved child identity on this branch, shared with await's historical lookup. */
 function findBranchSubagent(id: string, ctx: ExtensionContext): BranchSubagent | undefined {
-	const branch = ctx.sessionManager.getBranch();
-	for (let index = branch.length - 1; index >= 0; index--) {
-		const entry = branch[index];
-		if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
-		if (entry.message.toolName !== SUBAGENT_TOOL_NAME) continue;
-		const subagent = readSubagentDetails(entry.message.details);
-		if (subagent?.id === id && subagent.sessionFile) {
-			return { description: subagent.description, type: subagent.type, sessionFile: subagent.sessionFile };
-		}
-	}
-	return undefined;
-}
-
-function readSubagentDetails(details: unknown): SubagentRecord | undefined {
-	if (typeof details !== "object" || details === null || !("subagent" in details)) return undefined;
-	const subagent = details.subagent as Partial<SubagentRecord> | undefined;
-	if (typeof subagent?.id !== "string" || typeof subagent.type !== "string") return undefined;
-	return subagent as SubagentRecord;
+	const record = findBranchSubagentRecord(ctx.sessionManager.getBranch(), id);
+	if (!record?.sessionFile) return undefined;
+	return { description: record.description, type: record.type, sessionFile: record.sessionFile };
 }
 
 function noticeDetails(record: SubagentRecord): SubagentNoticeData {

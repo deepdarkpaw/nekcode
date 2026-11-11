@@ -59,7 +59,7 @@
 |---|---|
 | `description` | 简短标题，显示在卡片上 |
 | `prompt` | 完整的任务说明。子代理看不到父会话的对话，所以需要写清目标、相关文件和发现、能否修改文件、要返回什么 |
-| `subagent_type` | 类型，默认 `explorer` |
+| `subagent_type` | 新建时的类型，默认 `explorer`；`resume` 沿用原类型，忽略此参数 |
 | `model` | 可选的模型；类型预设优先，参数冲突时提醒后忽略，不可用时提醒后使用父模型。`resume` 时忽略此参数 |
 | `run_in_background` | `true` 时立即返回，子代理在后台运行；默认取类型的 `is_background` |
 | `resume` | 子代理 ID。在保留上下文的前提下给已有子代理发送后续任务 |
@@ -77,6 +77,7 @@
 - 指定 `subagent_id` 等待某一个；省略时等待任意一个先完成的；
 - `block_until_ms` 是最长等待时间，默认 30 秒，最长 7,140,000 毫秒（119 分钟）；设为 0 只查询状态；
 - 超时只表示“还没完成”，不代表子代理失败。
+- 重开父会话或记录被内存注册表淘汰后，指定已知 ID 会返回“未接入当前进程”、原类型/模型和最后保存的状态；这是历史快照，不冒充实时状态，也不会自动启动子代理。用 `subagent` 的 `resume` 接续后，`await` 才再次查询实时状态。真正未知的 ID 仍报错。
 
 ### 你插话时会发生什么
 
@@ -179,7 +180,7 @@ Review the requested files and report concrete issues with file paths and line n
 
 - CLI 重开被中断的父会话时（`nek -c` 或 `/resume`），遵循 `resumeInterruptedWork: false`：恢复历史并将会话置为空闲，不会在启动时自动重跑中断的前台回合。
 - 保留 `resumeInterruptedWork: true` 的 SDK 会话重开父会话时，前台子代理会接回**原来的**子会话继续跑完中断的那一轮，结果照常返回给父会话。
-- 后台子代理在父会话重开后不会自动接回，在你（或模型）`resume` 或 `await` 它时才处理。`resume` 时它先跑完中断的那一轮再处理新提示，期间可以 `Escape` 中止，发送新消息会让前台等待转入后台；`interrupt: true` 直接放弃中断的那一轮。
+- 后台子代理在父会话重开后不会自动接回；`await` 只查询保存的身份与状态，不接回或启动它。显式 `resume` 才恢复原子会话，先跑完中断的那一轮再处理新提示，期间可以 `Escape` 中止，发送新消息会让前台等待转入后台；`interrupt: true` 直接放弃中断的那一轮。
 
 见 [Durable 会话与恢复策略](/reference/durable-sessions)。
 

@@ -1,5 +1,5 @@
 import { type Static, Type } from "typebox";
-import type { ToolDefinition } from "../../../core/extensions/types.ts";
+import type { ExtensionContext, ToolDefinition } from "../../../core/extensions/types.ts";
 import { AWAIT_DESCRIPTION, formatSubagentResult } from "../prompts/subagent.ts";
 import type { SubagentRegistry } from "../services/subagent-registry.ts";
 import type { AwaitToolData, SubagentRecord } from "../types.ts";
@@ -32,6 +32,27 @@ export type AwaitToolInput = Static<typeof awaitSchema>;
 /** Access to the registry owned by the extension. */
 export interface AwaitToolOptions {
 	getRegistry(): SubagentRegistry;
+	findBranchSubagent?(id: string, ctx: ExtensionContext): SubagentRecord | undefined;
+}
+
+/** A saved snapshot is not evidence of current liveness; polling must never reopen or launch a child. */
+function detachedResult(record: SubagentRecord) {
+	const identity = [record.type, record.model].filter(Boolean).join(" · ");
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: `Subagent ${record.id} (${record.description}) is known but not attached to this process (${identity}).\nLast recorded status: ${record.status}; this is a historical snapshot, not a live status check.\nUse subagent with resume: "${record.id}" to continue the same child. This check did not resume or start any work.`,
+			},
+		],
+		details: {
+			subagents: [],
+			running: [],
+			detached: [snapshotSubagent(record)],
+			timedOut: false,
+			interrupted: false,
+		},
+	};
 }
 
 /** One line per subagent that is still running: `id running (Ns)`. */
@@ -67,8 +88,12 @@ export function createAwaitToolDefinition(
 		parameters: awaitSchema,
 		// Waiting has no effect of its own; it waits again after a crash.
 		replay: "safe",
-		async execute(_toolCallId, { subagent_id, block_until_ms }: AwaitToolInput, signal) {
+		async execute(_toolCallId, { subagent_id, block_until_ms }: AwaitToolInput, signal, _onUpdate, ctx) {
 			const registry = options.getRegistry();
+			if (subagent_id && !registry.get(subagent_id)) {
+				const saved = options.findBranchSubagent?.(subagent_id, ctx);
+				if (saved) return detachedResult(saved);
+			}
 			const scope = subagent_id ? [subagent_id] : undefined;
 			const pending = registry
 				.list()

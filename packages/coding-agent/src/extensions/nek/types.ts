@@ -108,6 +108,8 @@ export interface SubagentToolData {
 export interface AwaitToolData {
 	subagents: SubagentRecord[];
 	running?: SubagentRecord[];
+	/** Saved records absent from this process; never presented as live or completed by the poll. */
+	detached?: SubagentRecord[];
 	timedOut: boolean;
 	interrupted?: boolean;
 }

@@ -663,6 +663,78 @@ describe("nek subagents", () => {
 		expect(router.childModels).toEqual(["faux/parent"]);
 	});
 
+	it("await recognizes a stopped worker after registry loss and resume preserves its identity", async () => {
+		const { harness, router, create, start } = await createPersistentModelHarness();
+		router.parent.push(
+			reply(subagentCall({ subagent_type: "preset-worker", run_in_background: true, prompt: "Remember PELICAN." })),
+			reply(fauxAssistantMessage("started")),
+		);
+		router.child.push(abortableReply());
+		await harness.session.prompt("start a worker");
+		const registry = start.mock.contexts[0] as SubagentRegistry;
+		registries.push(registry);
+		const first = subagentDetails(toolResults(harness, "subagent")[0]);
+		await vi.waitFor(() => expect(router.childRequests).toHaveLength(1));
+		router.parent.push(
+			reply(toolCall("stop_subagent", { subagent_id: first.id })),
+			reply(fauxAssistantMessage("stopped")),
+		);
+		await harness.session.prompt("stop the worker");
+		expect(registry.get(first.id)?.status).toBe("aborted");
+		await registry.disposeAll();
+
+		router.parent.push(
+			reply(toolCall("await", { subagent_id: first.id, block_until_ms: 0 })),
+			reply(fauxAssistantMessage("checked")),
+		);
+		await harness.session.prompt("check the saved worker");
+		const checked = toolResults(harness, "await").at(-1)!;
+		expect(checked.isError).toBe(false);
+		expect(getMessageText(checked)).toContain("known but not attached to this process");
+		expect(getMessageText(checked)).toContain("Last recorded status: aborted");
+		expect(getMessageText(checked)).toContain("preset-worker · faux/preset");
+		expect(checked.details).toMatchObject({
+			subagents: [],
+			running: [],
+			detached: [{ id: first.id, type: "preset-worker", status: "aborted" }],
+		});
+		expect(create).toHaveBeenCalledTimes(1);
+		expect(registry.list()).toEqual([]);
+		expect(router.childRequests).toHaveLength(1);
+
+		router.parent.push(
+			reply(
+				subagentCall({
+					resume: first.id,
+					subagent_type: "generalPurpose",
+					model: "faux/parent",
+					prompt: "Which word?",
+					run_in_background: false,
+				}),
+			),
+			reply(fauxAssistantMessage("resumed")),
+		);
+		router.child.push(reply(fauxAssistantMessage("PELICAN")));
+		await harness.session.prompt("resume the saved worker");
+		expect(subagentDetails(toolResults(harness, "subagent").at(-1)!)).toMatchObject({
+			id: first.id,
+			type: "preset-worker",
+			model: "faux/preset",
+			status: "completed",
+		});
+		expect(router.childModels).toEqual(["faux/preset", "faux/preset"]);
+		expect(router.childThinking.at(-1)).toBe("high");
+		expect(JSON.stringify(router.childRequests.at(-1))).toContain("Remember PELICAN.");
+		router.parent.push(
+			reply(toolCall("await", { subagent_id: first.id, block_until_ms: 0 })),
+			reply(fauxAssistantMessage("checked again")),
+		);
+		await harness.session.prompt("check resumed worker");
+		expect(toolResults(harness, "await").at(-1)?.details).toMatchObject({
+			subagents: [{ id: first.id, type: "preset-worker", status: "completed" }],
+		});
+	});
+
 	it.each(["retained", "reopen", "reattach"])("%s ignores the call's model", async (path) => {
 		const reopen = path === "reopen";
 		const { harness, router, create, start } = await createPersistentModelHarness("faux/preset", {

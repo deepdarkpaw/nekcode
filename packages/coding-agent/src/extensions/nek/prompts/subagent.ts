@@ -65,6 +65,8 @@ export function subagentsSection(agentTypes: string, models: readonly string[]):
  */
 export const AWAIT_DESCRIPTION = `Check or poll a background subagent. Omit subagent_id to wait for whichever running background subagent finishes first. At the end of your turn, you will be notified about any unawaited subagents that completed. If you think a subagent completed (e.g. because it was cancelled), observe it with await to skip the notification, because stale notifications can confuse the user.
 
+A known subagent absent from this process returns its saved identity and last recorded status, not a live result. Use subagent with resume to reattach; await never starts work.
+
 Prefer NOT to poll reflexively with await.`;
 
 /**

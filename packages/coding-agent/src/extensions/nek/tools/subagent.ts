@@ -34,7 +34,7 @@ const subagentSchema = Type.Object({
 	}),
 	subagent_type: Type.Optional(
 		Type.String({
-			description: `One of the types listed in the <subagents> section. Default: ${DEFAULT_AGENT_TYPE}.`,
+			description: `One of the types listed in the <subagents> section. Default: ${DEFAULT_AGENT_TYPE}. Ignored with resume, which keeps the original type.`,
 		}),
 	),
 	model: Type.Optional(
