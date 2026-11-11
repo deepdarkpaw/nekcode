@@ -56,9 +56,13 @@ jobs:
         with:
           bun-version: 1.4.2
       - name: Install system tools
+        # A stalled mirror used to burn the whole job timeout with no output; bound the step and retry.
+        timeout-minutes: 10
+        env:
+          APT_OPTS: -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::ForceIPv4=true
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
+          sudo apt-get update -qq $APT_OPTS
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
       - name: Install locked dependencies
         working-directory: source
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -119,9 +123,13 @@ jobs:
           cache: npm
           cache-dependency-path: source/package-lock.json
       - name: Install system tools
+        # A stalled mirror used to burn the whole job timeout with no output; bound the step and retry.
+        timeout-minutes: 10
+        env:
+          APT_OPTS: -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::ForceIPv4=true
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
+          sudo apt-get update -qq $APT_OPTS
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
       - name: Install locked dependencies
         working-directory: source
         run: npm ci --ignore-scripts --no-audit --no-fund
