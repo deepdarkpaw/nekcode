@@ -68,6 +68,7 @@ type View = {
 	childRecords?: Map<string, RpcHistorySubagentRecord>;
 	callOwners?: Map<string, NonNullable<RpcHistoryEntry["toolCallOrigin"]>>;
 };
+type CursorAuthority = Pick<View, "branch" | "prefixes" | "sessionKey">;
 class HistoryError extends Error {
 	readonly code: RpcHistoryErrorCode;
 	constructor(code: RpcHistoryErrorCode, message: string) {
@@ -151,10 +152,13 @@ function openView(ctx: GuiContext, command: RpcHistoryCommand, depth = 0): View 
 			hash = createHash("sha256").update(hash).update(row.fingerprint).digest("hex");
 			prefixes.push(hash);
 		}
+		const authority: CursorAuthority = { branch, prefixes, sessionKey };
+		if (command.observationCursor !== undefined) untoken(authority, command.observationCursor, "observation");
 		const identity: RpcHistoryIdentity = {
 			sessionPath: storage.path,
 			sessionId: storage.header.id,
 			branchRevision: hash,
+			observationCursor: token(authority, { kind: "observation", position: 0 }),
 			leafId: branch.at(-1)?.entry.id ?? null,
 			watermark: storage.watermark,
 		};
@@ -186,7 +190,7 @@ function openView(ctx: GuiContext, command: RpcHistoryCommand, depth = 0): View 
 		throw error;
 	}
 }
-function token(view: View, fields: Omit<Token, "session" | "count" | "prefix">): string {
+function token(view: CursorAuthority, fields: Omit<Token, "session" | "count" | "prefix">): string {
 	const data: Token = {
 		session: view.sessionKey,
 		count: view.branch.length,
@@ -196,14 +200,20 @@ function token(view: View, fields: Omit<Token, "session" | "count" | "prefix">):
 	const payload = Buffer.from(JSON.stringify(data)).toString("base64url");
 	return `${payload}.${createHmac("sha256", SECRET).update(payload).digest("base64url")}`;
 }
-function untoken(view: View, encoded: string, kind: string): Token {
-	if (typeof encoded !== "string" || encoded.length > 4096) fail("INVALID_CURSOR", "Invalid history capability");
+function untoken(view: CursorAuthority, encoded: string, kind: string): Token {
+	if (typeof encoded !== "string" || encoded.length > 4096 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(encoded))
+		fail("INVALID_CURSOR", "Invalid history capability");
 	const [payload, signature, extra] = encoded.split(".");
 	const expected = createHmac("sha256", SECRET)
 		.update(payload ?? "")
 		.digest();
 	const actual = Buffer.from(signature ?? "", "base64url");
-	if (extra !== undefined || expected.length !== actual.length || !timingSafeEqual(expected, actual))
+	if (
+		extra !== undefined ||
+		actual.toString("base64url") !== signature ||
+		expected.length !== actual.length ||
+		!timingSafeEqual(expected, actual)
+	)
 		fail("INVALID_CURSOR", "Invalid or expired history capability");
 	let value: Token;
 	try {
@@ -931,6 +941,7 @@ export function readHistoryCommand(
 			"ref",
 			"sessionPath",
 			"branchRevision",
+			"observationCursor",
 			"aroundEntryId",
 			"turnId",
 			"subagentId",
