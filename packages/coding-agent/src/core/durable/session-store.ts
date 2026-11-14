@@ -154,6 +154,12 @@ export class DurableSessionStore {
 		this.#writeSync(this.path, plans);
 	}
 
+	/** Observe completion without consuming the persistence owner's pending error (e.g. a read-only RPC ref). */
+	async waitForWrites(): Promise<void> {
+		while (this.#drain !== undefined) await this.#drain;
+		if (this.#error !== undefined) throw this.#error;
+	}
+
 	/** Resolve when every write is committed; reject with the first write failure since the last flush. */
 	async flush(): Promise<void> {
 		while (this.#drain !== undefined) await this.#drain;

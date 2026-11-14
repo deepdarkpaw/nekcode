@@ -17,6 +17,7 @@ import { resolvePath } from "../../../utils/paths.ts";
 import type { GuiContext } from "./context.ts";
 import type {
 	RpcHistoryCommand,
+	RpcHistoryCommandResult,
 	RpcHistoryContent,
 	RpcHistoryDirectory,
 	RpcHistoryEntry,
@@ -28,6 +29,7 @@ import type {
 	RpcHistoryResponseData,
 	RpcHistorySelection,
 	RpcHistorySubagent,
+	RpcHistorySubagentDirectory,
 	RpcHistorySubagentRecord,
 	RpcHistoryTurn,
 	RpcHistoryTurnPage,
@@ -448,6 +450,7 @@ function children(view: View): Map<string, RpcHistorySubagentRecord> {
 				continue;
 			const previous = records.get(fact.id);
 			const record: RpcHistorySubagentRecord = {
+				...previous,
 				id: fact.id,
 				spawnEntryId: previous?.spawnEntryId ?? entry.id,
 				spawnPosition: previous?.spawnPosition ?? position,
@@ -761,19 +764,65 @@ function content(
 function subagent(
 	view: View,
 	command: Extract<RpcHistoryCommand, { type: "read_history_subagent" }>,
-): RpcHistorySubagent {
-	if (typeof command.subagentId !== "string" || command.subagentId.length > 256)
-		fail("INVALID_REQUEST", "Invalid child identity");
-	const record = children(view).get(command.subagentId);
-	if (!record) fail("NOT_FOUND", "Child is not recorded on the parent effective branch");
-	return { ...view.identity, subagent: record };
+	budget: number,
+): RpcHistorySubagent | RpcHistorySubagentDirectory {
+	if (command.subagentId !== undefined) {
+		if (
+			typeof command.subagentId !== "string" ||
+			command.subagentId.length > 256 ||
+			command.cursor !== undefined ||
+			command.limit !== undefined
+		)
+			fail("INVALID_REQUEST", "Choose single child identity or child enumeration");
+		const record = children(view).get(command.subagentId);
+		if (!record) fail("NOT_FOUND", "Child is not recorded on the parent effective branch");
+		return { ...view.identity, subagent: record };
+	}
+	const limit = integer(command.limit, 20, 1, 100);
+	const records = children(view);
+	const cursor = command.cursor ? untoken(view, command.cursor, "subagents") : undefined;
+	let position = cursor?.position ?? 0;
+	if (cursor && position >= records.size) fail("INVALID_CURSOR", "Nonadvancing child enumeration cursor");
+	const result: RpcHistorySubagentDirectory = {
+		...view.identity,
+		kind: "subagents",
+		subagents: [],
+		total: records.size,
+		count: 0,
+		hasMore: false,
+	};
+	let index = 0;
+	for (const record of records.values()) {
+		if (index++ < position) continue;
+		result.subagents.push(record);
+		const next = token(view, { kind: "subagents", position: position + 1 });
+		if (
+			responseSize(command, {
+				ok: true,
+				...result,
+				count: result.subagents.length,
+				hasMore: true,
+				nextCursor: next,
+			}) > budget
+		) {
+			result.subagents.pop();
+			if (!result.subagents.length) fail("RESPONSE_LIMIT", "One child summary exceeds response budget");
+			break;
+		}
+		position++;
+		if (result.subagents.length >= limit) break;
+	}
+	result.count = result.subagents.length;
+	result.hasMore = position < records.size;
+	if (result.hasMore) result.nextCursor = token(view, { kind: "subagents", position });
+	return result;
 }
 
 /** Both RPC modes enter here; the control process never opens/resumes a live session. */
 export function readHistoryCommand<C extends RpcHistoryCommand>(
 	ctx: GuiContext,
 	command: C,
-): RpcHistoryResponseData[C["type"]];
+): RpcHistoryCommandResult<C>;
 export function readHistoryCommand(
 	ctx: GuiContext,
 	command: RpcHistoryCommand,
@@ -808,7 +857,8 @@ export function readHistoryCommand(
 			| RpcHistoryTurnPage
 			| RpcHistoryDirectory
 			| RpcHistoryContent
-			| RpcHistorySubagent;
+			| RpcHistorySubagent
+			| RpcHistorySubagentDirectory;
 		switch (command.type) {
 			case "read_session_metadata":
 				data = metadata(view);
@@ -826,7 +876,7 @@ export function readHistoryCommand(
 				data = content(view, command, budget);
 				break;
 			case "read_history_subagent":
-				data = subagent(view, command);
+				data = subagent(view, command, budget);
 				break;
 		}
 		view.storage.verify();

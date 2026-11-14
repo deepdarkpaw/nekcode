@@ -22,8 +22,8 @@ import { GUI_COMMAND_TYPES, handleGuiCommand } from "../src/modes/rpc/gui/handle
 import { readHistoryCommand } from "../src/modes/rpc/gui/history.ts";
 import type {
 	RpcHistoryCommand,
+	RpcHistoryCommandResult,
 	RpcHistoryContent,
-	RpcHistoryResponseData,
 } from "../src/modes/rpc/gui/history-protocol.ts";
 import { NEK_CONTROL_COMMANDS } from "../src/modes/rpc/gui/protocol.ts";
 
@@ -117,10 +117,10 @@ function jsonl(name: string, entries: SessionEntry[]): string {
 	for (const entry of entries) appendFileSync(path, `${JSON.stringify(entry)}\n`);
 	return path;
 }
-function read<C extends RpcHistoryCommand>(command: C): Extract<RpcHistoryResponseData[C["type"]], { ok: true }> {
+function read<C extends RpcHistoryCommand>(command: C): Extract<RpcHistoryCommandResult<C>, { ok: true }> {
 	const result = readHistoryCommand(ctx, command);
 	expect(result, JSON.stringify(result.ok ? "ok" : result)).toMatchObject({ ok: true });
-	return result as Extract<RpcHistoryResponseData[C["type"]], { ok: true }>;
+	return result as Extract<RpcHistoryCommandResult<C>, { ok: true }>;
 }
 function error(command: RpcHistoryCommand, code: string): void {
 	expect(readHistoryCommand(ctx, command)).toMatchObject({ ok: false, error: { code } });
@@ -365,6 +365,150 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 			index.close();
 		}
 	});
+});
+
+it("HP7/HP9 bounded child enumeration covers old children, stable resume anchors and branch-authorized cursors", () => {
+	const entries = rounds(70);
+	const facts: SessionEntry[] = Array.from({ length: 45 }, (_, i) => ({
+		type: "message",
+		id: `spawn-${i}`,
+		parentId: null,
+		timestamp: TIME,
+		message: {
+			role: "toolResult",
+			toolCallId: `call-${i}`,
+			toolName: "subagent",
+			content: [],
+			isError: false,
+			timestamp: 1,
+			details: {
+				subagent: {
+					id: `child-${i}`,
+					type: "explorer",
+					description: `old child ${i}`,
+					background: false,
+					status: "running",
+					startedAt: i + 1,
+					sessionFile: `/${"p".repeat(1800)}/child-${i}.sqlite`,
+					finalText: "never enumerate final text",
+				},
+			},
+		},
+	}));
+	entries.splice(2, 0, ...facts);
+	entries.push({
+		...facts[0],
+		type: "message",
+		id: "resume-update",
+		message: {
+			role: "toolResult",
+			toolCallId: "resume",
+			toolName: "subagent",
+			content: [],
+			isError: false,
+			timestamp: 1,
+			details: {
+				subagent: {
+					id: "child-0",
+					type: "explorer",
+					description: "resumed",
+					background: false,
+					status: "completed",
+					startedAt: 100,
+					finalText: "must not leak",
+				},
+			},
+		},
+	});
+	for (let i = 0; i < entries.length; i++) entries[i].parentId = entries[i - 1]?.id ?? null;
+	for (const sessionPath of [sqlite("enumerate", entries), jsonl("enumerate", entries)]) {
+		const page = read({ type: "read_history_page", sessionPath });
+		expect(page.entries.some((entry) => entry.id === "spawn-0")).toBe(false);
+		let listing = read({ type: "read_history_subagent", sessionPath, limit: 20 });
+		expect(listing).toMatchObject({ kind: "subagents", total: 45, count: 20, hasMore: true });
+		expect(listing.subagents[0]).toMatchObject({
+			id: "child-0",
+			spawnEntryId: "spawn-0",
+			spawnPosition: 2,
+			status: "completed",
+		});
+		const firstCursor = listing.nextCursor!;
+		const records = [...listing.subagents];
+		const counts = [listing.count];
+		while (listing.nextCursor) {
+			listing = read({ type: "read_history_subagent", sessionPath, cursor: listing.nextCursor, limit: 20 });
+			records.push(...listing.subagents);
+			counts.push(listing.count);
+		}
+		expect(counts).toEqual([20, 20, 5]);
+		expect(records[0].sessionFile).toBe(`/${"p".repeat(1800)}/child-0.sqlite`);
+		const budgeted = read({ type: "read_history_subagent", sessionPath, limit: 100, maxBytes: 65536 });
+		expect(budgeted.count).toBeLessThan(45);
+		expect(budgeted.hasMore).toBe(true);
+		expect(
+			Buffer.byteLength(
+				JSON.stringify({ type: "response", command: "read_history_subagent", success: true, data: budgeted }),
+			),
+		).toBeLessThanOrEqual(65536);
+		expect(records.map((record) => record.id)).toEqual(Array.from({ length: 45 }, (_, i) => `child-${i}`));
+		expect(JSON.stringify(records)).not.toContain("finalText");
+		expect(read({ type: "read_history_subagent", sessionPath, subagentId: "child-0" }).subagent).toEqual(records[0]);
+		error({ type: "read_history_subagent", sessionPath, limit: 101 }, "INVALID_REQUEST");
+		error(
+			{
+				type: "read_history_subagent",
+				sessionPath: sqlite(`foreign-enum-${sessionPath.endsWith("sqlite")}`, entries),
+				cursor: firstCursor,
+			},
+			"FOREIGN_CURSOR",
+		);
+		const added: SessionEntry = {
+			type: "message",
+			id: "new-child",
+			parentId: "resume-update",
+			timestamp: TIME,
+			message: {
+				role: "toolResult",
+				toolCallId: "new-call",
+				toolName: "subagent",
+				content: [],
+				isError: false,
+				timestamp: 1,
+				details: {
+					subagent: {
+						id: "child-45",
+						type: "explorer",
+						description: "new",
+						background: false,
+						status: "running",
+						startedAt: 200,
+					},
+				},
+			},
+		};
+		if (sessionPath.endsWith("jsonl")) appendFileSync(sessionPath, `${JSON.stringify(added)}\n`);
+		else {
+			const db = new DatabaseSync(sessionPath);
+			const { high } = db.prepare("SELECT max(id)+1 AS high FROM entries").get() as { high: number };
+			db.prepare("INSERT INTO entries VALUES(?,?,?,?)").run(
+				high,
+				1,
+				high,
+				JSON.stringify({ id: high, conversationId: 1, kind: "pi.tool-result", data: { entry: added } }),
+			);
+			db.close();
+		}
+		const appended = read({ type: "read_history_subagent", sessionPath, cursor: firstCursor, limit: 100 });
+		expect(appended.total).toBe(46);
+		expect(appended.subagents.at(-1)?.id).toBe("child-45");
+		ctx = {
+			...ctx,
+			session: { sessionFile: sessionPath, sessionManager: { getLeafId: () => "a0" } },
+		} as unknown as GuiContext;
+		error({ type: "read_history_subagent", sessionPath, cursor: firstCursor }, "STALE_CURSOR");
+		expect(read({ type: "read_history_subagent", sessionPath }).total).toBe(0);
+		ctx = { ...ctx, session: undefined };
+	}
 });
 
 it("HP2 >64MiB SQLite and legacy JSONL stay read-only and first-page bodies stay bounded", () => {
@@ -720,7 +864,8 @@ it("HP11 persisted watermark/active leaf fencing and explicit foreign session se
 });
 it("HP12 capability, exported command table, control allowlist and real handler agree", async () => {
 	const info = buildGuiInfo({ agentDir: join(root, "agent"), cwd: root, entryPath: join(root, "cli.ts") });
-	expect(info.capabilities).toEqual({ historyPages: 1 });
+	expect(info.capabilities).toEqual({ historyPages: 1, historyStream: 1 });
+	expect(NEK_CONTROL_COMMANDS).not.toContain("set_history_stream");
 	const sessionPath = sqlite("handler", rounds(1));
 	for (const type of [
 		"read_session_metadata",

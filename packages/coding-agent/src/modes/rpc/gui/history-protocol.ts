@@ -28,7 +28,24 @@ export type RpcHistoryCommand =
 			limit?: number;
 	  } & RpcHistoryOptions)
 	| ({ id?: string; type: "read_history_content"; ref: string; offset?: number; limit?: number } & RpcHistoryOptions)
-	| ({ id?: string; type: "read_history_subagent"; subagentId: string } & RpcHistoryOptions);
+	| RpcHistorySubagentCommand;
+
+/** Single-id lookup retains its original shape; omission of the id enumerates persisted parent-branch facts. */
+export type RpcHistorySubagentCommand =
+	| ({
+			id?: string;
+			type: "read_history_subagent";
+			subagentId: string;
+			cursor?: never;
+			limit?: never;
+	  } & RpcHistoryOptions)
+	| ({
+			id?: string;
+			type: "read_history_subagent";
+			subagentId?: undefined;
+			cursor?: string;
+			limit?: number;
+	  } & RpcHistoryOptions);
 
 export type RpcHistoryErrorCode =
 	| "INVALID_REQUEST"
@@ -150,11 +167,25 @@ export interface RpcHistorySubagentRecord {
 export interface RpcHistorySubagent extends RpcHistoryIdentity {
 	subagent: RpcHistorySubagentRecord;
 }
+export interface RpcHistorySubagentDirectory extends RpcHistoryIdentity {
+	kind: "subagents";
+	/** First-spawn order; updates/resume never move an existing child. */
+	subagents: RpcHistorySubagentRecord[];
+	total: number;
+	count: number;
+	hasMore: boolean;
+	nextCursor?: string;
+}
+export type RpcHistoryCommandResult<C extends RpcHistoryCommand> = C extends { type: "read_history_subagent" }
+	? C extends { subagentId: string }
+		? RpcHistoryResult<RpcHistorySubagent>
+		: RpcHistoryResult<RpcHistorySubagentDirectory>
+	: RpcHistoryResponseData[C["type"]];
 export interface RpcHistoryResponseData {
 	read_session_metadata: RpcHistoryResult<RpcHistoryMetadata>;
 	read_history_page: RpcHistoryResult<RpcHistoryPage>;
 	read_history_turn: RpcHistoryResult<RpcHistoryTurnPage>;
 	read_history_directory: RpcHistoryResult<RpcHistoryDirectory>;
 	read_history_content: RpcHistoryResult<RpcHistoryContent>;
-	read_history_subagent: RpcHistoryResult<RpcHistorySubagent>;
+	read_history_subagent: RpcHistoryResult<RpcHistorySubagent | RpcHistorySubagentDirectory>;
 }
