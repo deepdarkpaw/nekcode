@@ -77,11 +77,12 @@ it("HO7: missing explicit or previously initialized storage is never presented a
 it("HO7: the first user append persists normally and is then read through the ordinary indexed path", async () => {
 	const before = readHistoryCommand(ctx, { type: "read_history_page" });
 	expect(before.ok).toBe(true);
+	if (!before.ok) throw new Error("Expected an empty bounded history page");
 	manager.appendMessage({ role: "user", content: "offline fixture", timestamp: 1000 });
 	await manager.flush();
 	expect(existsSync(manager.getSessionFile()!)).toBe(true);
 	expect(manager.hasInitializedStorage()).toBe(true);
-	const after = readHistoryCommand(ctx, { type: "read_history_page" });
+	const after = readHistoryCommand(ctx, { type: "read_history_page", observationCursor: before.observationCursor });
 	expect(after).toMatchObject({ ok: true, totalTurns: 1, totalEntries: 1 });
 	if (!before.ok || !after.ok) throw new Error("Expected bounded history pages");
 	expect(after.sessionId).toBe(before.sessionId);
