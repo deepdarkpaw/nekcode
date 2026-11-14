@@ -12,8 +12,9 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildGuiInfo } from "../src/cli/gui-info.ts";
+import * as historyStorage from "../src/core/durable/history-storage.ts";
 import { openHistoryStorage } from "../src/core/durable/history-storage.ts";
 import { setSqliteDriver } from "../src/core/durable/sqlite.ts";
 import type { SessionEntry, SessionHeader } from "../src/core/session-entries.ts";
@@ -24,6 +25,7 @@ import type {
 	RpcHistoryCommand,
 	RpcHistoryCommandResult,
 	RpcHistoryContent,
+	RpcHistoryTurnPage,
 } from "../src/modes/rpc/gui/history-protocol.ts";
 import { NEK_CONTROL_COMMANDS } from "../src/modes/rpc/gui/protocol.ts";
 
@@ -69,6 +71,28 @@ function rounds(count: number): SessionEntry[] {
 	}
 	return entries;
 }
+/** One user, 1000 process entries, then the actual final reply. */
+function longRound(index = 0, body = "result 界😀"): SessionEntry[] {
+	const [user, answer] = rounds(index + 1).slice(-2);
+	const entries = [user];
+	for (let i = 0; i < 1000; i++)
+		entries.push({
+			type: "message",
+			id: `t${index}-${i}`,
+			parentId: entries.at(-1)!.id,
+			timestamp: TIME,
+			message: {
+				role: "toolResult",
+				toolCallId: `call${index}-${i}`,
+				toolName: "read",
+				isError: false,
+				timestamp: 1,
+				content: [{ type: "text", text: body }],
+			},
+		});
+	entries.push({ ...answer, parentId: entries.at(-1)!.id });
+	return entries;
+}
 function sqlite(name: string, entries: SessionEntry[]): string {
 	const path = join(root, `${name}.sqlite`);
 	const db = new DatabaseSync(path);
@@ -110,6 +134,20 @@ function sqlite(name: string, entries: SessionEntry[]): string {
 	db.exec("COMMIT");
 	db.close();
 	return path;
+}
+function appendHistory(path: string, entries: SessionEntry[]): void {
+	if (path.endsWith(".jsonl")) {
+		for (const entry of entries) appendFileSync(path, `${JSON.stringify(entry)}\n`);
+		return;
+	}
+	const db = new DatabaseSync(path);
+	let id = Number((db.prepare("SELECT max(id) AS id FROM entries").get() as { id: number }).id);
+	const insert = db.prepare("INSERT INTO entries VALUES(?,?,?,?)");
+	for (const entry of entries) {
+		id++;
+		insert.run(id, 1, id, JSON.stringify({ id, conversationId: 1, kind: "nek.message", data: { entry } }));
+	}
+	db.close();
 }
 function jsonl(name: string, entries: SessionEntry[]): string {
 	const path = join(root, `${name}.jsonl`);
@@ -265,7 +303,8 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 			ids.push(...turn.entries.map((entry) => entry.id));
 			cursor = turn.continuationCursor;
 		}
-		expect(ids).toEqual(entries.map((entry) => entry.id));
+		expect([...new Set(ids)].sort()).toEqual(entries.map((entry) => entry.id).sort());
+		expect(ids.filter((id) => id !== "u0")).toHaveLength(entries.length - 1);
 	});
 	it("HP5/HP6 stable directory, around, refetch, foreign/corrupt cursor and branch invalidation", () => {
 		const entries = rounds(70);
@@ -343,6 +382,268 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		expect(child.subagent).toMatchObject({ spawnEntryId: "spawn-3", status: "completed", detached: true });
 		expect(child.subagent).not.toHaveProperty("finalText");
 		error({ type: "read_history_subagent", sessionPath, subagentId: "unrelated" }, "NOT_FOUND");
+	});
+	it("HP13 latest 20 long rounds include every real header and final reply without reading prefixes", () => {
+		const entries = Array.from({ length: 20 }, (_, index) => longRound(index)).flat();
+		for (let i = 0; i < entries.length; i++) entries[i].parentId = entries[i - 1]?.id ?? null;
+		const sessionPath = fixture("twenty-long", entries);
+		const page = read({ type: "read_history_page", sessionPath });
+		expect(page.turns).toHaveLength(20);
+		expect(page.entries.length).toBeLessThanOrEqual(256);
+		for (let i = 0; i < 20; i++) {
+			expect(page.turns[i].header.id).toBe(`u${i}`);
+			expect(page.entries.find((entry) => entry.id === `a${i}`)?.entry.message).toMatchObject({
+				content: [{ type: "text", text: `answer ${i}` }],
+			});
+			expect(page.turns[i].continuationCursor).toBeDefined();
+		}
+		expect(page.entries.map((entry) => entry.position)).toEqual(
+			page.entries.map((entry) => entry.position).sort((a, b) => a - b),
+		);
+		if (format === "sqlite") {
+			const bodies = sql.filter((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"));
+			expect(bodies.length).toBeGreaterThan(0);
+			// SQLite row = branch position + 3. Only headers and tail process entries are hydrated.
+			expect(
+				bodies.every((call) => {
+					const position = Number(call.args[2]) - 3;
+					return position % 1002 === 0 || position % 1002 > 740;
+				}),
+			).toBe(true);
+		}
+		const around = read({ type: "read_history_page", sessionPath, aroundEntryId: "t10-500", maxBytes: 65536 });
+		expect(around.entries.some((entry) => entry.id === "t10-500")).toBe(true);
+		for (let i = 0; i < 20; i++) {
+			expect(around.turns[i].header.id).toBe(`u${i}`);
+			if (i !== 10) expect(around.entries.some((entry) => entry.id === `a${i}`)).toBe(true);
+		}
+	}, 120000);
+	it("HP13 a 1000-tool-call turn opens its final answer with bounded body reads and original anchors", () => {
+		const entries = longRound();
+		const expanded: SessionEntry[] = [entries[0]];
+		for (const result of entries.slice(1, -1)) {
+			if (result.type !== "message" || result.message.role !== "toolResult") throw new Error("fixture");
+			const call: SessionEntry = {
+				...rounds(1)[1],
+				id: `call-${result.id}`,
+				parentId: expanded.at(-1)!.id,
+			};
+			if (call.type !== "message" || call.message.role !== "assistant") throw new Error("fixture");
+			call.message.content = [
+				{ type: "toolCall", id: result.message.toolCallId, name: "read", arguments: { path: "file.ts" } },
+			];
+			expanded.push(call, { ...result, parentId: call.id });
+		}
+		expanded.push({ ...entries.at(-1)!, parentId: expanded.at(-1)!.id });
+		const sessionPath = fixture("thousand-calls", expanded);
+		const page = read({ type: "read_history_page", sessionPath, maxBytes: 65536 });
+		expect(page.entries.at(-1)).toMatchObject({ id: "a0", position: 2001 });
+		expect(page.entries.at(-1)!.entry.message).toMatchObject({ content: [{ type: "text", text: "answer 0" }] });
+		expect(page.entries.find((entry) => entry.id === "t0-999")?.toolCallOrigin).toMatchObject({
+			entryId: "call-t0-999",
+			position: 1999,
+			toolCallId: "call0-999",
+		});
+		if (format === "sqlite") {
+			const bodies = sql.filter((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"));
+			expect(bodies.length).toBeLessThan(600);
+			expect(bodies.every((call) => Number(call.args[2]) === 3 || Number(call.args[2]) > 1700)).toBe(true);
+		}
+	});
+	it("HP14 around a deep entry hydrates that entry and leaves oversized fields explicitly readable", () => {
+		const entries = longRound();
+		const target = entries[501];
+		if (target.type !== "message" || target.message.role !== "toolResult") throw new Error("fixture");
+		target.message.content = [{ type: "text", text: "deep 界😀".repeat(2000) }];
+		const sessionPath = fixture("deep", entries);
+		const page = read({ type: "read_history_page", sessionPath, aroundEntryId: target.id, maxBytes: 65536 });
+		const loaded = page.entries.find((entry) => entry.id === target.id);
+		expect(loaded).toMatchObject({ id: target.id, position: 501, turnId: "turn:u0", role: "toolResult" });
+		expect(loaded!.entry.message).toMatchObject({ role: "toolResult", content: null });
+		const lazy = loaded!.omissions.find((item) => item.pointer === "/message/content")!;
+		expect(lazy).toBeDefined();
+		const chunk = read({ type: "read_history_content", sessionPath, ref: lazy.ref, limit: 256 * 1024 });
+		expect(JSON.parse(Buffer.from(chunk.data, "base64").toString("utf8"))).toEqual(target.message.content);
+		expect(page.turns[0].header.id).toBe("u0");
+	});
+	it.each([undefined, "t0-500"])(
+		"HP15 continuation covers both omitted sides once with no cursor loop (%s)",
+		(aroundEntryId) => {
+			const entries = longRound(0, "界😀".repeat(60));
+			const sessionPath = fixture(`itinerary-${aroundEntryId ?? "tail"}`, entries);
+			const command = {
+				type: "read_history_page",
+				sessionPath,
+				aroundEntryId,
+				id: "页-😀",
+				maxBytes: 65536,
+			} as const;
+			const page = read(command);
+			const ids = page.entries.map((entry) => entry.id);
+			let cursor = page.turns[0].continuationCursor;
+			expect(cursor).toBeDefined();
+			const target = aroundEntryId ? entries.findIndex((entry) => entry.id === aroundEntryId) : entries.length - 1;
+			expect(page.entries.some((entry) => entry.position === target)).toBe(true);
+			if (aroundEntryId) {
+				expect(page.entries.some((entry) => entry.position > 0 && entry.position < target)).toBe(true);
+				expect(page.entries.some((entry) => entry.position > target)).toBe(true);
+			}
+			const seen = new Set<string>();
+			while (cursor) {
+				expect(seen.has(cursor)).toBe(false);
+				seen.add(cursor);
+				expect(seen.size).toBeLessThan(100);
+				const request = {
+					type: "read_history_turn",
+					sessionPath,
+					turnId: "turn:u0",
+					cursor,
+					id: "续-😀",
+					maxBytes: 65536,
+				} as const;
+				const turn = read(request);
+				expect(turn.turn.header.id).toBe("u0");
+				expect(turn.entries.length).toBeGreaterThan(0);
+				expect(turn.entries.length).toBeLessThanOrEqual(256);
+				expect(turn.entries.map((entry) => entry.position)).toEqual(
+					turn.entries.map((entry) => entry.position).sort((a, b) => a - b),
+				);
+				expect(
+					Buffer.byteLength(
+						JSON.stringify({
+							id: request.id,
+							type: "response",
+							command: request.type,
+							success: true,
+							data: turn,
+						}),
+					),
+				).toBeLessThanOrEqual(request.maxBytes);
+				ids.push(...turn.entries.map((entry) => entry.id));
+				expect(turn.hasMore).toBe(turn.continuationCursor !== undefined);
+				cursor = turn.continuationCursor;
+			}
+			const withoutHeader = ids.filter((id) => id !== "u0");
+			expect(withoutHeader.length).toBe(new Set(withoutHeader).size);
+			expect([...new Set(ids)].sort()).toEqual(entries.map((entry) => entry.id).sort());
+			expect(
+				Buffer.byteLength(
+					JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data: page }),
+				),
+			).toBeLessThanOrEqual(command.maxBytes);
+		},
+	);
+	it("HP15 malformed, foreign, wrong-turn, wrong-kind and stale continuations fail explicitly", () => {
+		const entries = [...longRound(), ...rounds(1).map((entry) => ({ ...entry, id: `${entry.id}-next` }))];
+		for (let i = 0; i < entries.length; i++) entries[i].parentId = entries[i - 1]?.id ?? null;
+		const sessionPath = fixture("cursor-owner", entries);
+		const page = read({ type: "read_history_page", sessionPath, turnLimit: 1, aroundEntryId: "t0-500" });
+		const cursor = page.turns[0].continuationCursor!;
+		const request = { type: "read_history_turn", sessionPath, turnId: "turn:u0", cursor } as const;
+		expect(read(request)).toEqual(read(request));
+		error({ ...request, cursor: `${cursor}x` }, "INVALID_CURSOR");
+		error({ ...request, cursor: "" }, "INVALID_CURSOR");
+		error({ ...request, sessionPath: fixture("cursor-foreign", entries) }, "FOREIGN_CURSOR");
+		error({ ...request, turnId: "turn:u0-next" }, "INVALID_CURSOR");
+		error({ ...request, cursor: page.newerCursor }, "INVALID_CURSOR");
+		if (format === "sqlite") {
+			const db = new DatabaseSync(sessionPath);
+			db.exec("DELETE FROM entries WHERE id>4");
+			db.close();
+		} else writeFileSync(sessionPath, `${JSON.stringify(header("cursor-owner"))}\n${JSON.stringify(entries[0])}\n`);
+		error(request, "STALE_CURSOR");
+	});
+	it("HP16 summary refreshes latest boundaries without body reads, projections or content refs", () => {
+		const entries = longRound(0, "huge 界😀".repeat(2000));
+		const sessionPath = fixture("summary-growth", entries);
+		const spanSpy = vi.spyOn(historyStorage, "historyEntrySpans");
+		try {
+			const summary = read({ type: "read_history_page", sessionPath, view: "summary" } as const);
+			expect(summary).toMatchObject({ view: "summary", totalTurns: 1, totalEntries: 1002 });
+			expect(summary).not.toHaveProperty("entries");
+			expect(summary.turns[0]).toMatchObject({
+				id: "turn:u0",
+				userEntryId: "u0",
+				entryCount: 1002,
+				headerEntryId: "u0",
+				headerPosition: 0,
+			});
+			expect(summary.turns[0]).not.toHaveProperty("header");
+			expect(JSON.stringify(summary)).not.toContain("omissions");
+			expect(JSON.stringify(summary)).not.toContain("huge");
+			expect(spanSpy).not.toHaveBeenCalled();
+			if (format === "sqlite")
+				expect(sql.some((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"))).toBe(false);
+			const page = read({ type: "read_history_page", sessionPath });
+			expect(page).toMatchObject({
+				view: "entries",
+				branchRevision: summary.branchRevision,
+				leafId: summary.leafId,
+				watermark: summary.watermark,
+			});
+			const all = read({
+				type: "read_history_turn",
+				sessionPath,
+				turnId: "turn:u0",
+				cursor: summary.turns[0].continuationCursor,
+			});
+			expect(all.entries[0].id).toBe("u0");
+			error(
+				{ type: "read_history_page", sessionPath, view: "bad" } as unknown as RpcHistoryCommand,
+				"INVALID_REQUEST",
+			);
+		} finally {
+			spanSpy.mockRestore();
+		}
+	}, 120000);
+	it("HP15/HP16 long live append refreshes metadata while old turn itineraries remain bounded to their snapshot", () => {
+		const entries = longRound();
+		const sessionPath = fixture("live-boundaries", entries);
+		const initial = read({ type: "read_history_page", sessionPath, view: "summary" });
+		const growth = longRound(1)
+			.slice(1)
+			.map((entry) => ({ ...entry }));
+		for (let i = 0; i < growth.length; i++) growth[i].parentId = growth[i - 1]?.id ?? entries.at(-1)!.id;
+		appendHistory(sessionPath, growth);
+		sql = [];
+		const summary = read({ type: "read_history_page", sessionPath, view: "summary" });
+		expect(summary).toMatchObject({ view: "summary", totalEntries: 2003, totalTurns: 1, leafId: "a1" });
+		expect(summary.turns[0].entryCount).toBe(2003);
+		expect(summary.branchRevision).not.toBe(initial.branchRevision);
+		if (format === "sqlite")
+			expect(sql.some((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"))).toBe(false);
+		let cursor: string | undefined = initial.turns[0].continuationCursor;
+		const ids: string[] = [];
+		while (cursor) {
+			const part: RpcHistoryTurnPage = read({ type: "read_history_turn", sessionPath, turnId: "turn:u0", cursor });
+			ids.push(...part.entries.map((entry) => entry.id));
+			cursor = part.continuationCursor;
+		}
+		expect(ids).toEqual(entries.map((entry) => entry.id));
+		const latest = read({ type: "read_history_page", sessionPath });
+		expect(latest.entries.at(-1)?.id).toBe("a1");
+		expect(latest.branchRevision).toBe(summary.branchRevision);
+	});
+	it("HP16 summary page navigation preserves 20-round boundaries, source identity and default entry callers", () => {
+		const sessionPath = fixture("summary-pages", rounds(70));
+		let summary = read({ type: "read_history_page", sessionPath, view: "summary" });
+		const counts = [summary.turns.length];
+		expect(summary.turns[0].id).toBe("turn:u50");
+		const first = summary;
+		while (summary.olderCursor) {
+			summary = read({ type: "read_history_page", sessionPath, view: "summary", beforeCursor: summary.olderCursor });
+			counts.push(summary.turns.length);
+		}
+		expect(counts).toEqual([20, 20, 20, 10]);
+		const newer = read({ type: "read_history_page", sessionPath, view: "summary", afterCursor: summary.newerCursor });
+		expect(newer.turns[0].id).toBe("turn:u10");
+		const entries = read({ type: "read_history_page", sessionPath, view: "entries" });
+		expect(entries.turns.map((turn) => turn.id)).toEqual(first.turns.map((turn) => turn.id));
+		expect(entries.olderCursor).toBe(first.olderCursor);
+		expect(entries.entries.length).toBeGreaterThan(0);
+		const around = read({ type: "read_history_page", sessionPath, view: "summary", aroundEntryId: "a35" });
+		expect(around.turns.some((turn) => turn.id === "turn:u35")).toBe(true);
+		error({ type: "read_history_page", sessionPath, view: "summary", beforeCursor: "bad" }, "INVALID_CURSOR");
 	});
 	it("HP8 bounded request-local storage index; HP10 directory/search streams oversized content", () => {
 		const entries = rounds(70);
