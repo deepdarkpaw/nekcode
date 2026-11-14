@@ -7,6 +7,7 @@ import {
 	type HistoryStorage,
 	type HistoryStoredEntry,
 	historyEntrySpans,
+	legacyHistoryProjection,
 	openHistoryStorage,
 } from "../../../core/durable/history-storage.ts";
 import { isSessionLocked, readSessionLockOwner, sessionLockPath } from "../../../core/durable/lock.ts";
@@ -36,7 +37,7 @@ const SECRET = randomBytes(32);
 const DEFAULT_BYTES = 1024 * 1024;
 const MAX_ENTRIES = 256;
 const CHILD_TOOLS = ["subagent", "await", "stop_subagent"];
-type Turn = { id: string; start: number; end: number; userEntryId: string | null };
+type Turn = { id: string; start: number; header: number; end: number; userEntryId: string | null };
 type Token = {
 	session: string;
 	count: number;
@@ -119,7 +120,10 @@ function openView(ctx: GuiContext, command: RpcHistoryCommand, depth = 0): View 
 			byId.set(row.entry.id, row);
 		}
 		const current = ctx.session?.sessionFile;
-		const same = current !== undefined && realpathSync(resolvePath(current)) === storage.path;
+		const same =
+			current !== undefined &&
+			existsSync(resolvePath(current)) &&
+			realpathSync(resolvePath(current)) === storage.path;
 		let leaf = same ? ctx.session!.sessionManager.getLeafId() : (storage.entries.at(-1)?.entry.id ?? null);
 		const branch: HistoryStoredEntry[] = [];
 		const seen = new Set<string>();
@@ -155,11 +159,15 @@ function openView(ctx: GuiContext, command: RpcHistoryCommand, depth = 0): View 
 		for (let position = 0; position < branch.length; position++) {
 			const entry = branch[position].entry;
 			const user = entry.type === "message" && entry.message.role === "user";
-			if (user || !turns.length) {
+			if (user && turns.length === 1 && turns[0].userEntryId === null) {
+				// Leading configuration belongs to the first user round, never an extra pagination round.
+				Object.assign(turns[0], { id: `turn:${entry.id}`, header: position, userEntryId: entry.id });
+			} else if (user || !turns.length) {
 				if (turns.length) turns[turns.length - 1].end = position;
 				turns.push({
 					id: user ? `turn:${entry.id}` : "preamble",
 					start: position,
+					header: position,
 					end: branch.length,
 					userEntryId: user ? entry.id : null,
 				});
@@ -224,7 +232,8 @@ function omission(view: View, position: number, pointer: string, start: number, 
 }
 function projected(view: View, position: number, raw: unknown): SessionEntry {
 	const base = view.branch[position].entry;
-	if (view.storage.format === "jsonl") return raw as SessionEntry;
+	if (view.storage.format === "jsonl")
+		return legacyHistoryProjection(raw as Record<string, unknown>, base) as unknown as SessionEntry;
 	const result = projectRecord(raw as EntryRecord, () => ({
 		id: base.id,
 		parentId: base.parentId,
@@ -383,7 +392,7 @@ function displayEntry(view: View, position: number, inlineBytes = 8192): RpcHist
 			// rather than inventing a partially transformed entry or allocating its original giant values.
 			return rootReference();
 		}
-		result.entry = body;
+		result.entry = view.storage.format === "jsonl" ? legacyHistoryProjection(body, base) : body;
 		if (Buffer.byteLength(JSON.stringify(result)) > inlineBytes + 4096) return rootReference();
 		return result;
 	} finally {
@@ -404,6 +413,7 @@ function selection(view: View, end = view.branch.length): RpcHistorySelection {
 function children(view: View): Map<string, RpcHistorySubagentRecord> {
 	if (view.childRecords) return view.childRecords;
 	const records = new Map<string, RpcHistorySubagentRecord>();
+	let indexBytes = 0;
 	for (let position = 0; position < view.branch.length; position++) {
 		const entry = view.branch[position].entry;
 		const message =
@@ -460,7 +470,13 @@ function children(view: View): Map<string, RpcHistorySubagentRecord> {
 								: fact[field],
 					});
 			}
+			indexBytes +=
+				Buffer.byteLength(JSON.stringify(record)) +
+				128 -
+				(previous ? Buffer.byteLength(JSON.stringify(previous)) + 128 : 0);
 			records.set(fact.id, record);
+			if (records.size > 16384 || indexBytes > 16 * 1024 * 1024)
+				fail("INDEX_LIMIT", "Child fact index exceeds 16384 identities or 16MiB");
 		}
 	}
 	view.childRecords = records;
@@ -518,9 +534,9 @@ function turnDescriptor(view: View, turn: Turn): RpcHistoryTurn {
 		id: turn.id,
 		userEntryId: turn.userEntryId,
 		position: view.turnAt[turn.start],
-		preview: preview(view.branch[turn.start].entry),
+		preview: preview(view.branch[turn.header].entry),
 		entryCount: turn.end - turn.start,
-		header: displayEntry(view, turn.start, 512),
+		header: displayEntry(view, turn.header, 512),
 	};
 }
 function responseSize(command: RpcHistoryCommand, data: object): number {
@@ -564,7 +580,7 @@ function page(
 		hasNewer: end < view.turns.length,
 		totalTurns: view.turns.length,
 		totalEntries: view.branch.length,
-		seed: selection(view, view.turns[start]?.start ?? 0),
+		seed: selection(view, view.turns[start]?.header ?? 0),
 		...(start > 0 ? { olderCursor: token(view, { kind: "before", position: start }) } : {}),
 		...(end < view.turns.length ? { newerCursor: token(view, { kind: "after", position: end }) } : {}),
 	};
@@ -666,11 +682,12 @@ function directory(
 	if (command.aroundEntryId) {
 		position = view.branch.findIndex((row) => row.entry.id === command.aroundEntryId);
 		if (position < 0) fail("NOT_FOUND", "Unknown directory target");
+		if (!query) position = view.turns[view.turnAt[position]].header;
 	}
 	const result: RpcHistoryDirectory = { ...view.identity, items: [], hasMore: false, totalTurns: view.turns.length };
 	for (; position >= 0 && position < view.branch.length; position += step) {
 		const turn = view.turns[view.turnAt[position]];
-		if (query ? !contains(view, position, query) : position !== turn.start) continue;
+		if (query ? !contains(view, position, query) : position !== turn.header) continue;
 		result.items.push({
 			entryId: view.branch[position].entry.id,
 			turnId: turn.id,
@@ -716,21 +733,27 @@ function content(
 	const totalBytes = ref.end! - ref.start!;
 	const offset = integer(command.offset, 0, 0, totalBytes);
 	const limit = integer(command.limit, 65536, 1, 256 * 1024);
-	// Base64 expands by 4/3; leave room for the exact envelope/identity/ref, then verify it below.
-	const length = Math.min(limit, totalBytes - offset, Math.max(1, Math.floor(((budget - 8192) * 3) / 4)));
+	const result: RpcHistoryContent = {
+		...view.identity,
+		ref: command.ref,
+		offset,
+		totalBytes,
+		mediaType: "application/json",
+		encoding: "base64",
+		data: "",
+		nextOffset: totalBytes,
+	};
+	// Reserve the largest possible offset spelling and the exact envelope before base64 expansion.
+	const available = budget - responseSize(command, { ok: true, ...result });
+	const length = Math.min(limit, totalBytes - offset, Math.floor(available / 4) * 3);
+	if (length < 0 || (length === 0 && offset < totalBytes))
+		fail("RESPONSE_LIMIT", "Content metadata exceeds response budget");
 	const source = view.storage.bytes(stored);
 	try {
-		const data = source.read(ref.start! + offset, length).toString("base64");
-		return {
-			...view.identity,
-			ref: command.ref,
-			offset,
-			totalBytes,
-			mediaType: "application/json",
-			encoding: "base64",
-			data,
-			...(offset + length < totalBytes ? { nextOffset: offset + length } : {}),
-		};
+		result.data = source.read(ref.start! + offset, length).toString("base64");
+		if (offset + length < totalBytes) result.nextOffset = offset + length;
+		else delete result.nextOffset;
+		return result;
 	} finally {
 		source.close();
 	}
@@ -806,6 +829,7 @@ export function readHistoryCommand(
 				data = subagent(view, command);
 				break;
 		}
+		view.storage.verify();
 		const result = { ok: true as const, ...data };
 		if (responseSize(command, result) > budget)
 			fail("RESPONSE_LIMIT", "History response exceeds requested byte budget");

@@ -23,6 +23,7 @@ const ENTRY_FIELDS = [
 	"targetId",
 	"fromId",
 	"firstKeptEntryId",
+	"firstKeptEntryIndex",
 	"tokensBefore",
 ];
 const MESSAGE_FIELDS = [
@@ -144,6 +145,8 @@ export interface HistoryStorage {
 	bytes(entry: HistoryStoredEntry): HistoryBytes;
 	/** Root pointer of the original stored pi entry, when available. */
 	format: "sqlite" | "jsonl";
+	/** Verify a legacy file was not replaced/mutated between index and body reads. SQLite holds a read transaction. */
+	verify(): void;
 	close(): void;
 }
 function indexBudget(entries: HistoryStoredEntry[], bytes: number): void {
@@ -225,6 +228,7 @@ function sqliteHistory(path: string): HistoryStorage {
 			format: "sqlite",
 			watermark: { entryId: high, conversationId: projection.water.conversationId, nextSeq: meta.next_seq },
 			bytes: (entry) => sqliteBytes(db, entry),
+			verify() {},
 			close: () => {
 				db.exec("ROLLBACK");
 				db.close();
@@ -268,11 +272,20 @@ function jsonlHistory(path: string): HistoryStorage {
 			if (sample.type === "session") {
 				if (header || entries.length) throw new Error("Invalid session header order");
 				header = sample as unknown as SessionHeader;
-				if (header.version !== 3) throw new Error("History pages require JSONL session version 3");
+				if (![1, 2, 3].includes(header.version ?? 1)) throw new Error("Unsupported JSONL session version");
 			} else {
-				if (!header || typeof sample.id !== "string" || typeof sample.type !== "string")
-					throw new Error("Invalid JSONL history identity");
-				const entry = sample as unknown as SessionEntry;
+				if (!header || typeof sample.type !== "string") throw new Error("Invalid JSONL history identity");
+				if ((header.version ?? 1) === 1) {
+					sample.id = `j${start.toString(16)}`;
+					sample.parentId = entries.at(-1)?.entry.id ?? null;
+					if (typeof sample.firstKeptEntryIndex === "number") {
+						const target = entries[sample.firstKeptEntryIndex - 1];
+						if (!target) throw new Error("Invalid legacy compaction target");
+						sample.firstKeptEntryId = target.entry.id;
+					}
+				}
+				if (typeof sample.id !== "string") throw new Error("Invalid JSONL history identity");
+				const entry = legacyHistoryProjection(sample, sample as unknown as SessionEntry) as unknown as SessionEntry;
 				const fingerprint = createHash("sha256");
 				for (let offset = start; offset < start + length; offset += 65536)
 					fingerprint.update(source.read(offset, Math.min(65536, start + length - offset)));
@@ -298,12 +311,33 @@ function jsonlHistory(path: string): HistoryStorage {
 				read: (offset, length) => source.read(entry.storageId + offset, Math.min(length, entry.length - offset)),
 				close() {},
 			}),
+			verify() {
+				const current = statSync(path);
+				if (current.ino !== stat.ino || current.size !== stat.size || current.mtimeMs !== stat.mtimeMs)
+					throw new Error("History storage changed during body read; retry");
+			},
 			close: () => source.close(),
 		};
 	} catch (error) {
 		source.close();
 		throw error;
 	}
+}
+
+/** Virtual legacy migrations only: stable byte-derived v1 IDs, never a repair or random-id rewrite. */
+export function legacyHistoryProjection(
+	value: Record<string, unknown>,
+	identity: Pick<SessionEntry, "id" | "parentId"> & { firstKeptEntryId?: string },
+): Record<string, unknown> {
+	const projected: Record<string, unknown> = { ...value, id: identity.id, parentId: identity.parentId };
+	const message = projected.message as Record<string, unknown> | undefined;
+	if (projected.type === "message" && message?.role === "hookMessage")
+		projected.message = { ...message, role: "custom" };
+	if ("firstKeptEntryIndex" in projected) {
+		delete projected.firstKeptEntryIndex;
+		projected.firstKeptEntryId = identity.firstKeptEntryId;
+	}
+	return projected;
 }
 
 /** Selected-entry raw value spans only; the index never contains body strings. */

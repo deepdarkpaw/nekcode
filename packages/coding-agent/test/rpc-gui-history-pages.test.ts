@@ -182,6 +182,12 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		let page = read({ type: "read_history_page", sessionPath });
 		const lengths = [page.turns.length];
 		expect(page.turns[0].id).toBe("turn:u50");
+		if (format === "sqlite")
+			expect(
+				sql
+					.filter((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"))
+					.every((call) => Number(call.args[2]) >= 103),
+			).toBe(true);
 		while (page.olderCursor) {
 			page = read({ type: "read_history_page", sessionPath, beforeCursor: page.olderCursor });
 			lengths.push(page.turns.length);
@@ -271,6 +277,9 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		);
 		const target = read({ type: "read_history_directory", sessionPath, aroundEntryId: "u55", limit: 1 });
 		expect(target.items[0]).toMatchObject({ entryId: "u55", turnId: "turn:u55", position: 110 });
+		expect(
+			read({ type: "read_history_directory", sessionPath, aroundEntryId: "a55", limit: 1 }).items[0].entryId,
+		).toBe("u55");
 		error({ type: "read_history_page", sessionPath, beforeCursor: "bad" }, "INVALID_CURSOR");
 		error(
 			{ type: "read_history_page", sessionPath: fixture("foreign", entries), beforeCursor: page.olderCursor },
@@ -441,6 +450,119 @@ it("HP3 huge image/tool arrays and derived custom entries have exact lazy source
 	expect(JSON.parse(Buffer.from(content.data, "base64").toString("utf8")).data.message.content).toBe(
 		"note".repeat(10000),
 	);
+});
+
+it("HP3/HP4 excessive object members are one explicit source ref, never an oversized envelope", () => {
+	const entries = rounds(1);
+	Object.assign(
+		entries[0],
+		Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`extra${i}`, "x".repeat(1000)])),
+	);
+	for (const sessionPath of [sqlite("members", entries), jsonl("members", entries)]) {
+		const page = read({ type: "read_history_page", sessionPath, maxBytes: 65536 });
+		expect(page.turns[0].header.id).toBe("u0");
+		expect(page.entries[0].omissions[0]).toMatchObject({
+			pointer: "",
+			format: sessionPath.endsWith("sqlite") ? "durable-record" : "session-entry",
+		});
+		expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(65536);
+	}
+});
+
+it("HP1/HP7 pre-user model/thinking entries do not add a 71st round or replace the real header", () => {
+	const entries: SessionEntry[] = [
+		{ type: "model_change", id: "model", parentId: null, timestamp: TIME, provider: "mock", modelId: "offline" },
+		{ type: "thinking_level_change", id: "thinking", parentId: "model", timestamp: TIME, thinkingLevel: "high" },
+		...rounds(70),
+	];
+	entries[2].parentId = "thinking";
+	for (const sessionPath of [sqlite("preamble", entries), jsonl("preamble", entries)]) {
+		let page = read({ type: "read_history_page", sessionPath });
+		const counts = [page.turns.length];
+		while (page.olderCursor) {
+			page = read({ type: "read_history_page", sessionPath, beforeCursor: page.olderCursor });
+			counts.push(page.turns.length);
+		}
+		expect(counts).toEqual([20, 20, 20, 10]);
+		expect(page.totalTurns).toBe(70);
+		expect(page.turns[0].header).toMatchObject({ id: "u0", position: 2 });
+		expect(page.seed).toEqual({ model: { provider: "mock", modelId: "offline" }, thinkingLevel: "high" });
+		expect(read({ type: "read_history_directory", sessionPath, limit: 1 }).items[0].entryId).toBe("u0");
+	}
+});
+
+it("HP6/HP8 legacy v1/v2 migrate virtually with stable identities and no file repair", () => {
+	for (const version of [1, 2]) {
+		const path = join(root, `legacy-v${version}.jsonl`);
+		const lines: Record<string, unknown>[] = [
+			{ ...header(`legacy-${version}`), version: version === 1 ? undefined : 2 },
+			...rounds(1).map((entry) => ({ ...entry })),
+		];
+		lines.push({
+			type: "message",
+			id: "hook",
+			parentId: "a0",
+			timestamp: TIME,
+			message: { role: "hookMessage", customType: "old-note", content: "note", display: true, timestamp: 1 },
+		});
+		if (version === 1) {
+			for (const line of lines.slice(1)) {
+				delete line.id;
+				delete line.parentId;
+			}
+			lines.push({
+				type: "compaction",
+				timestamp: TIME,
+				summary: "summary",
+				firstKeptEntryIndex: 1,
+				tokensBefore: 10,
+			});
+		}
+		writeFileSync(path, lines.map((line) => JSON.stringify(line)).join("\n"));
+		const before = hash(path);
+		const page = read({ type: "read_history_page", sessionPath: path });
+		expect(page.totalTurns).toBe(1);
+		expect(page.entries[2].entry.message).toMatchObject({ role: "custom" });
+		expect(read({ type: "read_history_page", sessionPath: path }).entries.map((entry) => entry.id)).toEqual(
+			page.entries.map((entry) => entry.id),
+		);
+		if (version === 1) expect(page.entries[3].entry).toMatchObject({ firstKeptEntryId: page.entries[0].id });
+		expect(hash(path)).toBe(before);
+	}
+});
+
+it("HP6/HP7 projection seeds resolve calls/spawns outside the loaded page without fake entries", () => {
+	const entries = rounds(70);
+	const firstAnswer = entries[1];
+	if (firstAnswer.type !== "message" || firstAnswer.message.role !== "assistant") throw new Error("fixture");
+	firstAnswer.message.content = [
+		{ type: "toolCall", id: "historic-call", name: "read", arguments: { path: "file.ts" } },
+	];
+	entries.push({
+		type: "message",
+		id: "late-result",
+		parentId: "a69",
+		timestamp: TIME,
+		message: {
+			role: "toolResult",
+			toolCallId: "historic-call",
+			toolName: "read",
+			content: [{ type: "text", text: "result" }],
+			isError: false,
+			timestamp: 1,
+		},
+	});
+	for (const sessionPath of [sqlite("context", entries), jsonl("context", entries)]) {
+		const page = read({ type: "read_history_page", sessionPath });
+		expect(page.entries.at(-1)?.toolCallOrigin).toEqual({
+			entryId: "a0",
+			position: 1,
+			toolCallId: "historic-call",
+			name: "read",
+		});
+		expect(page.entries.some((entry) => entry.id === "a0")).toBe(false);
+		expect(page.seed.model).toEqual({ provider: "mock", modelId: "offline" });
+	}
 });
 
 it("HP5 SQLite append preserves cursors; HP6 hidden fork ownership matches durable projection", () => {
