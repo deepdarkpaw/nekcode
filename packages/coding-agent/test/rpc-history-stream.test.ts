@@ -122,6 +122,26 @@ describe("opt-in bounded live history", () => {
 		});
 		expect(JSON.stringify(frames).length).toBeLessThan(2048);
 	});
+	it("HP11 a stored host append is never announced ahead of earlier entries the projection has not folded", async () => {
+		const { owner, frames, stream } = collect();
+		await stream.configure(1);
+		const custom = (id: string, parentId: string | null) =>
+			({ id, type: "custom", parentId, timestamp: "2026-11-01", customType: "fixture" }) as SessionEntry;
+		const earlier = custom("engine-commit", null);
+		const host = custom("host-append", "engine-commit");
+		// The durable store already holds both; the owner's projection has folded neither yet.
+		owner.hasCommittedEntry = (entryId) => entryId === earlier.id || entryId === host.id;
+		stream.publish({ type: "entry_appended", entry: host });
+		await stream.drain();
+		expect(frames.filter((frame) => frame.type === "history_entry_appended")).toEqual([]);
+		owner.entries.push(earlier, host);
+		stream.publish({ type: "agent_start" });
+		await stream.drain();
+		expect(frames.flatMap((frame) => (frame.type === "history_entry_appended" ? [frame.entryId] : []))).toEqual([
+			"engine-commit",
+			"host-append",
+		]);
+	});
 	it("HP3/HP4 full final message/tool/turn/agent copies >64MiB become explicit history omissions", async () => {
 		const { frames, stream } = collect();
 		await stream.configure(1);

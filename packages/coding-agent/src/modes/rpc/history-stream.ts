@@ -37,7 +37,7 @@ type Frame = RpcHistoryStreamEvent extends infer E
 		: never
 	: never;
 type Work = { epoch: string; source: HistoryStreamSource } & (
-	| { kind: "entry"; entryId: string }
+	| { kind: "entry"; entryId: string; parentId: string | null }
 	| { kind: "event"; value: HistoryLiveEvent }
 );
 class StreamFailure extends Error {
@@ -61,6 +61,8 @@ export function createHistoryStreamEmitter(
 	let seq = 0;
 	let eventId = 0;
 	let position = initial.committedPosition();
+	/** Last entry the consumer can hold contiguously: the bootstrap leaf, then every announced locator. */
+	let announced: string | null = initial.leafId();
 	const queue: Work[] = [];
 	let pump: Promise<void> | undefined;
 	const current = (owner: string) => owner === epoch && enabled && !failed;
@@ -89,7 +91,12 @@ export function createHistoryStreamEmitter(
 			owner,
 		);
 	}
-	async function entry(entryId: string, work: Work): Promise<void> {
+	/**
+	 * Locators are contiguous. `ordered` holds for the committed delta and for a stored host append whose parent
+	 * is the last announced entry. Any other stored entry the owner's projection has not folded yet (e.g. a host
+	 * hook append racing an engine commit) is announced by a later delta after every earlier entry.
+	 */
+	async function entry(entryId: string, work: Work, ordered: boolean): Promise<void> {
 		if (!current(work.epoch)) return;
 		const path = work.source.sessionPath;
 		if (entryId.length > 4096 || work.source.sessionId.length > 4096 || (path !== undefined && path.length > 32768))
@@ -101,6 +108,7 @@ export function createHistoryStreamEmitter(
 			);
 			return;
 		}
+		if (!ordered) return;
 		await emit(
 			{
 				type: "history_entry_appended",
@@ -112,6 +120,7 @@ export function createHistoryStreamEmitter(
 			},
 			work.epoch,
 		);
+		if (current(work.epoch)) announced = entryId;
 	}
 	async function committed(work: Work): Promise<Set<string>> {
 		try {
@@ -140,7 +149,7 @@ export function createHistoryStreamEmitter(
 		for (const value of delta.entries) {
 			if (!current(work.epoch)) break;
 			ids.add(value.id);
-			await entry(value.id, work);
+			await entry(value.id, work, true);
 		}
 		return ids;
 	}
@@ -214,7 +223,7 @@ export function createHistoryStreamEmitter(
 				const ids = await committed(work);
 				if (!current(work.epoch)) continue;
 				if (work.kind === "entry") {
-					if (!ids.has(work.entryId)) await entry(work.entryId, work);
+					if (!ids.has(work.entryId)) await entry(work.entryId, work, work.parentId === announced);
 				} else await event(work.value, work.epoch);
 			} catch (error) {
 				await fail(error, work.epoch);
@@ -251,6 +260,7 @@ export function createHistoryStreamEmitter(
 		seq = 0;
 		eventId = 0;
 		position = next.committedPosition();
+		announced = next.leafId();
 		queue.length = 0;
 		accepting = true;
 		failed = false;
@@ -283,7 +293,7 @@ export function createHistoryStreamEmitter(
 			try {
 				enqueue(
 					value.type === "entry_appended"
-						? { kind: "entry", entryId: value.entry.id, source, epoch }
+						? { kind: "entry", entryId: value.entry.id, parentId: value.entry.parentId, source, epoch }
 						: { kind: "event", value: historyLiveEvent(value), source, epoch },
 				);
 			} catch (error) {
