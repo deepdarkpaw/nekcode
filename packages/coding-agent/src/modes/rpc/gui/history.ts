@@ -450,6 +450,7 @@ function children(view: View): Map<string, RpcHistorySubagentRecord> {
 				continue;
 			const previous = records.get(fact.id);
 			const record: RpcHistorySubagentRecord = {
+				...previous,
 				id: fact.id,
 				spawnEntryId: previous?.spawnEntryId ?? entry.id,
 				spawnPosition: previous?.spawnPosition ?? position,

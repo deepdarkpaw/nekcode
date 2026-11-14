@@ -389,6 +389,7 @@ it("HP7/HP9 bounded child enumeration covers old children, stable resume anchors
 					background: false,
 					status: "running",
 					startedAt: i + 1,
+					sessionFile: `/${"p".repeat(1800)}/child-${i}.sqlite`,
 					finalText: "never enumerate final text",
 				},
 			},
@@ -440,6 +441,15 @@ it("HP7/HP9 bounded child enumeration covers old children, stable resume anchors
 			counts.push(listing.count);
 		}
 		expect(counts).toEqual([20, 20, 5]);
+		expect(records[0].sessionFile).toBe(`/${"p".repeat(1800)}/child-0.sqlite`);
+		const budgeted = read({ type: "read_history_subagent", sessionPath, limit: 100, maxBytes: 65536 });
+		expect(budgeted.count).toBeLessThan(45);
+		expect(budgeted.hasMore).toBe(true);
+		expect(
+			Buffer.byteLength(
+				JSON.stringify({ type: "response", command: "read_history_subagent", success: true, data: budgeted }),
+			),
+		).toBeLessThanOrEqual(65536);
 		expect(records.map((record) => record.id)).toEqual(Array.from({ length: 45 }, (_, i) => `child-${i}`));
 		expect(JSON.stringify(records)).not.toContain("finalText");
 		expect(read({ type: "read_history_subagent", sessionPath, subagentId: "child-0" }).subagent).toEqual(records[0]);
@@ -452,6 +462,45 @@ it("HP7/HP9 bounded child enumeration covers old children, stable resume anchors
 			},
 			"FOREIGN_CURSOR",
 		);
+		const added: SessionEntry = {
+			type: "message",
+			id: "new-child",
+			parentId: "resume-update",
+			timestamp: TIME,
+			message: {
+				role: "toolResult",
+				toolCallId: "new-call",
+				toolName: "subagent",
+				content: [],
+				isError: false,
+				timestamp: 1,
+				details: {
+					subagent: {
+						id: "child-45",
+						type: "explorer",
+						description: "new",
+						background: false,
+						status: "running",
+						startedAt: 200,
+					},
+				},
+			},
+		};
+		if (sessionPath.endsWith("jsonl")) appendFileSync(sessionPath, `${JSON.stringify(added)}\n`);
+		else {
+			const db = new DatabaseSync(sessionPath);
+			const { high } = db.prepare("SELECT max(id)+1 AS high FROM entries").get() as { high: number };
+			db.prepare("INSERT INTO entries VALUES(?,?,?,?)").run(
+				high,
+				1,
+				high,
+				JSON.stringify({ id: high, conversationId: 1, kind: "pi.tool-result", data: { entry: added } }),
+			);
+			db.close();
+		}
+		const appended = read({ type: "read_history_subagent", sessionPath, cursor: firstCursor, limit: 100 });
+		expect(appended.total).toBe(46);
+		expect(appended.subagents.at(-1)?.id).toBe("child-45");
 		ctx = {
 			...ctx,
 			session: { sessionFile: sessionPath, sessionManager: { getLeafId: () => "a0" } },
@@ -816,6 +865,7 @@ it("HP11 persisted watermark/active leaf fencing and explicit foreign session se
 it("HP12 capability, exported command table, control allowlist and real handler agree", async () => {
 	const info = buildGuiInfo({ agentDir: join(root, "agent"), cwd: root, entryPath: join(root, "cli.ts") });
 	expect(info.capabilities).toEqual({ historyPages: 1 });
+	expect(NEK_CONTROL_COMMANDS).not.toContain("set_history_stream");
 	const sessionPath = sqlite("handler", rounds(1));
 	for (const type of [
 		"read_session_metadata",
