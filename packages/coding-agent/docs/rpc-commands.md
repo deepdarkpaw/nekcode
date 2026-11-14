@@ -2,6 +2,29 @@
 
 This reference lists commands accepted on stdin in [RPC mode](rpc.md). Each command and response is one JSON object. Shared message values use the [message types](message-types.md).
 
+## Bounded GUI history (`historyPages: 1`)
+
+`nek gui-info --json` advertises `capabilities.historyPages: 1`. New GUI consumers must require it, not fall back to `read_session_snapshot` or full `get_entries`. Those older commands retain their existing semantics for other callers. The exported TypeScript contract is `src/modes/rpc/gui/history-protocol.ts` (also exported from `gui/protocol.ts` and `rpc-types.ts`).
+
+All six read-only commands work in session and `--control` modes. Pass `sessionPath` in control mode; omitting it in session mode selects only that process's active persisted session. Explicit paths never substitute the current session. No command imports/repairs legacy files, acquires a writer lock, resumes work, or calls a provider.
+
+| Command | Options beyond `sessionPath?`, `branchRevision?`, `maxBytes?` | Result |
+| --- | --- | --- |
+| `read_session_metadata` | none | Summary/lock holder, effective persisted leaf, full-branch usage and model/thinking selection, child count; no entries/messages |
+| `read_history_page` | `beforeCursor?`, `afterCursor?`, `aroundEntryId?` (choose one), `turnLimit?` | Latest 20 user rounds by default, chronological display entries and stable turn/header identities, older/newer cursors, explicit within-turn continuation |
+| `read_history_turn` | `turnId`, `cursor?` | Bounded details continuation with the actual owning header repeated |
+| `read_history_directory` | `query?`, `cursor?`, `direction?: "oldest" \| "newest"`, `aroundEntryId?`, `limit?` | Bounded 256-character summaries and stable entry/turn targets; decoded case-insensitive string search streams on nek |
+| `read_history_content` | `ref`, `offset?`, `limit?` | Base64-encoded raw UTF8 JSON bytes, total byte length and `nextOffset?` |
+| `read_history_subagent` | `subagentId` | Parent-branch-authorized persisted child metadata/path and original spawn anchor; never `finalText` or inferred live status |
+
+Responses use the usual RPC envelope. History errors are explicit `data: {ok:false,error:{code,message}}`; successful data starts with `ok:true`, `sessionPath`, `sessionId`, `leafId`, `branchRevision`, and `watermark:{entryId,conversationId,nextSeq}`. The watermark describes **persisted storage**, not a live event sequence. Control observes the latest persisted projected leaf; only a session process knows navigation-only selection. Fence pages separately against the GUI's existing live epoch/sequence owner. An explicit `branchRevision` requires an exact match. Cursor/ref capabilities authenticate their observed branch prefix: compatible append remains valid, fork/truncation/navigation away fails. Capabilities expire on process restart; refetch a page after reconnect.
+
+`maxBytes` budgets the actual complete UTF8 response envelope: default 1 MB (1048576 bytes), accepted 65536..4194304 bytes. Turns default/max20, entries max256 per response; directory limit default20/max100, query max256 characters; content limit default65536/max262144 bytes. Invalid limits reject. Request ids are max256 bytes (invalid overlarge ids are not echoed). Pre-user configuration can form a non-user `preamble` descriptor; selection seeds are metadata, not fabricated display entries.
+
+Display entries carry `entry: Record<string,unknown>` and `omissions: {pointer,ref,totalBytes,mediaType,encoding,format?}[]`. Only an empty omissions list means a complete entry. Oversized fields/subtrees are **explicitly** replaced with null, never silently truncated. Reconstruct an omitted JSON value by concatenating the decoded byte chunks, then `JSON.parse`; offsets are bytes of its original JSON encoding, not character offsets or decoded image bytes. Root omissions with `format:"durable-record"` contain the original durable record and require the normal `projectRecord` projection. Never feed a display projection into model context. Tool results include their original `toolCallOrigin` (or null if none was persisted); child facts carry bounded summaries with original spawn positions even when the spawn lies outside the page. Further children are available through targeted lookup. Child files in the `subagents` directory are checked against their persisted parent's current branch before reading.
+
+SQLite uses indexed ID batches and native scalar/substr reads inside one read transaction. Legacy version-3 JSONL uses bounded token scanning, not whole-line parsing. Request-local metadata indexes expire when the request closes: at most100000 records and64 MB metadata, with visible `INDEX_LIMIT` errors when exhausted. No historical body/result cache is retained. The durable owner treats SQLite rows as immutable; cursor fingerprints include row identity/commit sequence/length/metadata. External in-place database tampering outside that storage contract is unsupported. Legacy cursors additionally fingerprint the full raw record bytes. Legacy append racing an index scan returns a visible retryable storage error rather than claiming a newer snapshot.
+
 ## Prompting
 
 ### prompt

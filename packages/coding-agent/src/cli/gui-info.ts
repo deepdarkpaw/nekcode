@@ -73,6 +73,7 @@ export function buildGuiInfo(options: GuiInfoOptions = {}): RpcGuiInfo {
 	const installDir = isSourceEntry(entry) ? findInstallDir(dirname(entry)) : undefined;
 	const info: RpcGuiInfo = {
 		protocolVersion: NEK_GUI_PROTOCOL_VERSION,
+		capabilities: { historyPages: 1 },
 		nekVersion: NEK_VERSION,
 		piVersion: VERSION,
 		node: { path: process.execPath, version: process.version },

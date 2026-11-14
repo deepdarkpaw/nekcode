@@ -10,6 +10,7 @@ import type { RpcResponse } from "../rpc-types.ts";
 import { authLogin, authLogout, authStatus } from "./auth.ts";
 import { createReloadScheduler, validateConfig } from "./config.ts";
 import { type GuiContext, requireSession } from "./context.ts";
+import { readHistoryCommand } from "./history.ts";
 import { getChangelog, getInfo } from "./info.ts";
 import { getMentionTargets } from "./mentions.ts";
 import { fetchProviderModels, getModelCatalog, testProvider } from "./models.ts";
@@ -39,6 +40,12 @@ export const GUI_COMMAND_TYPES: ReadonlySet<string> = new Set<RpcGuiCommand["typ
 	"delete_session",
 	"rename_session",
 	"read_session_snapshot",
+	"read_session_metadata",
+	"read_history_page",
+	"read_history_turn",
+	"read_history_directory",
+	"read_history_content",
+	"read_history_subagent",
 	"import_session",
 	"export_session",
 	"share_session",
@@ -70,6 +77,7 @@ export async function handleGuiCommand(
 ): Promise<RpcResponse | undefined> {
 	if (!GUI_COMMAND_TYPES.has(command.type)) return undefined;
 	const id = command.id;
+	const historyId = typeof id === "string" && Buffer.byteLength(id) <= 256 ? id : undefined;
 	const cmd = command as RpcGuiCommand;
 	try {
 		switch (cmd.type) {
@@ -93,6 +101,18 @@ export async function handleGuiCommand(
 			case "rename_session":
 				await renameSession(cmd.sessionPath, cmd.name);
 				return guiSuccess(id, "rename_session", {});
+			case "read_session_metadata":
+				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
+			case "read_history_page":
+				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
+			case "read_history_turn":
+				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
+			case "read_history_directory":
+				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
+			case "read_history_content":
+				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
+			case "read_history_subagent":
+				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
 			case "read_session_snapshot":
 				return guiSuccess(id, "read_session_snapshot", readSessionSnapshotFor(cmd.sessionPath));
 			case "import_session":
