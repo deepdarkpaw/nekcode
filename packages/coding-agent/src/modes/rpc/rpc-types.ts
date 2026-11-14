@@ -15,6 +15,7 @@ import type { SourceInfo } from "../../core/source-info.ts";
 import type { RpcGuiCommand, RpcGuiResponseData } from "./gui/protocol.ts";
 
 export type * from "./gui/history-protocol.ts";
+export type * from "./gui/history-stream-protocol.ts";
 
 export {
 	NEK_CONTROL_COMMANDS,

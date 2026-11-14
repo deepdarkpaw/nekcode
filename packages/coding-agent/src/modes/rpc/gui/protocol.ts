@@ -7,8 +7,10 @@
 
 import type { McpServerConfig } from "../../../core/mcp-servers.ts";
 import type { RpcHistoryCommand, RpcHistoryResponseData } from "./history-protocol.ts";
+import type { RpcHistoryStreamCommand, RpcHistoryStreamResponseData } from "./history-stream-protocol.ts";
 
 export type * from "./history-protocol.ts";
+export type * from "./history-stream-protocol.ts";
 
 /** Protocol version: bump on any incompatible change. The GUI requires the exact value. */
 export const NEK_GUI_PROTOCOL_VERSION = 1;
@@ -35,7 +37,7 @@ export type RpcEndpointApi = (typeof NEK_ENDPOINT_APIS)[number];
 /** Output of `nek gui-info --json`. */
 export interface RpcGuiInfo {
 	protocolVersion: number;
-	capabilities: { historyPages: 1 };
+	capabilities: { historyPages: 1; historyStream: 1 };
 	/** nek version from package.json `nekConfig.version`, e.g. "0.4.0". */
 	nekVersion: string;
 	/** Base pi version, e.g. "1.0.2". */
@@ -85,6 +87,7 @@ export interface RpcProviderOverrides {
 
 export type RpcGuiCommand =
 	| RpcHistoryCommand
+	| RpcHistoryStreamCommand
 	// ---- runtime [session + control] ----
 	| { id?: string; type: "get_info" }
 	| { id?: string; type: "reload" }
@@ -337,7 +340,7 @@ export type RpcMcpTestResult =
 	| { ok: true; latencyMs: number; tools: Array<{ name: string; description?: string }> }
 	| { ok: false; message: string };
 
-export interface RpcGuiResponseData extends RpcHistoryResponseData {
+export interface RpcGuiResponseData extends RpcHistoryResponseData, RpcHistoryStreamResponseData {
 	get_info: RpcInfo;
 	reload: RpcReloadResult;
 	validate_config: { diagnostics: RpcConfigDiagnostic[] };
