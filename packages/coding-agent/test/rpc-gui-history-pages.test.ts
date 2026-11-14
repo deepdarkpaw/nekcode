@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import {
 	appendFileSync,
 	closeSync,
+	copyFileSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	openSync,
@@ -215,6 +217,274 @@ afterEach(() => {
 describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) => {
 	const fixture = (name: string, entries: SessionEntry[]) =>
 		format === "sqlite" ? sqlite(name, entries) : jsonl(name, entries);
+	it("HO1 empty prefix observations survive append and are non-consuming on same-token retry", () => {
+		const sessionPath = fixture("observation-empty", []);
+		const before = hash(sessionPath);
+		const initial = read({ type: "read_session_metadata", sessionPath });
+		expect(initial.totalEntries).toBe(0);
+		expect(initial.observationCursor).toEqual(expect.any(String));
+		expect(
+			read({ type: "read_history_page", sessionPath, view: "summary", observationCursor: initial.observationCursor })
+				.observationCursor,
+		).toBe(initial.observationCursor);
+		expect(hash(sessionPath)).toBe(before);
+		appendHistory(sessionPath, rounds(1));
+		const appendedHash = hash(sessionPath);
+		const appended = read({
+			type: "read_session_metadata",
+			sessionPath,
+			observationCursor: initial.observationCursor,
+		});
+		expect(appended.totalEntries).toBe(2);
+		expect(appended.branchRevision).not.toBe(initial.branchRevision);
+		expect(appended.observationCursor).not.toBe(initial.observationCursor);
+		for (let retry = 0; retry < 2; retry++) {
+			expect(
+				read({ type: "read_history_page", sessionPath, observationCursor: initial.observationCursor })
+					.observationCursor,
+			).toBe(appended.observationCursor);
+			expect(
+				read({ type: "read_session_metadata", sessionPath, observationCursor: appended.observationCursor })
+					.observationCursor,
+			).toBe(appended.observationCursor);
+		}
+		expect(hash(sessionPath)).toBe(appendedHash);
+		expect(existsSync(`${sessionPath}.lock`)).toBe(false);
+	});
+	it("HO1 all history identities carry an append-safe observation within unchanged response budgets", () => {
+		const entries = rounds(22);
+		const answer = entries[43];
+		if (answer.type !== "message" || answer.message.role !== "assistant")
+			throw new Error("fixture assistant missing");
+		answer.message.content = [{ type: "text", text: "oversized observation body ".repeat(5000) }];
+		entries.splice(2, 0, {
+			type: "message",
+			id: "old-spawn",
+			parentId: "a0",
+			timestamp: TIME,
+			message: {
+				role: "toolResult",
+				toolCallId: "spawn-call",
+				toolName: "subagent",
+				content: [],
+				isError: false,
+				timestamp: 1,
+				details: {
+					subagent: {
+						id: "observed-child",
+						type: "explorer",
+						description: "persisted",
+						background: false,
+						status: "completed",
+						startedAt: 1,
+					},
+				},
+			},
+		});
+		for (let index = 0; index < entries.length; index++) entries[index].parentId = entries[index - 1]?.id ?? null;
+		const sessionPath = fixture("observation-append", entries);
+		const page = read({ type: "read_history_page", sessionPath, maxBytes: 65536 });
+		const contentRef = page.entries.find((entry) => entry.id === "a21")!.omissions[0].ref;
+		expect(page.olderCursor).toBeDefined();
+		appendHistory(sessionPath, rounds(23).slice(-2));
+		const beforeReads = hash(sessionPath);
+		const metadata = read({ type: "read_session_metadata", sessionPath, observationCursor: page.observationCursor });
+		expect(metadata.branchRevision).not.toBe(page.branchRevision);
+		const commands: RpcHistoryCommand[] = [
+			{ type: "read_session_metadata" },
+			{ type: "read_history_page", view: "entries", beforeCursor: page.olderCursor },
+			{ type: "read_history_page", view: "summary" },
+			{ type: "read_history_turn", turnId: "turn:u21" },
+			{ type: "read_history_directory", query: "round", limit: 2 },
+			{ type: "read_history_content", ref: contentRef, limit: 262144 },
+			{ type: "read_history_subagent", subagentId: "observed-child" },
+			{ type: "read_history_subagent", limit: 1 },
+		];
+		for (const command of commands) {
+			const request = {
+				...command,
+				id: "observation-budget",
+				sessionPath,
+				maxBytes: 65536,
+				observationCursor: page.observationCursor,
+			};
+			const result = read(request);
+			expect(result.observationCursor).toBe(metadata.observationCursor);
+			if (command.type === "read_history_content") expect(result).toHaveProperty("nextOffset");
+			expect(
+				Buffer.byteLength(
+					JSON.stringify({ id: request.id, type: "response", command: request.type, success: true, data: result }),
+				),
+			).toBeLessThanOrEqual(request.maxBytes);
+		}
+		error(
+			{
+				type: "read_session_metadata",
+				sessionPath,
+				observationCursor: page.observationCursor,
+				branchRevision: page.branchRevision,
+			},
+			"STALE_CURSOR",
+		);
+		expect(
+			read({ type: "read_session_metadata", sessionPath, observationCursor: page.observationCursor })
+				.observationCursor,
+		).toBe(metadata.observationCursor);
+		expect(hash(sessionPath)).toBe(beforeReads);
+		expect(existsSync(`${sessionPath}.lock`)).toBe(false);
+	});
+	it("HO2 observations reject prefix rewrite/truncation before body, turn, directory or content projection", () => {
+		for (const mutation of ["rewrite", "truncate"] as const) {
+			const entries = rounds(3);
+			const name = `observation-${mutation}`;
+			const sessionPath = fixture(name, entries);
+			const initial = read({ type: "read_session_metadata", sessionPath });
+			if (format === "jsonl") {
+				if (mutation === "truncate") entries.splice(2);
+				else
+					entries[0] = {
+						...entries[0],
+						type: "message",
+						message: { role: "user", content: "rewritten prefix", timestamp: 1 },
+					};
+				writeFileSync(
+					sessionPath,
+					`${[header(name), ...entries].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+				);
+			} else {
+				const db = new DatabaseSync(sessionPath);
+				if (mutation === "truncate") db.exec("DELETE FROM entries WHERE id>4");
+				else {
+					const row = db.prepare("SELECT record FROM entries WHERE id=3").get() as { record: string };
+					const record = JSON.parse(row.record);
+					record.model[0].content = "rewritten prefix";
+					db.prepare("UPDATE entries SET record=? WHERE id=3").run(JSON.stringify(record));
+				}
+				db.close();
+			}
+			const beforeReads = hash(sessionPath);
+			const open = historyStorage.openHistoryStorage;
+			const bytes = vi.fn(() => {
+				throw new Error("guard must reject before display/search/content reads");
+			});
+			const spy = vi
+				.spyOn(historyStorage, "openHistoryStorage")
+				.mockImplementation((path) => ({ ...open(path), bytes }));
+			try {
+				for (const command of [
+					{ type: "read_history_page" },
+					{ type: "read_history_page", view: "summary" },
+					{ type: "read_history_turn", turnId: "missing" },
+					{ type: "read_history_directory", query: "round" },
+					{ type: "read_history_content", ref: "bad-ref" },
+					{ type: "read_history_subagent" },
+				] as const) {
+					error({ ...command, sessionPath, observationCursor: initial.observationCursor }, "STALE_CURSOR");
+				}
+				expect(bytes).not.toHaveBeenCalled();
+			} finally {
+				spy.mockRestore();
+			}
+			const reset = read({ type: "read_session_metadata", sessionPath });
+			if (mutation === "rewrite") expect(reset.leafId).toBe(initial.leafId);
+			expect(
+				read({ type: "read_session_metadata", sessionPath, observationCursor: reset.observationCursor })
+					.observationCursor,
+			).toBe(reset.observationCursor);
+			error(
+				{ type: "read_session_metadata", sessionPath, observationCursor: initial.observationCursor },
+				"STALE_CURSOR",
+			);
+			expect(hash(sessionPath)).toBe(beforeReads);
+		}
+	});
+	it("HO2 effective leaf-prefix switches reject even when the replacement branch is longer", () => {
+		const sessionPath = fixture("observation-navigation", rounds(3));
+		const fork = rounds(3).map((entry, index, entries) => ({
+			...entry,
+			id: `fork-${entry.id}`,
+			parentId: index ? `fork-${entries[index - 1].id}` : "a0",
+		}));
+		if (format === "jsonl") appendHistory(sessionPath, fork);
+		else {
+			const db = new DatabaseSync(sessionPath);
+			db.prepare("INSERT INTO conversations VALUES(?,?)").run(
+				99,
+				JSON.stringify({ id: 99, parent: { conversationId: 1, at: 4 } }),
+			);
+			fork.forEach((entry, index) => {
+				const id = index + 9;
+				db.prepare("INSERT INTO entries VALUES(?,?,?,?)").run(
+					id,
+					99,
+					id,
+					JSON.stringify({ id, conversationId: 99, kind: "nek.message", data: { entry } }),
+				);
+			});
+			db.close();
+		}
+		let leaf = "a2";
+		ctx = {
+			...ctx,
+			session: { sessionFile: sessionPath, sessionManager: { getLeafId: () => leaf } },
+		} as unknown as GuiContext;
+		const before = hash(sessionPath);
+		const initial = read({ type: "read_session_metadata" });
+		leaf = "fork-a2";
+		error({ type: "read_session_metadata", observationCursor: initial.observationCursor }, "STALE_CURSOR");
+		const reset = read({ type: "read_session_metadata" });
+		expect(reset.totalEntries).toBeGreaterThan(initial.totalEntries);
+		expect(
+			read({ type: "read_history_page", view: "summary", observationCursor: reset.observationCursor }).leafId,
+		).toBe(leaf);
+		leaf = "a1";
+		error({ type: "read_history_page", observationCursor: initial.observationCursor }, "STALE_CURSOR");
+		leaf = "a2";
+		expect(
+			read({ type: "read_session_metadata", observationCursor: initial.observationCursor }).observationCursor,
+		).toBe(initial.observationCursor);
+		expect(hash(sessionPath)).toBe(before);
+	});
+	it("HO2 cloned sessions, wrong-kind, malformed and malicious observation tokens fail with typed errors", () => {
+		const sessionPath = fixture("observation-malicious", rounds(22));
+		const page = read({ type: "read_history_page", sessionPath, view: "summary" });
+		const copied = join(root, `cloned.${format === "sqlite" ? "sqlite" : "jsonl"}`);
+		copyFileSync(sessionPath, copied);
+		const before = hash(sessionPath);
+		error(
+			{ type: "read_history_page", sessionPath: copied, observationCursor: page.observationCursor },
+			"FOREIGN_CURSOR",
+		);
+		const [payload, signature] = page.observationCursor.split(".");
+		const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+		const forged = `${Buffer.from(JSON.stringify({ ...parsed, count: 0 })).toString("base64url")}.${signature}`;
+		const corrupted = `${payload}.${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
+		const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+		const alternateSignature = signature.slice(0, -1) + alphabet[alphabet.indexOf(signature.at(-1)!) + 1];
+		expect(Buffer.from(alternateSignature, "base64url")).toEqual(Buffer.from(signature, "base64url"));
+		for (const value of [
+			"",
+			"not-a-token",
+			"x".repeat(4097),
+			`${page.observationCursor}!`,
+			`${page.observationCursor}=`,
+			`${page.observationCursor}.extra`,
+			forged,
+			corrupted,
+			`${payload}.${alternateSignature}`,
+			page.olderCursor!,
+			false,
+			null,
+		]) {
+			error({ type: "read_history_page", sessionPath, observationCursor: value as string }, "INVALID_CURSOR");
+		}
+		expect(
+			read({ type: "read_session_metadata", sessionPath, observationCursor: page.observationCursor })
+				.observationCursor,
+		).toBe(page.observationCursor);
+		expect(hash(sessionPath)).toBe(before);
+		expect(hash(copied)).toBe(before);
+	});
 	it("HP1 latest 20 then 20 then 20 then 10; 1000-round first payload remains bounded", () => {
 		const sessionPath = fixture("seventy", rounds(70));
 		let page = read({ type: "read_history_page", sessionPath });

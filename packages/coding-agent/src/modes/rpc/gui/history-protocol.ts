@@ -4,6 +4,8 @@ import type { RpcSessionLockOwner, RpcSessionSummary } from "./protocol.ts";
 export interface RpcHistoryOptions {
 	sessionPath?: string;
 	branchRevision?: string;
+	/** Append-safe proof of the previously observed session/branch prefix; retries are non-consuming. */
+	observationCursor?: string;
 	/** Entire UTF8 RPC response, including envelope. Default 1MiB, range 64KiB..4MiB. */
 	maxBytes?: number;
 }
@@ -66,6 +68,8 @@ export interface RpcHistoryIdentity {
 	sessionId: string;
 	/** Observed persisted branch prefix, not a live stream revision. */
 	branchRevision: string;
+	/** Opaque current prefix observation, present even for empty history. Not a live sequence or path authority. */
+	observationCursor: string;
 	leafId: string | null;
 	watermark: { entryId: number; conversationId: number; nextSeq: number };
 }
