@@ -17,6 +17,7 @@ import { resolvePath } from "../../../utils/paths.ts";
 import type { GuiContext } from "./context.ts";
 import type {
 	RpcHistoryCommand,
+	RpcHistoryCommandResult,
 	RpcHistoryContent,
 	RpcHistoryDirectory,
 	RpcHistoryEntry,
@@ -29,6 +30,7 @@ import type {
 	RpcHistorySelection,
 	RpcHistorySubagent,
 	RpcHistorySubagentRecord,
+	RpcHistorySummaryPage,
 	RpcHistoryTurn,
 	RpcHistoryTurnPage,
 } from "./history-protocol.ts";
@@ -38,6 +40,8 @@ const DEFAULT_BYTES = 1024 * 1024;
 const MAX_ENTRIES = 256;
 const CHILD_TOOLS = ["subagent", "await", "stop_subagent"];
 type Turn = { id: string; start: number; header: number; end: number; userEntryId: string | null };
+type Range = [start: number, end: number];
+type TurnWindow = { turn: Turn; descriptor: RpcHistoryTurn; low: number; high: number; around: boolean; left: boolean };
 type Token = {
 	session: string;
 	count: number;
@@ -50,6 +54,7 @@ type Token = {
 	entryId?: string;
 	start?: number;
 	end?: number;
+	remaining?: Range[];
 };
 type View = {
 	storage: HistoryStorage;
@@ -544,11 +549,77 @@ function responseSize(command: RpcHistoryCommand, data: object): number {
 		JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data }),
 	);
 }
+/** Remaining ranges are bounded, disjoint and pinned to this read's observed branch end. */
+function turnCursor(view: View, turn: Turn, remaining: Range[]): string | undefined {
+	if (!remaining.length) return undefined;
+	return token(view, { kind: "turn", turnId: turn.id, position: remaining[0][0], remaining });
+}
+function windowCursor(view: View, window: TurnWindow): string | undefined {
+	const { turn, low, high } = window;
+	const remaining: Range[] = [];
+	if (turn.start < low) remaining.push([turn.start, low]);
+	if (high < turn.end) remaining.push([high, turn.end]);
+	return turnCursor(view, turn, remaining);
+}
+/** Admit every turn's header and target/tail first, then grow windows fairly within the shared budget. */
+function loadWindows(
+	view: View,
+	command: RpcHistoryCommand,
+	result: RpcHistoryPage,
+	budget: number,
+	target?: number,
+): void {
+	const windows: TurnWindow[] = result.turns.map((descriptor) => {
+		const turn = view.turns[descriptor.position];
+		const around = target !== undefined && view.turnAt[target] === descriptor.position && target !== turn.header;
+		const position = around ? target! : turn.end - 1;
+		const window = { turn, descriptor, low: position, high: position + 1, around, left: true };
+		descriptor.continuationCursor = windowCursor(view, window);
+		result.entries.push(descriptor.header);
+		return window;
+	});
+	const available = budget - responseSize(command, { ok: true, ...result });
+	const inlineBytes = Math.max(512, Math.min(8192, Math.floor(available / Math.max(1, windows.length)) - 2048));
+	for (const window of windows) {
+		if (window.low !== window.turn.header) result.entries.push(displayEntry(view, window.low, inlineBytes));
+	}
+	if (responseSize(command, { ok: true, ...result }) > budget)
+		fail("RESPONSE_LIMIT", "Turn headers and target projections exceed response budget; reduce turnLimit");
+	let pending = windows;
+	while (pending.length && result.entries.length < MAX_ENTRIES) {
+		const next: TurnWindow[] = [];
+		for (const window of pending) {
+			if (result.entries.length >= MAX_ENTRIES) break;
+			const { turn, low, high } = window;
+			const left = low > turn.start && (!window.around || window.left || high === turn.end);
+			const position = left ? low - 1 : high;
+			if (position >= turn.end) continue;
+			if (left) window.low--;
+			else window.high++;
+			const previousCursor = window.descriptor.continuationCursor;
+			window.descriptor.continuationCursor = windowCursor(view, window);
+			const header = position === turn.header;
+			if (!header) result.entries.push(displayEntry(view, position, inlineBytes));
+			if (responseSize(command, { ok: true, ...result }) > budget) {
+				if (!header) result.entries.pop();
+				Object.assign(window, { low, high });
+				window.descriptor.continuationCursor = previousCursor;
+				continue;
+			}
+			window.left = !left;
+			next.push(window);
+		}
+		pending = next;
+	}
+	result.entries.sort((a, b) => a.position - b.position);
+}
 function page(
 	view: View,
 	command: Extract<RpcHistoryCommand, { type: "read_history_page" }>,
 	budget: number,
-): RpcHistoryPage {
+): RpcHistoryPage | RpcHistorySummaryPage {
+	if (command.view !== undefined && command.view !== "entries" && command.view !== "summary")
+		fail("INVALID_REQUEST", "History page view must be entries or summary");
 	if (
 		[command.beforeCursor, command.afterCursor, command.aroundEntryId].filter((value) => value !== undefined).length >
 		1
@@ -557,6 +628,7 @@ function page(
 	const limit = integer(command.turnLimit, 20, 1, 20);
 	let start = Math.max(0, view.turns.length - limit);
 	let end = view.turns.length;
+	let target: number | undefined;
 	if (command.beforeCursor) {
 		end = untoken(view, command.beforeCursor, "before").position;
 		if (end <= 0 || end > view.turns.length) fail("INVALID_CURSOR", "Nonadvancing older cursor");
@@ -566,77 +638,98 @@ function page(
 		if (start >= view.turns.length) fail("INVALID_CURSOR", "Nonadvancing newer cursor");
 		end = Math.min(view.turns.length, start + limit);
 	} else if (command.aroundEntryId !== undefined) {
-		const position = view.branch.findIndex((row) => row.entry.id === command.aroundEntryId);
-		if (position < 0) fail("NOT_FOUND", "History target is not on effective branch");
-		start = Math.max(0, view.turnAt[position] - Math.floor(limit / 2));
+		target = view.branch.findIndex((row) => row.entry.id === command.aroundEntryId);
+		if (target < 0) fail("NOT_FOUND", "History target is not on effective branch");
+		start = Math.max(0, view.turnAt[target] - Math.floor(limit / 2));
 		end = Math.min(view.turns.length, start + limit);
 	}
-	const turns = view.turns.slice(start, end).map((turn) => turnDescriptor(view, turn));
-	const result: RpcHistoryPage = {
+	const boundary = {
 		...view.identity,
-		turns,
-		entries: [],
 		hasOlder: start > 0,
 		hasNewer: end < view.turns.length,
 		totalTurns: view.turns.length,
 		totalEntries: view.branch.length,
-		seed: selection(view, view.turns[start]?.header ?? 0),
 		...(start > 0 ? { olderCursor: token(view, { kind: "before", position: start }) } : {}),
 		...(end < view.turns.length ? { newerCursor: token(view, { kind: "after", position: end }) } : {}),
 	};
-	// Reserve continuation tokens for every turn before admitting any bodies.
-	for (const descriptor of turns) {
-		const turn = view.turns[descriptor.position];
-		descriptor.continuationCursor = token(view, { kind: "turn", position: turn.start, turnId: turn.id });
-	}
-	if (responseSize(command, { ok: true, ...result }) > budget)
-		fail("RESPONSE_LIMIT", "Turn headers exceed response budget; reduce turnLimit");
-	for (const descriptor of turns) {
-		const turn = view.turns[descriptor.position];
-		let position = turn.start;
-		for (; position < turn.end && result.entries.length < MAX_ENTRIES; position++) {
-			const entry = displayEntry(view, position);
-			result.entries.push(entry);
-			if (responseSize(command, { ok: true, ...result }) > budget) {
-				result.entries.pop();
-				break;
-			}
-		}
-		if (position < turn.end) descriptor.continuationCursor = token(view, { kind: "turn", position, turnId: turn.id });
-		else delete descriptor.continuationCursor;
-	}
+	const selected = view.turns.slice(start, end);
+	if (command.view === "summary")
+		return {
+			...boundary,
+			view: "summary",
+			turns: selected.map((turn) => ({
+				id: turn.id,
+				userEntryId: turn.userEntryId,
+				position: view.turnAt[turn.start],
+				preview: preview(view.branch[turn.header].entry),
+				entryCount: turn.end - turn.start,
+				headerEntryId: view.branch[turn.header].entry.id,
+				headerPosition: turn.header,
+				continuationCursor: turnCursor(view, turn, [[turn.start, turn.end]])!,
+			})),
+		};
+	const result: RpcHistoryPage = {
+		...boundary,
+		view: "entries",
+		turns: selected.map((turn) => turnDescriptor(view, turn)),
+		entries: [],
+		seed: selection(view, view.turns[start]?.header ?? 0),
+	};
+	loadWindows(view, command, result, budget, target);
 	return result;
+}
+function turnRanges(cursor: Token, turn: Turn): Range[] {
+	const ranges = cursor.remaining;
+	if (cursor.turnId !== turn.id || !Array.isArray(ranges) || !ranges.length || ranges.length > 2)
+		fail("INVALID_CURSOR", "Turn continuation does not belong to this turn");
+	let previous = turn.start - 1;
+	for (const range of ranges) {
+		if (
+			!Array.isArray(range) ||
+			range.length !== 2 ||
+			!range.every(Number.isSafeInteger) ||
+			range[0] < turn.start ||
+			range[0] <= previous ||
+			range[0] >= range[1] ||
+			range[1] > Math.min(turn.end, cursor.count)
+		)
+			fail("INVALID_CURSOR", "Invalid or nonadvancing turn itinerary");
+		previous = range[1];
+	}
+	if (cursor.position !== ranges[0][0]) fail("INVALID_CURSOR", "Turn itinerary position mismatch");
+	return ranges;
 }
 function turnPage(
 	view: View,
 	command: Extract<RpcHistoryCommand, { type: "read_history_turn" }>,
 	budget: number,
 ): RpcHistoryTurnPage {
+	const cursor = command.cursor ? untoken(view, command.cursor, "turn") : undefined;
 	const turn = view.turns.find((turn) => turn.id === command.turnId);
 	if (!turn) fail("NOT_FOUND", "Unknown effective branch turn");
-	const cursor = command.cursor ? untoken(view, command.cursor, "turn") : undefined;
-	let position = cursor?.position ?? turn.start;
-	if ((cursor && cursor.turnId !== turn.id) || position < turn.start || position >= turn.end)
-		fail("INVALID_CURSOR", "Turn continuation does not belong to this turn");
+	let remaining: Range[] = cursor ? turnRanges(cursor, turn) : [[turn.start, turn.end]];
 	const result: RpcHistoryTurnPage = {
 		...view.identity,
 		turn: turnDescriptor(view, turn),
 		entries: [],
 		hasMore: true,
-		continuationCursor: token(view, { kind: "turn", position: turn.end, turnId: turn.id }),
+		continuationCursor: turnCursor(view, turn, remaining),
 	};
-	const initial = position;
-	for (; position < turn.end && result.entries.length < MAX_ENTRIES; position++) {
-		result.entries.push(displayEntry(view, position));
+	while (remaining.length && result.entries.length < MAX_ENTRIES) {
+		const [start, end] = remaining[0];
+		const next: Range[] = start + 1 === end ? remaining.slice(1) : [[start + 1, end], ...remaining.slice(1)];
+		result.entries.push(start === turn.header ? result.turn.header : displayEntry(view, start));
+		result.hasMore = next.length > 0;
+		result.continuationCursor = turnCursor(view, turn, next);
 		if (responseSize(command, { ok: true, ...result }) > budget) {
 			result.entries.pop();
+			result.hasMore = true;
+			result.continuationCursor = turnCursor(view, turn, remaining);
 			break;
 		}
+		remaining = next;
 	}
-	if (initial === position) fail("RESPONSE_LIMIT", "One entry projection exceeds response budget");
-	result.hasMore = position < turn.end;
-	if (result.hasMore) result.continuationCursor = token(view, { kind: "turn", position, turnId: turn.id });
-	else delete result.continuationCursor;
+	if (!result.entries.length) fail("RESPONSE_LIMIT", "One entry projection exceeds response budget");
 	return result;
 }
 function contains(view: View, position: number, query: string): boolean {
@@ -773,7 +866,7 @@ function subagent(
 export function readHistoryCommand<C extends RpcHistoryCommand>(
 	ctx: GuiContext,
 	command: C,
-): RpcHistoryResponseData[C["type"]];
+): RpcHistoryCommandResult<C>;
 export function readHistoryCommand(
 	ctx: GuiContext,
 	command: RpcHistoryCommand,
@@ -805,6 +898,7 @@ export function readHistoryCommand(
 		let data:
 			| RpcHistoryMetadata
 			| RpcHistoryPage
+			| RpcHistorySummaryPage
 			| RpcHistoryTurnPage
 			| RpcHistoryDirectory
 			| RpcHistoryContent

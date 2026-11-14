@@ -12,6 +12,8 @@ export type RpcHistoryCommand =
 	| ({
 			id?: string;
 			type: "read_history_page";
+			/** Default entries; summary refreshes persisted boundaries without loading display bodies. */
+			view?: "summary" | "entries";
 			beforeCursor?: string;
 			afterCursor?: string;
 			aroundEntryId?: string;
@@ -89,6 +91,7 @@ export interface RpcHistoryTurn {
 	preview: string;
 	entryCount: number;
 	header: RpcHistoryEntry;
+	/** Opaque remaining-range itinerary, not a direction. Drain with read_history_turn; sort by position. */
 	continuationCursor?: string;
 }
 export interface RpcHistoryMetadata extends RpcHistoryIdentity {
@@ -101,16 +104,30 @@ export interface RpcHistoryMetadata extends RpcHistoryIdentity {
 	children: { count: number };
 	status: "persisted";
 }
-export interface RpcHistoryPage extends RpcHistoryIdentity {
+export interface RpcHistoryPage extends RpcHistoryPageBoundary {
+	view: "entries";
 	turns: RpcHistoryTurn[];
+	/** Original order: real headers plus bounded tail/around windows, not necessarily contiguous. */
 	entries: RpcHistoryEntry[];
+	seed: RpcHistorySelection;
+}
+export interface RpcHistorySummaryPage extends RpcHistoryPageBoundary {
+	view: "summary";
+	/** Metadata only: neither headers nor any other display bodies have been loaded. */
+	turns: (Pick<RpcHistoryTurn, "id" | "userEntryId" | "position" | "preview" | "entryCount"> & {
+		headerEntryId: string;
+		headerPosition: number;
+		/** Full observed turn itinerary, NOT the remaining cursor of any previously loaded window. */
+		continuationCursor: string;
+	})[];
+}
+export interface RpcHistoryPageBoundary extends RpcHistoryIdentity {
 	olderCursor?: string;
 	newerCursor?: string;
 	hasOlder: boolean;
 	hasNewer: boolean;
 	totalTurns: number;
 	totalEntries: number;
-	seed: RpcHistorySelection;
 }
 export interface RpcHistoryTurnPage extends RpcHistoryIdentity {
 	turn: RpcHistoryTurn;
@@ -150,9 +167,19 @@ export interface RpcHistorySubagentRecord {
 export interface RpcHistorySubagent extends RpcHistoryIdentity {
 	subagent: RpcHistorySubagentRecord;
 }
+/** Preserve default-call entry typing while discriminating explicit summary and dynamic-view reads. */
+export type RpcHistoryCommandResult<C extends RpcHistoryCommand> = C extends { type: "read_history_page" }
+	? C extends { view: "summary" }
+		? RpcHistoryResult<RpcHistorySummaryPage>
+		: C extends { view?: "entries" }
+			? RpcHistoryResult<RpcHistoryPage>
+			: "view" extends keyof C
+				? RpcHistoryResult<RpcHistoryPage | RpcHistorySummaryPage>
+				: RpcHistoryResult<RpcHistoryPage>
+	: RpcHistoryResponseData[C["type"]];
 export interface RpcHistoryResponseData {
 	read_session_metadata: RpcHistoryResult<RpcHistoryMetadata>;
-	read_history_page: RpcHistoryResult<RpcHistoryPage>;
+	read_history_page: RpcHistoryResult<RpcHistoryPage | RpcHistorySummaryPage>;
 	read_history_turn: RpcHistoryResult<RpcHistoryTurnPage>;
 	read_history_directory: RpcHistoryResult<RpcHistoryDirectory>;
 	read_history_content: RpcHistoryResult<RpcHistoryContent>;
