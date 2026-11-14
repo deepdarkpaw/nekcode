@@ -8,7 +8,6 @@ import {
 	type HistoryStoredEntry,
 	historyEntrySpans,
 	legacyHistoryProjection,
-	openHistoryStorage,
 } from "../../../core/durable/history-storage.ts";
 import { isSessionLocked, readSessionLockOwner, sessionLockPath } from "../../../core/durable/lock.ts";
 import { projectRecord } from "../../../core/durable/session-format.ts";
@@ -35,6 +34,7 @@ import type {
 	RpcHistoryTurn,
 	RpcHistoryTurnPage,
 } from "./history-protocol.ts";
+import { openHistorySource } from "./history-source.ts";
 
 const SECRET = randomBytes(32);
 const DEFAULT_BYTES = 1024 * 1024;
@@ -103,7 +103,7 @@ function openView(ctx: GuiContext, command: RpcHistoryCommand, depth = 0): View 
 	if (depth > 8) fail("INVALID_STORAGE", "Child history ancestry exceeds eight levels");
 	const requested = command.sessionPath ?? ctx.session?.sessionFile;
 	if (!requested) fail("INVALID_REQUEST", "sessionPath is required without an active persisted session");
-	const storage = openHistoryStorage(resolvePath(requested));
+	const storage = openHistorySource(ctx, command, requested);
 	try {
 		if (basename(dirname(storage.path)) === "subagents") {
 			if (!storage.header.parentSession) fail("FOREIGN_CURSOR", "Child history has no persisted parent");

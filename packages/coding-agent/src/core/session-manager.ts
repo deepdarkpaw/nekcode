@@ -344,6 +344,11 @@ export class SessionManager extends SessionTree {
 		return this.#contextVersion;
 	}
 
+	/** Distinguish a deliberately unpersisted new session from a missing or deleted initialized store. */
+	hasInitializedStorage(): boolean {
+		return this.flushed;
+	}
+
 	/** Position in the stable committed prefix, independent of pending host appends. */
 	getCommittedEntryCount(): number {
 		return this.projectionPosition;
