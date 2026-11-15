@@ -13,6 +13,57 @@ afterEach(() => {
 });
 
 describe("strict model generation", () => {
+	it("derives Copilot effort support from source metadata without changing generated source", () => {
+		const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-copilot-catalog-"));
+		temporaryRoots.push(fixtureRoot);
+		const preloadPath = join(fixtureRoot, "catalog.mjs");
+		const outputDir = join(fixtureRoot, "output");
+		const catalog = {
+			"github-copilot": {
+				models: {
+					"gemini-effort-fixture": {
+						id: "gemini-effort-fixture",
+						name: "Effort fixture",
+						tool_call: true,
+						reasoning: true,
+						reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+					},
+					"gemini-toggle-fixture": {
+						id: "gemini-toggle-fixture",
+						name: "Toggle fixture",
+						tool_call: true,
+						reasoning: true,
+						reasoning_options: [{ type: "toggle" }],
+					},
+				},
+			},
+		};
+		writeFileSync(
+			preloadPath,
+			`const catalog = ${JSON.stringify(catalog)};\nglobalThis.fetch = async input => { if (String(input) === "https://models.dev/api.json") return Response.json(catalog); throw new Error("fixture blocks external fetch"); };\n`,
+		);
+		const sourcePath = join(packageRoot, "src/models.generated.ts");
+		const before = readFileSync(sourcePath, "utf8");
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				pathToFileURL(preloadPath).href,
+				"scripts/generate-models.ts",
+				"--json-only",
+				"--json-output",
+				outputDir,
+			],
+			{ cwd: packageRoot, encoding: "utf8", timeout: 20_000 },
+		);
+		expect(result.status, result.stderr).toBe(0);
+		const models = JSON.parse(readFileSync(join(outputDir, "providers/github-copilot.json"), "utf8"));
+		expect(models["gemini-effort-fixture"].compat.supportsReasoningEffort).toBe(true);
+		expect(models["gemini-effort-fixture"].thinkingLevelMap).toMatchObject({ low: "low", high: "high", max: null });
+		expect(models["gemini-toggle-fixture"].compat.supportsReasoningEffort).toBe(false);
+		expect(readFileSync(sourcePath, "utf8")).toBe(before);
+	});
+
 	it("fails before mutating generated data when an Individual model loses tool support", () => {
 		const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-generate-models-"));
 		temporaryRoots.push(fixtureRoot);

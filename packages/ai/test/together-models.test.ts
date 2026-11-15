@@ -24,7 +24,9 @@ describe("Together models", () => {
 		expect(model.thinkingLevelMap).toEqual({ minimal: null, low: null, medium: null });
 		expect(model.input).toEqual(["text", "image"]);
 		expect(model.contextWindow).toBe(1048576);
-		expect(model.maxTokens).toBe(131072);
+		// Output limits come from the refreshed catalog, not a frozen provider snapshot.
+		expect(model.maxTokens).toBeGreaterThan(0);
+		expect(model.maxTokens).toBeLessThanOrEqual(model.contextWindow);
 		expect(model.cost).toEqual({
 			input: 3,
 			output: 15,

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { TerminalColorMode } from "./colors.ts";
+import { visibleWidth } from "./utils.ts";
 
 export type ImageProtocol = "kitty" | "iterm2" | null;
 
@@ -205,6 +206,52 @@ export function isImageLine(line: string): boolean {
 	}
 	// Slow path: sequence elsewhere (multi-row images have cursor-up prefix)
 	return line.includes(KITTY_PREFIX) || line.includes(ITERM2_PREFIX);
+}
+
+/** Image placement bounds relative to the containing row; unknown widths occupy the remaining row. */
+export function getImageLineExtent(
+	line: string,
+): { firstRow: number; lastRow: number; startCol: number; endCol: number } | undefined {
+	const kittyStart = line.indexOf(KITTY_PREFIX);
+	if (kittyStart !== -1) {
+		const controls = /\x1b_G([^;]*);/.exec(line)?.[1] ?? "";
+		const columnValue = /(?:^|,)c=(\d+)(?:,|$)/.exec(controls)?.[1];
+		const columns =
+			columnValue === undefined
+				? getRegisteredKittyImageMetadataFromControls(controls)?.columns
+				: Number.parseInt(columnValue, 10);
+		const startCol = visibleWidth(line.slice(0, kittyStart));
+		return {
+			firstRow: 0,
+			lastRow: (getKittyImagePlacementRows(line) ?? 1) - 1,
+			startCol,
+			endCol: startCol + (columns ?? Infinity),
+		};
+	}
+	const iterm2Start = line.indexOf(ITERM2_PREFIX);
+	if (iterm2Start === -1) return undefined;
+	const before = line.slice(0, iterm2Start);
+	const moveUp = /\x1b\[(\d+)A$/.exec(before);
+	const columns = /[;=]width=(\d+)[;:]/.exec(line.slice(iterm2Start))?.[1];
+	const startCol = visibleWidth(moveUp ? before.slice(0, moveUp.index) : before);
+	return {
+		firstRow: moveUp ? -Number.parseInt(moveUp[1], 10) : 0,
+		lastRow: 0,
+		startCol,
+		endCol: startCol + (columns === undefined ? Infinity : Number.parseInt(columns, 10)),
+	};
+}
+
+/** Strip image payloads and their cursor-up prefixes without dropping surrounding text. */
+export function stripImageSequences(line: string): string {
+	return line.replace(/\x1b_G[^\x1b]*\x1b\\/g, "").replace(/(?:\x1b\[\d+A)?\x1b\]1337;File=[^\x07]*\x07/g, "");
+}
+
+/** A bounded metadata scan limits image searches above the viewport. */
+export function getMaxKittyImageRows(): number {
+	let rows = 0;
+	for (const metadata of kittyImageMetadata.values()) rows = Math.max(rows, metadata.rows);
+	return rows;
 }
 
 /**

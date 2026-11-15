@@ -1,5 +1,6 @@
 import type { AttachedReplicatedState, Context, JsonValue } from "@earendil-works/chord";
 import { withAbortSignal, withoutAbortSignal } from "@earendil-works/chord/context";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { ResetEntry } from "../entries.ts";
 import type { ExecutionEnv } from "../env/index.ts";
 import { SessionImpl } from "../session/session.ts";
@@ -325,9 +326,17 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 		return super.close(context);
 	}
 
-	/** Join task invocations after admission is sealed and before Storage closes; writes no task outcome. */
-	protected override beforeClose(): Promise<void> {
-		return this.#tasks.join();
+	/** Join tasks before cleaning up their provider sessions; never disturb another live Harness. */
+	protected override async beforeClose(): Promise<void> {
+		await this.#tasks.join();
+		for (const sessionId of this.#tasks.providerSessionIds) {
+			try {
+				cleanupSessionResources(sessionId);
+			} catch (error) {
+				this.#report(error);
+			}
+		}
+		this.#tasks.providerSessionIds.clear();
 	}
 
 	async #create(target: CreateTarget, options: CreateOptions, context: Context): Promise<Conversation> {

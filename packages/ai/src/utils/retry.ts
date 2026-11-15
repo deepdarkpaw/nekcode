@@ -51,6 +51,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"connection.?error",
 	"connection.?refused",
 	"connection.?lost",
+	"connection.?closed",
+	"(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)(?![a-z0-9_])",
+	"connection reset by peer",
 	"other side closed",
 	"fetch failed",
 	// node-fetch system errors, e.g. the Google ADC OAuth token refresh used by

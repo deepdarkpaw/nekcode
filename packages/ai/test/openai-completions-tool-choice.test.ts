@@ -14,7 +14,8 @@ const mockState = vi.hoisted(() => ({
 					prompt_tokens: number;
 					completion_tokens: number;
 					prompt_tokens_details: { cached_tokens: number; cache_write_tokens?: number };
-					completion_tokens_details: { reasoning_tokens: number };
+					completion_tokens_details?: { reasoning_tokens: number };
+					reasoning_tokens?: number;
 				};
 		  }>
 		| undefined,
@@ -1679,6 +1680,32 @@ describe("openai-completions tool_choice", () => {
 		expect(response.usage.output).toBe(33);
 		expect(response.usage.totalTokens).toBe(43);
 	});
+
+	it.each([undefined, 0, 12])(
+		"reads top-level reasoning tokens only when nested usage is absent (%s)",
+		async (nested) => {
+			mockState.chunks = [
+				{
+					choices: [{ delta: { content: "OK" }, finish_reason: "stop" }],
+					usage: {
+						prompt_tokens: 10,
+						completion_tokens: 40,
+						prompt_tokens_details: { cached_tokens: 0 },
+						reasoning_tokens: 30,
+						...(nested === undefined ? {} : { completion_tokens_details: { reasoning_tokens: nested } }),
+					},
+				},
+			];
+			const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+			const response = await streamSimple(
+				{ ...baseModel, api: "openai-completions" },
+				{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+				{ apiKey: "fixture" },
+			).result();
+			expect(response.usage.reasoning).toBe(nested ?? 30);
+			expect(response.usage.output).toBe(40);
+		},
+	);
 
 	it("preserves prompt_tokens_details cache read/write fields from chunk usage", async () => {
 		mockState.chunks = [

@@ -12,7 +12,14 @@ import {
 	type RgbColor,
 	type TerminalColorScheme,
 } from "./terminal-colors.ts";
-import { getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
+import {
+	getCapabilities,
+	getImageLineExtent,
+	getMaxKittyImageRows,
+	isImageLine,
+	setCellDimensions,
+	stripImageSequences,
+} from "./terminal-image.ts";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
 
 /**
@@ -413,6 +420,26 @@ export function compositeTuiLine(
 		" ".repeat(afterPad);
 
 	return visibleWidth(result) <= totalWidth ? result : sliceByColumn(result, 0, totalWidth, true);
+}
+
+/** Remove overlapping placements for this frame; existing image tracking restores them after the overlay closes. */
+function hideImagesUnderOverlay(lines: string[], overlay: OverlayBounds, viewportStart: number): void {
+	if (overlay.height === 0) return;
+	for (let index = Math.max(0, viewportStart - getMaxKittyImageRows()); index < lines.length; index++) {
+		const line = lines[index];
+		const extent = getImageLineExtent(line);
+		if (!extent) continue;
+		const firstRow = index + extent.firstRow - viewportStart;
+		const lastRow = index + extent.lastRow - viewportStart;
+		if (
+			firstRow < overlay.row + overlay.height &&
+			lastRow >= overlay.row &&
+			extent.startCol < overlay.col + overlay.width &&
+			extent.endCol > overlay.col
+		) {
+			lines[index] = stripImageSequences(line);
+		}
+	}
 }
 
 export type TuiMode = "regular" | "fullscreen";
@@ -1359,8 +1386,9 @@ export abstract class TuiBase extends Container implements TUI {
 
 		const viewportStart = Math.max(0, workingHeight - termHeight);
 
-		// Composite each overlay
+		// Back-to-front compositing also hides images belonging to lower overlays.
 		for (const { overlayLines, row, col, w } of rendered) {
+			hideImagesUnderOverlay(result, { row, col, width: w, height: overlayLines.length }, viewportStart);
 			for (let i = 0; i < overlayLines.length; i++) {
 				const idx = viewportStart + row + i;
 				if (idx >= 0 && idx < result.length) {

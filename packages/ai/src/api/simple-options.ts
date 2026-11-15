@@ -13,11 +13,20 @@ import type {
 import { estimateContextTokens } from "../utils/estimate.ts";
 
 const CONTEXT_SAFETY_TOKENS = 4096;
+/** Gateway tokenizers may count input higher than the provider's reported usage. */
+const CONTEXT_SAFETY_RATIO = 0.15;
+const MIN_OUTPUT_WITH_RATIO_MARGIN = 32768;
 const MIN_MAX_TOKENS = 1;
 
 export function clampMaxTokensToContext(model: Model<Api>, context: TranscriptContext, maxTokens: number): number {
 	if (model.contextWindow <= 0) return Math.max(MIN_MAX_TOKENS, maxTokens);
-	const available = model.contextWindow - estimateContextTokens(context).tokens - CONTEXT_SAFETY_TOKENS;
+	const input = estimateContextTokens(context).tokens;
+	const margin = Math.max(CONTEXT_SAFETY_TOKENS, Math.ceil(input * CONTEXT_SAFETY_RATIO));
+	let available = model.contextWindow - input - margin;
+	// Near a full window, retain the fixed margin and cap output rather than requesting the entire remainder.
+	if (available < MIN_OUTPUT_WITH_RATIO_MARGIN) {
+		available = Math.min(MIN_OUTPUT_WITH_RATIO_MARGIN, model.contextWindow - input - CONTEXT_SAFETY_TOKENS);
+	}
 	return Math.min(maxTokens, Math.max(MIN_MAX_TOKENS, available));
 }
 

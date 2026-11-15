@@ -85,10 +85,9 @@ async function capturePayload(context: Context, model = baseModel): Promise<unkn
 	let capturedPayload: unknown;
 	const s = streamBedrock(model, normalizeContext(context), {
 		cacheRetention: "none",
-		signal: AbortSignal.abort(),
 		onPayload: (payload) => {
 			capturedPayload = payload;
-			return payload;
+			throw new Error("payload captured before request");
 		},
 	});
 	for await (const event of s) {

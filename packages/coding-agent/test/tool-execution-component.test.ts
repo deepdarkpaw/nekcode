@@ -114,6 +114,61 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("custom result");
 	});
 
+	test("shows non-vision image warnings only in UI details, including collapsed output", async () => {
+		const definition = createReadToolDefinition(process.cwd(), {
+			autoResizeImages: false,
+			operations: {
+				access: async () => {},
+				detectImageMimeType: async () => "image/png",
+				readFile: async () =>
+					Buffer.from(
+						"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j6wAAAABJRU5ErkJggg==",
+						"base64",
+					),
+			},
+		});
+		const result = await definition.execute("read", { path: "fixture.png" }, undefined, undefined, {
+			model: { id: "text-only", input: ["text"] },
+		} as never);
+		expect(result.details?.imageUnsupportedByModel).toBe("text-only");
+		expect(JSON.stringify(result.content)).not.toContain("does not support images");
+		const component = new ToolExecutionComponent(
+			"read",
+			"image-warning",
+			{ path: "fixture.png" },
+			{},
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ ...result, isError: false });
+		for (const expanded of [false, true]) {
+			component.setExpanded(expanded);
+			expect(stripAnsi(component.render(120).join("\n"))).toContain("text-only does not support images");
+		}
+	});
+
+	test("renders self-rendered results beyond the function argument limit", () => {
+		const rows = Array<string>(200_000).fill("row");
+		const definition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderShell: "self",
+			renderCall: () => ({ render: () => rows, invalidate: () => {} }),
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"large-result",
+			{},
+			{},
+			definition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		const rendered = component.render(100);
+		expect(rendered).toHaveLength(rows.length + 1);
+		expect(rendered.at(-1)).toBe("row");
+	});
+
 	test("self-rendered empty tool rows take no layout space", () => {
 		const toolDefinition: ToolDefinition = {
 			...createBaseToolDefinition(),

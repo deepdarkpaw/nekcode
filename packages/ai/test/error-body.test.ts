@@ -9,6 +9,14 @@ import { describe, expect, it } from "vitest";
 import { formatProviderError, MAX_PROVIDER_ERROR_BODY_CHARS, normalizeProviderError } from "../src/utils/error-body.ts";
 
 describe("normalizeProviderError", () => {
+	it("keeps the underlying network cause without duplicating it or looping", () => {
+		const cause = Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
+		const error = new Error("Connection error.", { cause: new Error("fetch failed", { cause }) });
+		expect(normalizeProviderError(error).message).toBe("Connection error.: connection refused (ECONNREFUSED)");
+		cause.cause = error;
+		expect(normalizeProviderError(error).message).toContain("ECONNREFUSED");
+		expect(normalizeProviderError(Object.assign(error, { status: 400 })).message).toBe("Connection error.");
+	});
 	it("extracts status and body from a Mistral-shaped error", () => {
 		const error = Object.assign(new Error("Mistral request failed"), {
 			statusCode: 403,

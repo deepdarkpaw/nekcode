@@ -2333,7 +2333,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 						compat: {
 							supportsStore: false,
 							supportsDeveloperRole: false,
-							supportsReasoningEffort: false,
+							supportsReasoningEffort: m.reasoning_options?.some((option) => option.type === "effort") ?? false,
 						},
 					} : {}),
 				};

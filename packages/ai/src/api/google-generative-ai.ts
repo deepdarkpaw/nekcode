@@ -2,12 +2,14 @@ import {
 	type GenerateContentConfig,
 	type GenerateContentParameters,
 	GoogleGenAI,
+	type HttpOptions,
 	type ThinkingConfig,
 } from "@google/genai";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import type {
 	Api,
 	AssistantMessage,
+	FetchFunction,
 	Model,
 	ProviderHeaders,
 	SimpleStreamOptions,
@@ -84,14 +86,11 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 		};
 
 		try {
-			if (options?.fetch && options.fetch !== globalThis.fetch) {
-				throw new Error("Custom fetch is not supported by the Google Generative AI adapter");
-			}
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
-			const client = createClient(model, apiKey, options?.headers);
+			const client = createClient(model, apiKey, options?.headers, options?.fetch);
 			let params = buildParams(model, normalizedContext, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -349,8 +348,10 @@ function createClient(
 	model: Model<"google-generative-ai">,
 	apiKey?: string,
 	optionsHeaders?: ProviderHeaders,
+	fetch?: FetchFunction,
 ): GoogleGenAI {
-	const httpOptions: { baseUrl?: string; apiVersion?: string; headers?: Record<string, string> } = {};
+	// Explicit fetch prevents the SDK from installing a dispatcher that bypasses host idle timeouts.
+	const httpOptions: HttpOptions = { fetch: fetch ?? globalThis.fetch };
 	if (model.baseUrl) {
 		httpOptions.baseUrl = model.baseUrl;
 		httpOptions.apiVersion = ""; // baseUrl already includes version path, don't append
@@ -390,6 +391,8 @@ function buildParams(
 			: undefined;
 	const systemInstruction = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : "";
 	const config: GenerateContentConfig = {
+		// Continuation belongs to the host turn loop, not hidden extra SDK requests.
+		automaticContinuation: false,
 		...(Object.keys(generationConfig).length > 0 && generationConfig),
 		...(systemInstruction && { systemInstruction: sanitizeSurrogates(systemInstruction) }),
 		...(currentTools.length > 0 && {

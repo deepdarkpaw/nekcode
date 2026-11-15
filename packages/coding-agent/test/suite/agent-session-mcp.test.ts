@@ -2,6 +2,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { SystemMessage, ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import { type JsonRpcRequest, LATEST_PROTOCOL_VERSION } from "@earendil-works/pi-mcp";
 import { createInMemoryTransportPair } from "@earendil-works/pi-mcp/testing";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionFactory } from "../../src/core/extensions/types.ts";
 import type { SessionManager } from "../../src/core/session-manager.ts";
@@ -804,6 +805,31 @@ describe("AgentSession MCP tools after resume and reload", () => {
 			expect(second.harness.session.getActiveToolNames().includes("mcp__docs__search")).toBe(kept);
 		},
 	);
+
+	const hideLoader: ExtensionFactory = (pi) => {
+		pi.registerTool({
+			name: "loader",
+			label: "loader",
+			description: "Extension loader",
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [], details: undefined }),
+		});
+		pi.on("session_start", () => pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "loader")));
+	};
+
+	it("keeps restored MCP tools when an extension hides only its own loader on resume", async () => {
+		const first = await setup();
+		await loadDocsSearch(first.harness);
+		const second = await setup(first.harness.sessionManager, [hideLoader], 30);
+		await vi.waitFor(() => expect(second.harness.session.getActiveToolNames()).toContain("mcp__docs__search"));
+	});
+
+	it("keeps restored MCP tools when an extension hides only its own loader on reload", async () => {
+		const { harness } = await setup(undefined, [hideLoader], 30);
+		await loadDocsSearch(harness);
+		await harness.session.reload();
+		await vi.waitFor(() => expect(harness.session.getActiveToolNames()).toContain("mcp__docs__search"));
+	});
 
 	it("does not activate restored tools that register after the next prompt starts", async () => {
 		const first = await setup();

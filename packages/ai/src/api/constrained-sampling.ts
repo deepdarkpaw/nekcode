@@ -70,6 +70,10 @@ function makeJsonSchemaNodeStrict(schema: unknown, isUnsupportedKeyword?: Unsupp
 		}
 	}
 
+	if (schema.type === undefined && schema.anyOf === undefined && schema.enum === undefined) {
+		throw new UnsupportedStrictJsonSchemaError("schemas without a type are unsupported");
+	}
+
 	if (schema.anyOf !== undefined) {
 		if (!Array.isArray(schema.anyOf) || schema.anyOf.length === 0) {
 			throw new UnsupportedStrictJsonSchemaError("anyOf must contain at least one schema");

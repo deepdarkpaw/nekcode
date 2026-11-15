@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access as fsAccess, readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { Api, ImageContent, Model, ModelImageResizeOptions, TextContent } from "@earendil-works/pi-ai";
+import type { ImageContent, ModelImageResizeOptions, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
@@ -68,6 +68,8 @@ export interface ReadToolDetails {
 	truncation?: TruncationResult;
 	representation?: ReadRepresentation;
 	chunks?: ReadChunkDetails[];
+	/** Display-only warning, never persisted in model-visible result text. */
+	imageUnsupportedByModel?: string;
 }
 
 /** Pluggable operations for the read tool. */
@@ -107,11 +109,6 @@ export interface ReadToolOptions {
 	operations?: ReadOperations;
 	/** Read state to record each successful text read into. */
 	readState?: ReadStateStore;
-}
-
-function getNonVisionImageNote(model: Model<Api> | undefined): string | undefined {
-	if (!model || model.input.includes("image")) return undefined;
-	return "[Current model does not support images. The image will be omitted from this request.]";
 }
 
 function decodeText(buffer: Buffer): string {
@@ -333,7 +330,6 @@ export function createReadToolDefinition(
 			const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
 			let content: (TextContent | ImageContent)[];
 			let details: ReadToolDetails | undefined;
-			const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
 			if (mimeType) {
 				const buffer = await ops.readFile(absolutePath);
 				const processed = await processImage(buffer, mimeType, {
@@ -341,13 +337,14 @@ export function createReadToolDefinition(
 					resizeOptions: ctx?.model?.inputLimits?.images?.resize ?? fallbackResizeOptions,
 				});
 				if (!processed.ok) {
-					let textNote = `Read image file [${mimeType}]\n${processed.message}`;
-					if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
+					const textNote = `Read image file [${mimeType}]\n${processed.message}`;
 					content = [{ type: "text", text: textNote }];
 				} else {
 					let textNote = `Read image file [${processed.mimeType}]`;
 					if (processed.hints.length > 0) textNote += `\n${processed.hints.join("\n")}`;
-					if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
+					if (ctx?.model && !ctx.model.input.includes("image")) {
+						details = { imageUnsupportedByModel: ctx.model.id };
+					}
 					content = [
 						{ type: "text", text: textNote },
 						{ type: "image", data: processed.data, mimeType: processed.mimeType },

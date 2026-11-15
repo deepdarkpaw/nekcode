@@ -19,6 +19,9 @@ export const ProviderDoc = defineDoc<ProviderState>({
 	checkpointWhen: () => true,
 });
 
+/** Provider identities actually used by one runtime, owned and released by its Harness. */
+export const providerSessionsByRuntime = new WeakMap<object, Set<string>>();
+
 /**
  * Return the persisted identity without writing in the normal path. A legacy conversation without `pi.provider` gets
  * one migration commit whose `tx.doc()` runs `initial()` before the provider request starts.
@@ -28,12 +31,16 @@ export async function ensureProviderSessionId<I, S, R, H extends object>(
 	context: Context,
 ): Promise<string> {
 	const existing = await runtime.snapshot(ProviderDoc, runtime.conversationId, context);
-	if (existing !== undefined) return existing.sessionId;
+	if (existing !== undefined) {
+		providerSessionsByRuntime.get(runtime)?.add(existing.sessionId);
+		return existing.sessionId;
+	}
 	let created: string | undefined;
 	await runtime.commit(async (tx) => {
 		created = (await tx.doc(ProviderDoc, runtime.conversationId)).sessionId;
 		return undefined;
 	}, context);
 	if (created === undefined) throw new Error(`Conversation ${runtime.conversationId} has no provider session ID`);
+	providerSessionsByRuntime.get(runtime)?.add(created);
 	return created;
 }

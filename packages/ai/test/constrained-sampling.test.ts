@@ -87,6 +87,25 @@ function captureToolCallEvents(stream: AssistantMessageEventStream): {
 }
 
 describe("constrained tool sampling", () => {
+	it.each([
+		Type.Object({ values: Type.Array(Type.Unknown()) }),
+		Type.Object({ value: Type.Any() }),
+		Type.Object({ mode: Type.Unsafe({ const: "fast" }) }),
+	])("rejects untyped strict nodes according to prefer/require", (parameters) => {
+		const prefer = makeTool({ parameters, constrainedSampling: { type: "json_schema", strict: "prefer" } });
+		expect(convertResponsesTools([prefer])[0]).toMatchObject({ strict: false });
+		expect(() =>
+			convertResponsesTools([{ ...prefer, constrainedSampling: { type: "json_schema", strict: "require" } }]),
+		).toThrow("without a type");
+	});
+
+	it("keeps enum-only nodes strict", () => {
+		const tool = makeTool({
+			parameters: Type.Object({ value: Type.Unsafe({ enum: ["a", "b"] }) }),
+			constrainedSampling: { type: "json_schema", strict: "prefer" },
+		});
+		expect(convertResponsesTools([tool])[0]).toMatchObject({ strict: true });
+	});
 	it("converts supported constraints and falls back when unsupported", () => {
 		expect(
 			convertResponsesTools([makeTool({ constrainedSampling: { type: "json_schema", strict: "prefer" } })])[0],

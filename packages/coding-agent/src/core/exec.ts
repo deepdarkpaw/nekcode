@@ -1,6 +1,7 @@
 /** Shared command execution utilities for extensions and custom tools. */
 import { constants as bufferConstants } from "node:buffer";
 import { spawn } from "node:child_process";
+import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { waitForChildProcess } from "../utils/child-process.ts";
 
@@ -99,6 +100,6 @@ export async function execCommand(
 		stdout += stdoutDecoder.end();
 		stderr += stderrDecoder.end();
 	}
-	const exitCode = code ?? 0;
+	const exitCode = code ?? (proc.signalCode ? 128 + (osConstants.signals[proc.signalCode] ?? 0) : 1);
 	return { stdout, stderr, code: truncated && exitCode === 0 ? 1 : exitCode, killed, truncated };
 }

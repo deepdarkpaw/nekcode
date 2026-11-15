@@ -1724,22 +1724,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		let buffer = BEGIN_SYNCHRONIZED_OUTPUT;
 		if (fullRedraw) {
 			this.fullRedrawCount += 1;
-			const clearImages =
-				this.imageProtocol === "kitty" && hadUploadedKittyImages
-					? deleteAllKittyPlacements()
-					: this.deleteKittyImages();
-			buffer += `${clearImages}\x1b[2J`;
+			if (this.imageProtocol === "kitty" && hadUploadedKittyImages) {
+				// ED2 frees unplaced image data; rows are cleared individually below instead.
+				buffer += deleteAllKittyPlacements();
+			} else {
+				buffer += `${this.deleteKittyImages()}\x1b[2J`;
+			}
 		} else if (imagesNeedRedraw) {
 			if (this.imageProtocol === "iterm2") buffer += "\x1b[2J";
 			else if (this.imageProtocol === "kitty") buffer += deleteAllKittyPlacements();
 		}
 		buffer += preparedKittyScreen.evictedImageDeletion;
 
-		// WezTerm erases intersecting Kitty image cells when a later row write touches a covered row.
-		// Draw image placements after every clear and text write so nothing later intersects them; preserve
-		// the existing interleaved output for text-only frames and every other terminal.
-		const drawKittyImagesLast =
-			redrawImages && this.imageProtocol === "kitty" && screen.some(isImageLine) && isWezTerm;
+		// Clear covered cells before placing images on every Kitty-capable terminal.
+		const drawKittyImagesLast = redrawImages && this.imageProtocol === "kitty" && screen.some(isImageLine);
 		if (drawKittyImagesLast) {
 			for (let row = 0; row < height; row++) {
 				if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;

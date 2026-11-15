@@ -54,6 +54,12 @@ import {
 } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
+import {
+	hasExceededStrictToolLimits,
+	isStrictToolLimitError,
+	markStrictToolLimitsExceeded,
+	prefersStrictTools,
+} from "./strict-tool-limits.ts";
 import { transformMessages } from "./transform-messages.ts";
 
 /**
@@ -577,24 +583,50 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				client = created.client;
 				isOAuth = created.isOAuthToken;
 			}
-			let params = buildParams(model, normalizedContext, isOAuth, options);
-			const nextParams = await options?.onPayload?.(params, model);
-			if (nextParams !== undefined) {
-				params = { ...(nextParams as MessageCreateParamsStreaming), stream: true };
-			}
+			const policy = { disabled: hasExceededStrictToolLimits(options?.sessionId), hasPreferred: false };
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
-			const response = await retryProviderRequest(
-				() => client.beta.messages.create(params, requestOptions).asResponse(),
-				{
-					maxRetries: options?.maxRetries,
-					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: options?.signal,
-				},
-			);
+			let response: Response;
+			for (;;) {
+				options?.signal?.throwIfAborted();
+				policy.hasPreferred = false;
+				let params = buildParams(model, normalizedContext, isOAuth, options, policy);
+				const nextParams = await options?.onPayload?.(params, model);
+				if (nextParams !== undefined) params = { ...(nextParams as MessageCreateParamsStreaming), stream: true };
+				options?.signal?.throwIfAborted();
+				try {
+					response = await retryProviderRequest(
+						() => client.beta.messages.create(params, requestOptions).asResponse(),
+						{
+							maxRetries: options?.maxRetries,
+							maxRetryDelayMs: options?.maxRetryDelayMs,
+							signal: options?.signal,
+						},
+					);
+					break;
+				} catch (error) {
+					if (
+						options?.signal?.aborted ||
+						policy.disabled ||
+						!policy.hasPreferred ||
+						!(error instanceof Anthropic.APIError) ||
+						error.status !== 400 ||
+						error.type !== "invalid_request_error" ||
+						!isStrictToolLimitError(error.message)
+					)
+						throw error;
+					policy.disabled = true;
+					markStrictToolLimitsExceeded(options?.sessionId);
+					appendAssistantMessageDiagnostic(output, {
+						type: "anthropic_strict_tools_fallback",
+						timestamp: Date.now(),
+						details: { reason: "strict_tool_limits_exceeded" },
+					});
+				}
+			}
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
@@ -1047,6 +1079,7 @@ function buildParams(
 	context: TranscriptContext,
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
+	policy?: { disabled: boolean; hasPreferred: boolean },
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
@@ -1058,6 +1091,23 @@ function buildParams(
 	// by value in a `tool_addition` block, which also expresses same-name redefinitions.
 	// Anthropic rejects a tool list where every tool is deferred, so there must be an initial
 	// active tool to anchor the placeholder. Otherwise the current tool list is sent.
+	const convertToolDefinitions = (tools: Tool[], toolCacheControl?: CacheControlEphemeral): BetaTool[] => {
+		const definitions = convertTools(
+			tools,
+			isOAuthToken,
+			compat.supportsEagerToolInputStreaming,
+			compat.supportsStrictTools,
+			toolCacheControl,
+			policy?.disabled,
+		);
+		if (
+			policy &&
+			definitions.some((definition, index) => definition.strict === true && prefersStrictTools(tools[index]))
+		) {
+			policy.hasPreferred = true;
+		}
+		return definitions;
+	};
 	const initialTools = initialSystemMessage?.toolsAdded ?? [];
 	const nativeToolChanges =
 		compat.supportsMidConvoSystemMessages && compat.supportsMidConvoToolChanges && initialTools.length > 0;
@@ -1067,10 +1117,7 @@ function buildParams(
 		cacheControl,
 		compat.allowEmptySignature,
 		model.compat?.supportsMidConvoEffort === true ? model.provider : undefined,
-		nativeToolChanges
-			? (tools) =>
-					convertTools(tools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools)
-			: undefined,
+		nativeToolChanges ? (tools) => convertToolDefinitions(tools) : undefined,
 	);
 	const activeEffort = options?.effort ?? "high";
 	const betaFeatures = getBetaFeatures(model, context, isOAuthToken, nativeToolChanges, options);
@@ -1128,26 +1175,11 @@ function buildParams(
 		// placeholder. The list never changes afterwards: later tools are defined by value in
 		// `tool_addition` blocks and withdrawn by `tool_removal`, so the cached prefix survives
 		// every tool change.
-		params.tools = [
-			...convertTools(
-				initialTools,
-				isOAuthToken,
-				compat.supportsEagerToolInputStreaming,
-				compat.supportsStrictTools,
-				toolCacheControl,
-			),
-			DEFERRED_TOOL_PLACEHOLDER,
-		];
+		params.tools = [...convertToolDefinitions(initialTools, toolCacheControl), DEFERRED_TOOL_PLACEHOLDER];
 	} else {
 		const tools = getCurrentTools(context.messages);
 		if (tools.length > 0) {
-			params.tools = convertTools(
-				tools,
-				isOAuthToken,
-				compat.supportsEagerToolInputStreaming,
-				compat.supportsStrictTools,
-				toolCacheControl,
-			);
+			params.tools = convertToolDefinitions(tools, toolCacheControl);
 		}
 	}
 
@@ -1501,15 +1533,21 @@ function convertTools(
 	supportsEagerToolInputStreaming: boolean,
 	supportsStrictTools: boolean,
 	cacheControl?: CacheControlEphemeral,
+	disablePreferredStrictTools = false,
 ): BetaTool[] {
 	if (!tools) return [];
 
 	return tools.map((tool, index) => {
-		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools, isAnthropicStrictUnsupportedKeyword);
+		const strict =
+			disablePreferredStrictTools && prefersStrictTools(tool)
+				? undefined
+				: resolveJsonSchemaStrictSampling(tool, supportsStrictTools, isAnthropicStrictUnsupportedKeyword);
 		const parameters = getJsonSchemaToolParameters(tool, strict);
 		const schema = parameters as {
 			properties?: unknown;
 			required?: string[];
+			additionalProperties?: unknown;
+			patternProperties?: unknown;
 			$defs?: unknown;
 			definitions?: unknown;
 		};
@@ -1517,6 +1555,8 @@ function convertTools(
 			type: "object" as const,
 			properties: schema.properties ?? {},
 			required: schema.required ?? [],
+			...(schema.additionalProperties === undefined ? {} : { additionalProperties: schema.additionalProperties }),
+			...(schema.patternProperties === undefined ? {} : { patternProperties: schema.patternProperties }),
 			...(schema.$defs === undefined ? {} : { $defs: schema.$defs }),
 			...(schema.definitions === undefined ? {} : { definitions: schema.definitions }),
 		};

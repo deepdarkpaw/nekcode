@@ -10,6 +10,7 @@ import { calculateCost, clampThinkingLevel } from "../models.ts";
 import type {
 	Api,
 	AssistantMessage,
+	FetchFunction,
 	Model,
 	ProviderEnv,
 	ProviderHeaders,
@@ -93,14 +94,18 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 		};
 
 		try {
-			if (options?.fetch && options.fetch !== globalThis.fetch) {
-				throw new Error("Custom fetch is not supported by the Google Vertex adapter");
-			}
 			const apiKey = resolveApiKey(options);
 			// Create the client using either a Vertex API key, if provided, or ADC with project and location
 			const client = apiKey
-				? createClientWithApiKey(model, apiKey, options?.headers)
-				: createClient(model, resolveProject(options), resolveLocation(options), options?.headers, options?.env);
+				? createClientWithApiKey(model, apiKey, options?.headers, options?.fetch)
+				: createClient(
+						model,
+						resolveProject(options),
+						resolveLocation(options),
+						options?.headers,
+						options?.env,
+						options?.fetch,
+					);
 			let params = buildParams(model, normalizedContext, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -360,6 +365,7 @@ function createClient(
 	location: string,
 	optionsHeaders?: ProviderHeaders,
 	env?: ProviderEnv,
+	fetch?: FetchFunction,
 ): GoogleGenAI {
 	const googleAuthOptions = buildGoogleAuthOptions(env);
 	return new GoogleGenAI({
@@ -368,7 +374,7 @@ function createClient(
 		location,
 		apiVersion: API_VERSION,
 		...(googleAuthOptions ? { googleAuthOptions } : {}),
-		httpOptions: buildHttpOptions(model, optionsHeaders),
+		httpOptions: buildHttpOptions(model, optionsHeaders, fetch),
 	});
 }
 
@@ -376,17 +382,23 @@ function createClientWithApiKey(
 	model: Model<"google-vertex">,
 	apiKey: string,
 	optionsHeaders?: ProviderHeaders,
+	fetch?: FetchFunction,
 ): GoogleGenAI {
 	return new GoogleGenAI({
 		vertexai: true,
 		apiKey,
 		apiVersion: API_VERSION,
-		httpOptions: buildHttpOptions(model, optionsHeaders),
+		httpOptions: buildHttpOptions(model, optionsHeaders, fetch),
 	});
 }
 
-function buildHttpOptions(model: Model<"google-vertex">, optionsHeaders?: ProviderHeaders): HttpOptions | undefined {
-	const httpOptions: HttpOptions = {};
+function buildHttpOptions(
+	model: Model<"google-vertex">,
+	optionsHeaders?: ProviderHeaders,
+	fetch?: FetchFunction,
+): HttpOptions {
+	// ADC credential requests still use google-auth-library's own HTTP client.
+	const httpOptions: HttpOptions = { fetch: fetch ?? globalThis.fetch };
 	const baseUrl = resolveCustomBaseUrl(model.baseUrl);
 	if (baseUrl) {
 		httpOptions.baseUrl = baseUrl;
@@ -401,7 +413,7 @@ function buildHttpOptions(model: Model<"google-vertex">, optionsHeaders?: Provid
 		httpOptions.headers = headers;
 	}
 
-	return Object.keys(httpOptions).length > 0 ? httpOptions : undefined;
+	return httpOptions;
 }
 
 function resolveCustomBaseUrl(baseUrl: string): string | undefined {
@@ -483,6 +495,7 @@ function buildParams(
 			: undefined;
 	const systemInstruction = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : "";
 	const config: GenerateContentConfig = {
+		automaticContinuation: false,
 		...(Object.keys(generationConfig).length > 0 && generationConfig),
 		...(systemInstruction && { systemInstruction: sanitizeSurrogates(systemInstruction) }),
 		...(currentTools.length > 0 && {

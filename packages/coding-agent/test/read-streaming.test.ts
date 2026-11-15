@@ -244,6 +244,40 @@ describe("bounded read streaming", () => {
 		expect(state.get(fixture)).toBeUndefined();
 	});
 
+	it("does not emit an unhandled stream error when cancelled during stat", () => {
+		const path = join(directory, "abort-stat.log");
+		writeFileSync(path, "fixture\n");
+		const script = `
+			import { open } from 'node:fs/promises';
+			import { readLocalFileChunks } from ${JSON.stringify(new URL("../src/core/tools/read-stream.ts", import.meta.url).href)};
+			const path = ${JSON.stringify(path)};
+			const handle = await open(path, 'r');
+			const proto = Object.getPrototypeOf(handle), original = proto.stat;
+			await handle.close();
+			const controller = new AbortController();
+			proto.stat = async function(...args) {
+				const result = await original.apply(this, args);
+				controller.abort();
+				return result;
+			};
+			try {
+				for await (const chunk of readLocalFileChunks(path, { signal: controller.signal })) {}
+				throw new Error('read was not aborted');
+			} catch (error) {
+				if (error.message !== 'Operation aborted') throw error;
+			} finally { proto.stat = original; }
+			await new Promise(resolve => setTimeout(resolve, 25));
+			process.stdout.write('closed safely');
+		`;
+		expect(
+			execFileSync(process.execPath, ["--input-type=module", "--eval", script], {
+				cwd: directory,
+				encoding: "utf8",
+				timeout: 10_000,
+			}),
+		).toBe("closed safely");
+	});
+
 	it("aborts and closes a real local stream", async () => {
 		const path = join(directory, "abort.log");
 		writeFileSync(path, "x".repeat(200_000));
@@ -251,7 +285,7 @@ describe("bounded read streaming", () => {
 		const chunks = readLocalFileChunks(path, { signal: controller.signal })[Symbol.asyncIterator]();
 		await chunks.next();
 		controller.abort();
-		await expect(chunks.next()).rejects.toMatchObject({ name: "AbortError" });
+		await expect(chunks.next()).rejects.toThrow("Operation aborted");
 		writeFileSync(path, "closed");
 	});
 

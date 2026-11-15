@@ -19,7 +19,12 @@ export async function* readLocalFileChunks(
 		if (signal?.aborted) throw new Error("Operation aborted");
 		const stats = await handle.stat();
 		const end = stats.isFile() && stats.size > 0 ? stats.size - 1 : undefined;
-		yield* handle.createReadStream({ end, signal, autoClose: false });
+		// Own cancellation here: an already-aborted signal can destroy an unwatched fs stream asynchronously.
+		for await (const chunk of handle.createReadStream({ end, autoClose: false })) {
+			if (signal?.aborted) throw new Error("Operation aborted");
+			yield chunk;
+		}
+		if (signal?.aborted) throw new Error("Operation aborted");
 	} finally {
 		await handle.close();
 	}

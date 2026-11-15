@@ -13,6 +13,7 @@ import {
 	type ContentBlockStopEvent,
 	ConversationRole,
 	ConverseStreamCommand,
+	type ConverseStreamCommandOutput,
 	type ConverseStreamMetadataEvent,
 	ImageFormat,
 	type Message,
@@ -70,6 +71,12 @@ import {
 	clampMaxTokensToContext,
 	clampReasoning,
 } from "./simple-options.ts";
+import {
+	hasExceededStrictToolLimits,
+	isStrictToolLimitError,
+	markStrictToolLimitsExceeded,
+	prefersStrictTools,
+} from "./strict-tool-limits.ts";
 import { transformMessages } from "./transform-messages.ts";
 
 export type BedrockThinkingDisplay = "summarized" | "omitted";
@@ -262,29 +269,60 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
 			const initialSystemMessage = getInitialSystemMessage(normalizedContext.messages);
 			const initialSystemPrompt = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : undefined;
-			let commandInput = {
-				modelId: model.id,
-				messages: convertMessages(normalizedContext, model, cacheRetention, options.env),
-				system: buildSystemPrompt(initialSystemPrompt, model, cacheRetention, options.env),
-				inferenceConfig: {
-					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
-					...(options.temperature !== undefined && { temperature: options.temperature }),
-				},
-				toolConfig: convertToolConfig(
-					getCurrentTools(normalizedContext.messages),
-					options.toolChoice,
-					supportsStrictMode,
-				),
-				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
-				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
-			};
-			const nextCommandInput = await options?.onPayload?.(commandInput, model);
-			if (nextCommandInput !== undefined) {
-				commandInput = nextCommandInput as typeof commandInput;
-			}
-			const command = new ConverseStreamCommand(commandInput);
+			const tools = getCurrentTools(normalizedContext.messages);
+			let disablePreferredStrictTools = hasExceededStrictToolLimits(options.sessionId);
+			let response: ConverseStreamCommandOutput;
+			for (;;) {
+				options.signal?.throwIfAborted();
+				let commandInput = {
+					modelId: model.id,
+					messages: convertMessages(normalizedContext, model, cacheRetention, options.env),
+					system: buildSystemPrompt(initialSystemPrompt, model, cacheRetention, options.env),
+					inferenceConfig: {
+						...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
+						...(options.temperature !== undefined && { temperature: options.temperature }),
+					},
+					toolConfig: convertToolConfig(
+						tools,
+						options.toolChoice,
+						supportsStrictMode,
+						disablePreferredStrictTools,
+					),
+					additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
+					...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
+				};
+				const nextCommandInput = await options?.onPayload?.(commandInput, model);
+				if (nextCommandInput !== undefined) {
+					commandInput = nextCommandInput as typeof commandInput;
+				}
+				options.signal?.throwIfAborted();
+				const command = new ConverseStreamCommand(commandInput);
 
-			const response = await client.send(command, { abortSignal: options.signal });
+				try {
+					response = await client.send(command, { abortSignal: options.signal });
+					break;
+				} catch (error) {
+					const hasPreferred = commandInput.toolConfig?.tools?.some(
+						(definition, index) => definition.toolSpec?.strict === true && prefersStrictTools(tools[index]),
+					);
+					if (
+						options.signal?.aborted ||
+						disablePreferredStrictTools ||
+						!hasPreferred ||
+						!(error instanceof Error) ||
+						error.name !== "ValidationException" ||
+						!isStrictToolLimitError(error.message)
+					)
+						throw error;
+					disablePreferredStrictTools = true;
+					markStrictToolLimitsExceeded(options.sessionId);
+					appendAssistantMessageDiagnostic(output, {
+						type: "bedrock_strict_tools_fallback",
+						timestamp: Date.now(),
+						details: { reason: "strict_tool_limits_exceeded" },
+					});
+				}
+			}
 			responseRequestId = normalizeDiagnosticValue(response.$metadata.requestId);
 			if (!observedRawResponse && response.$metadata.httpStatusCode !== undefined) {
 				const responseHeaders: Record<string, string> = {};
@@ -1115,12 +1153,16 @@ function convertToolConfig(
 	tools: Tool[] | undefined,
 	toolChoice: BedrockOptions["toolChoice"],
 	supportsStrictMode: boolean,
+	disablePreferredStrictTools = false,
 ): ToolConfiguration | undefined {
 	if (!tools?.length) return undefined;
 	if (toolChoice === "none") return undefined;
 
 	const bedrockTools: BedrockTool[] = tools.map((tool) => {
-		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode);
+		const strict =
+			disablePreferredStrictTools && prefersStrictTools(tool)
+				? undefined
+				: resolveJsonSchemaStrictSampling(tool, supportsStrictMode);
 		return {
 			toolSpec: {
 				name: tool.name,

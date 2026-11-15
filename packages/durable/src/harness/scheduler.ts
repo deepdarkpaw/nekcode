@@ -24,6 +24,7 @@ import type {
 } from "../types.ts";
 import { agentHooks } from "./agent.ts";
 import { type ContextRange, readContextFrom } from "./context.ts";
+import { providerSessionsByRuntime } from "./provider.ts";
 import type {
 	Agent,
 	AnyTask,
@@ -177,6 +178,8 @@ export type TaskSchedulerOptions = {
  * step that decides its end, so a runtime commit it queued either lands before that decision or is rejected.
  */
 export class TaskScheduler {
+	/** Provider resources remain owned until all invocations have joined. */
+	readonly providerSessionIds = new Set<string>();
 	readonly #session: SessionImpl;
 	readonly #storage: Storage;
 	readonly #registry: RegistryReader;
@@ -1078,7 +1081,7 @@ export class TaskScheduler {
 			},
 		};
 		const settings = this.#settings;
-		return {
+		const runtime: ErasedRuntime = {
 			taskId: invocation.taskId as TaskId<JsonValue>,
 			conversationId: invocation.conversationId,
 			signal: invocation.controller.signal,
@@ -1196,6 +1199,8 @@ export class TaskScheduler {
 				this.#report(error);
 			},
 		};
+		providerSessionsByRuntime.set(runtime, this.providerSessionIds);
+		return runtime;
 	}
 
 	/** Run a committed-state read unless the invocation has ended. */

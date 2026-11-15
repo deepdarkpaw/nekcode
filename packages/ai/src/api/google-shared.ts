@@ -494,6 +494,7 @@ export function mapStopReason(reason: FinishReason): StopReason {
 		case FinishReason.STOP:
 			return "stop";
 		case FinishReason.MAX_TOKENS:
+		case FinishReason.CONTINUATION:
 			return "length";
 		case FinishReason.BLOCKLIST:
 		case FinishReason.PROHIBITED_CONTENT:
@@ -527,6 +528,7 @@ export function mapStopReasonString(reason: string): StopReason {
 		case "STOP":
 			return "stop";
 		case "MAX_TOKENS":
+		case "CONTINUATION":
 			return "length";
 		default:
 			return "error";

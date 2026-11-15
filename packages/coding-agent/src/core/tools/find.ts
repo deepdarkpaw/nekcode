@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { spawn } from "child_process";
+import { Minimatch } from "minimatch";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { ensureTool } from "../../utils/tools-manager.ts";
@@ -111,7 +112,7 @@ export function createFindToolDefinition(
 				(async () => {
 					try {
 						const searchPath = resolveToCwd(searchDir || ".", ctx?.cwd || cwd);
-						const effectiveLimit = limit ?? DEFAULT_LIMIT;
+						const effectiveLimit = Math.max(1, Math.floor(limit ?? DEFAULT_LIMIT));
 						const ops = customOps ?? defaultFindOperations;
 
 						// If custom operations provide glob(), use that instead of fd.
@@ -126,7 +127,7 @@ export function createFindToolDefinition(
 							}
 							const results = await ops.glob(pattern, searchPath, {
 								ignore: ["**/node_modules/**", "**/.git/**"],
-								limit: effectiveLimit,
+								limit: effectiveLimit + 1,
 							});
 							if (signal?.aborted) {
 								settle(() => reject(new Error("Operation aborted")));
@@ -143,8 +144,10 @@ export function createFindToolDefinition(
 							}
 
 							// Relativize paths against the search root for stable output.
-							const relativized = results.map((p) => relativizeFindResultPath(p, searchPath));
-							const resultLimitReached = relativized.length >= effectiveLimit;
+							const relativized = results
+								.slice(0, effectiveLimit)
+								.map((p) => relativizeFindResultPath(p, searchPath));
+							const resultLimitReached = results.length > effectiveLimit;
 							const rawOutput = formatPathList(relativized);
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let resultOutput = truncation.content;
@@ -181,7 +184,7 @@ export function createFindToolDefinition(
 							return;
 						}
 
-						const args: string[] = ["--glob", "--color=never", "--hidden"];
+						const args: string[] = ["--color=never", "--hidden"];
 
 						// fd normally ignores .gitignore outside git repos, so keep --no-require-git
 						// there. Inside repos, use fd's default git-aware behavior so parent
@@ -198,23 +201,35 @@ export function createFindToolDefinition(
 							current = parent;
 						}
 						if (!insideGitRepo) args.push("--no-require-git");
-						args.push("--max-results", String(effectiveLimit));
-
-						// fd --glob matches against the basename unless --full-path is set; in --full-path
-						// mode it matches against the absolute candidate path, so a path-containing
-						// pattern like 'src/**/*.spec.ts' needs a leading '**/' to match anything.
-						let effectivePattern = pattern;
-						if (pattern.includes("/")) {
-							args.push("--full-path");
-							if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
-								effectivePattern = `**/${pattern}`;
+						let effectivePattern = process.platform === "win32" ? pattern.replaceAll("\\", "/") : pattern;
+						effectivePattern = effectivePattern.replace(/^(?:\.\/)+/, "");
+						const isPathPattern = effectivePattern.includes("/");
+						const ignoreCase = effectivePattern === effectivePattern.toLowerCase();
+						const isRelativePathPattern = isPathPattern && !path.isAbsolute(effectivePattern);
+						// Windows fd versions disagree on full-path glob separators. Match their relative paths directly.
+						const windowsPathMatcher =
+							process.platform === "win32" && isPathPattern
+								? new Minimatch(effectivePattern.replace(/\/\*\*$/, "/**/*"), {
+										dot: true,
+										noext: true,
+										nocase: ignoreCase,
+									})
+								: undefined;
+						if (windowsPathMatcher) {
+							args.push("--", "", searchPath);
+						} else {
+							args.push("--glob", "--max-results", String(effectiveLimit + 1));
+							if (isPathPattern) args.push("--full-path");
+							if (isRelativePathPattern) {
+								const escapedRoot = searchPath.replace(/\/+$/, "").replace(/[\\*?[\]{}]/g, "\\$&");
+								effectivePattern = `${escapedRoot}/${effectivePattern}`;
+								if (ignoreCase) args.push("--ignore-case");
 							}
-							// fd matches full paths using native separators on Windows.
-							if (process.platform === "win32")
-								effectivePattern = effectivePattern.replaceAll("/", String.raw`[/\\]`);
+							args.push("--", effectivePattern, searchPath);
 						}
-						args.push("--", effectivePattern, searchPath);
 
+						// Cancellation during the asynchronous parent lookup must not start an untracked child.
+						if (signal?.aborted) return;
 						const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
 						const rl = createInterface({ input: child.stdout });
 						let stderr = "";
@@ -231,11 +246,21 @@ export function createFindToolDefinition(
 						};
 
 						child.stderr?.on("data", (chunk) => {
-							stderr += chunk.toString();
+							stderr = (stderr + chunk.toString()).slice(0, 8192);
 						});
 
-						rl.on("line", (line) => {
-							lines.push(line);
+						rl.on("line", (rawLine) => {
+							if (lines.length > effectiveLimit) return;
+							const line = rawLine.replace(/\r$/, "").trim();
+							if (!line) return;
+							const result = relativizeFindResultPath(line, searchPath);
+							if (
+								windowsPathMatcher &&
+								!windowsPathMatcher.match(isRelativePathPattern ? result : line.replaceAll("\\", "/"))
+							)
+								return;
+							lines.push(result);
+							if (windowsPathMatcher && lines.length > effectiveLimit) stopChild?.();
 						});
 
 						child.on("error", (error) => {
@@ -274,8 +299,8 @@ export function createFindToolDefinition(
 								relativized.push(relativizeFindResultPath(line, searchPath));
 							}
 
-							const resultLimitReached = relativized.length >= effectiveLimit;
-							const rawOutput = formatPathList(relativized);
+							const resultLimitReached = relativized.length > effectiveLimit;
+							const rawOutput = formatPathList(relativized.slice(0, effectiveLimit));
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let resultOutput = truncation.content;
 							const details: FindToolDetails = {};

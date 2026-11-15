@@ -114,10 +114,9 @@ async function capturePayload(context: Context): Promise<BedrockRequestPayload> 
 	let capturedPayload: BedrockRequestPayload | undefined;
 	const s = streamBedrock(gptModel, normalizeContext(context), {
 		cacheRetention: "none",
-		signal: AbortSignal.abort(),
 		onPayload: (payload) => {
 			capturedPayload = payload as BedrockRequestPayload;
-			return payload;
+			throw new Error("payload captured before request");
 		},
 	});
 	for await (const event of s) {

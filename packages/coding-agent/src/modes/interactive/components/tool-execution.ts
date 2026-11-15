@@ -284,7 +284,8 @@ export class ToolExecutionComponent extends Container {
 			const lines: string[] = [];
 			if (contentLines.length > 0) {
 				lines.push("");
-				lines.push(...contentLines);
+				// Large wrapped diffs can exceed the engine's function argument limit.
+				for (const line of contentLines) lines.push(line);
 			}
 			for (let i = 0; i < this.imageComponents.length; i++) {
 				const spacer = this.imageSpacers[i];

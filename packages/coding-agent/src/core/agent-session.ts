@@ -540,6 +540,8 @@ export class AgentSession {
 	private _usesDefaultTools: boolean;
 	/** Restored loadout tools waiting for background registration, until the next run or a replacement loadout. */
 	private _pendingToolNames = new Set<string>();
+	/** Only replacing this restored loadout cancels pending tool registration. */
+	private _restoredToolNames = new Set<string>();
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
@@ -1735,7 +1737,6 @@ export class AgentSession {
 			this._cacheWarmer.onWarmed = undefined;
 			this._cacheWarmer.cancel();
 		}
-		cleanupSessionResources(this.sessionId);
 		this._disposePromise = this._closeDurable(runner);
 		return this._disposePromise;
 	}
@@ -1755,6 +1756,11 @@ export class AgentSession {
 			} catch (error) {
 				errors.push(error);
 			}
+		}
+		try {
+			cleanupSessionResources(this.sessionId);
+		} catch (error) {
+			errors.push(error);
 		}
 		try {
 			await this.sessionManager.flush();
@@ -1872,7 +1878,9 @@ export class AgentSession {
 		const previous = this.getActiveToolNames();
 		this._setActiveTools(toolNames);
 		const active = new Set(this.getActiveToolNames());
-		if (previous.some((name) => !active.has(name))) this._pendingToolNames.clear();
+		if (previous.some((name) => !active.has(name) && this._restoredToolNames.has(name))) {
+			this._pendingToolNames.clear();
+		}
 	}
 
 	private _setActiveTools(toolNames: string[]): void {
@@ -2084,9 +2092,11 @@ export class AgentSession {
 	/** Restore the active tool loadout declared by the session transcript, if it declares one. */
 	private _restoreToolsFromTranscript(): void {
 		this._pendingToolNames.clear();
+		this._restoredToolNames.clear();
 		const current = getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages);
 		if (!current) return;
 		const names = (current.toolsAdded ?? []).map((tool) => tool.name);
+		this._restoredToolNames = new Set(names);
 		this._setActiveTools(names);
 		this._pendingToolNames = new Set(
 			names.filter(
@@ -4126,6 +4136,7 @@ export class AgentSession {
 			includeAllExtensionTools: true,
 		});
 		this._pendingToolNames = new Set(previousToolNames.filter((name) => !this._toolRegistry.has(name)));
+		this._restoredToolNames = new Set(previousToolNames);
 		await this._restoreReadStateFromBranch();
 
 		const hasBindings =

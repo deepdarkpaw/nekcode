@@ -79,6 +79,7 @@ describe("Anthropic strict tool schemas", () => {
 			type: "object",
 			properties: legacyParameters.properties,
 			required: legacyParameters.required,
+			additionalProperties: false,
 		});
 
 		const strictTool = await captureFirstTool(
@@ -95,6 +96,20 @@ describe("Anthropic strict tool schemas", () => {
 			required: ["value", "optional"],
 			properties: { optional: { anyOf: [{ type: "number" }, { type: "null" }] } },
 			title: "StrictLookupInput",
+		});
+	});
+
+	it("preserves pattern properties together with a closed non-strict root", async () => {
+		const parameters = Type.Unsafe({
+			type: "object",
+			properties: {},
+			patternProperties: { "^label_": { type: "string" } },
+			additionalProperties: false,
+		});
+		const tool = await captureFirstTool(createTool(parameters));
+		expect(tool.input_schema).toMatchObject({
+			patternProperties: { "^label_": { type: "string" } },
+			additionalProperties: false,
 		});
 	});
 

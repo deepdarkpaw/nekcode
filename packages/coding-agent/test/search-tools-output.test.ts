@@ -98,7 +98,7 @@ describe("find output", () => {
 		const tool = createFindTool(dir, {
 			operations: {
 				exists: () => true,
-				glob: () => ["src/core/tools/a.ts", "src/core/tools/b.ts"],
+				glob: () => ["src/core/tools/a.ts", "src/core/tools/b.ts", "src/core/tools/c.ts"],
 			},
 		});
 		const result = await tool.execute("find", { pattern: "*.ts", limit: 2 });

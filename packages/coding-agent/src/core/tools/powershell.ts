@@ -1,3 +1,4 @@
+import { win32 } from "node:path";
 import { getPowerShellConfig } from "../../utils/shell.ts";
 import {
 	type BashOperations,
@@ -32,10 +33,25 @@ export type PowerShellToolInput = BashToolInput;
 export interface PowerShellToolOptions
 	extends Pick<BashToolOptions, "operations" | "exposeSessionEnvironment" | "spawnHook" | "readState"> {}
 
+/** PowerShell 5.1 treats redirected native stderr as failure even when the native process succeeded. */
+const WINDOWS_POWERSHELL_EXIT_SUFFIX =
+	'\n;\nif ($?) { exit 0 }\nif (($LASTEXITCODE -eq 0) -and ("$($Error[0].FullyQualifiedErrorId)" -like "NativeCommandError*")) { exit 0 }\nexit 1';
+
 export function createLocalPowerShellOperations(): PowerShellOperations {
-	const operations = createLocalShellOperations("PowerShell", getPowerShellConfig);
 	return {
-		exec: (command, cwd, options) => operations.exec(`${UTF8_OUTPUT_PREFIX}${command}`, cwd, options),
+		exec: async (command, cwd, options) => {
+			const config = getPowerShellConfig();
+			// Do not turn an unfinished command into executable input by appending a continuation.
+			const suffix =
+				win32.basename(config.shell).toLowerCase() === "powershell.exe" && !command.endsWith("`")
+					? WINDOWS_POWERSHELL_EXIT_SUFFIX
+					: "";
+			return createLocalShellOperations("PowerShell", () => config).exec(
+				`${UTF8_OUTPUT_PREFIX}${command}${suffix}`,
+				cwd,
+				options,
+			);
+		},
 	};
 }
 

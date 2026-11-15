@@ -17,6 +17,24 @@ const azurePeakLoadError =
 const modelCapacityError = "Selected model is at capacity. Please try again later.";
 
 describe("provider retry classification", () => {
+	it.each([
+		"Connection closed.",
+		"read ECONNRESET",
+		"write EPIPE",
+		"connect ETIMEDOUT",
+		"ECONNABORTED",
+		"ECONNREFUSED",
+		"connection reset by peer",
+	])("retries transport failure %s", (errorMessage) => {
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(true);
+	});
+
+	it.each(["EXECONNRESET", "ETIMEDOUTX", "ERR_EPIPE_ID", "404 Model is not supported by any configured account"])(
+		"does not retry unrelated failure %s",
+		(errorMessage) => {
+			expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+		},
+	);
 	it("matches explicit provider retry guidance", () => {
 		expect(
 			isRetryableAssistantError(

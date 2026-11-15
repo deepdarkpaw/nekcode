@@ -12,7 +12,7 @@ import {
 } from "typescript/unstable/ast/is";
 import { API } from "typescript/unstable/sync";
 
-const ignoredDirectories = new Set([".git", "coverage", "dist", "node_modules", "reference"]);
+const ignoredDirectories = new Set([".git", ".tmp", ".worktree", ".artifacts", "coverage", "dist", "node_modules", "reference"]);
 const files = [];
 
 function collectTypescriptFiles(directory) {

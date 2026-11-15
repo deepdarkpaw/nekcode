@@ -1,0 +1,80 @@
+{
+  "upstream": "https://github.com/earendil-works/pi",
+  "reviewedRevision": "827383a15262905f82e418483825a49dbb1adbf5",
+  "nekBaseRevision": "f33c6a53c",
+  "policy": "Adapt individual fixes to nek's APIs; this is not a whole-package pi upgrade.",
+  "ports": [
+    {
+      "topic": "Read cancellation and large self-rendered results",
+      "commits": ["ef9361ab7", "5b5be2c31"],
+      "status": "adapted",
+      "tests": ["packages/coding-agent/test/read-streaming.test.ts", "packages/coding-agent/test/tool-execution-component.test.ts"],
+      "notes": "Read fix is in nek's read-stream.ts. The upstream JSONL session-reader change is not included."
+    },
+    {
+      "topic": "Binary dotenv isolation and dependency entrypoint resolution",
+      "commits": ["1ffb6bd62", "4cfea9786"],
+      "status": "adapted",
+      "tests": ["scripts/binary-runtime-policy.test.mjs"]
+    },
+    {
+      "topic": "Find relative glob semantics, Windows fd versions and cancellation",
+      "commits": ["282b01c80", "bbfc6c7ce", "463b8f893", "a07f25129"],
+      "status": "adapted",
+      "tests": ["packages/coding-agent/test/find-relative-glob.test.ts", "packages/coding-agent/test/find-abort-before-spawn.test.ts"],
+      "notes": "Preserves nek's grouped output. Limits distinguish exactly N from more than N matches."
+    },
+    {
+      "topic": "Command output and exit status",
+      "commits": ["935f0ac0c", "a83b75a07", "c9dd2c530"],
+      "status": "adapted",
+      "tests": ["packages/coding-agent/test/output-accumulator.test.ts", "packages/coding-agent/test/exec.test.ts", "packages/coding-agent/test/powershell-tool.test.ts"]
+    },
+    {
+      "topic": "Network failure retries and cause details",
+      "commits": ["9b88b94e2", "4699b5b26", "4c992154d"],
+      "status": "adapted",
+      "tests": ["packages/ai/test/retry.test.ts", "packages/ai/test/error-body.test.ts"]
+    },
+    {
+      "topic": "Tool schemas and preferred-strict limit negotiation",
+      "commits": ["406e719a6", "aa47cedce", "45344bd3a", "842c73170"],
+      "status": "adapted",
+      "tests": ["packages/ai/test/constrained-sampling.test.ts", "packages/ai/test/strict-tool-limits.test.ts", "packages/ai/test/anthropic-strict-tool-schema.test.ts"],
+      "notes": "Includes the prerequisite first-request negotiation without message threads. Required constraints stay strict; root patternProperties is retained with additionalProperties."
+    },
+    {
+      "topic": "Google SDK fetch and continuation ownership",
+      "commits": ["f72f799a4", "22f456d73"],
+      "status": "adapted",
+      "tests": ["packages/ai/test/google-continuation.test.ts", "packages/ai/test/fetch-option.test.ts"],
+      "notes": "SDK 2.32.0; automatic continuation disabled. Existing mapStopReasonString export retained. Vertex ADC uses its own auth HTTP client."
+    },
+    {
+      "topic": "Harness-scoped provider cleanup and pending MCP loadout",
+      "commits": ["64c96d00d", "3345c2925"],
+      "status": "adapted",
+      "tests": ["packages/durable/test/harness-provider-cleanup.test.ts", "packages/coding-agent/test/suite/agent-session-mcp.test.ts"],
+      "notes": "Preserves nek's SQLite adapter, public Agent facade and explicit no-auto-resume CLI policy."
+    },
+    {
+      "topic": "Context output budget and Copilot reasoning metadata",
+      "commits": ["0a4fad548", "86918f9ee"],
+      "status": "adapted",
+      "tests": ["packages/ai/test/context-output-budget.test.ts", "packages/ai/test/generate-models-strict.test.ts", "packages/ai/test/openai-completions-tool-choice.test.ts"],
+      "notes": "Model generator changed, not generated source. Explicit nested reasoning_tokens=0 takes precedence."
+    },
+    {
+      "topic": "Display-only image warnings and terminal image lifetime",
+      "commits": ["4be4cb4f5", "4622edb79", "be2744d95", "787005a40"],
+      "status": "adapted",
+      "tests": ["packages/coding-agent/test/tool-execution-component.test.ts", "packages/tui/test/overlay-terminal-image.test.ts"],
+      "notes": "Image warning applies to nek's read implementation; no whole Durable tools migration."
+    }
+  ],
+  "notIncluded": [
+    { "topic": "New scheduler pending-set race", "commits": ["e50dc7af9"], "reason": "The local scheduler uses a different serialized commit and dirty-drain design." },
+    { "topic": "Legacy Agent loop aborted tool batch", "commits": ["4438c58ba"], "reason": "The nek CLI executes through Durable; legacy Agent SDK usage needs separate evaluation." },
+    { "topic": "Message threads, pi-schema, p2/p3, suspendable-work and storage migration", "reason": "Independent architecture and protocol changes, not prerequisites for these repairs." }
+  ]
+}

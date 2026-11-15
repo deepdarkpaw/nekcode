@@ -48,9 +48,29 @@ export function normalizeProviderError(error: unknown): NormalizedProviderError 
 	return {
 		status,
 		body,
-		message: error.message,
+		message: status === undefined && body === undefined ? withCauseDetail(error) : error.message,
 		messageCarriesBody,
 	} satisfies NormalizedProviderError;
+}
+
+/** Keep a bounded network cause chain when an SDK replaces the actual failure with generic text. */
+export function withCauseDetail(error: Error): string {
+	let deepest: Error | undefined;
+	let current: unknown = error.cause;
+	const seen = new Set<Error>([error]);
+	for (let depth = 0; depth < 5 && current instanceof Error && !seen.has(current); depth++) {
+		seen.add(current);
+		deepest = current;
+		current = current.cause;
+	}
+	if (!deepest) return error.message;
+	let detail = (deepest.message || deepest.name).trim();
+	const code = (deepest as Error & { code?: unknown }).code;
+	if ((typeof code === "string" || typeof code === "number") && !detail.includes(String(code))) {
+		detail = detail ? `${detail} (${code})` : String(code);
+	}
+	if (!detail || error.message.includes(detail)) return error.message;
+	return error.message ? `${error.message}: ${detail}` : detail;
 }
 
 /**
