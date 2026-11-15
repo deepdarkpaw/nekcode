@@ -7,11 +7,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildGuiInfo } from "../src/cli/gui-info.ts";
+import { buildGuiInfo, resolveLaunchArgs } from "../src/cli/gui-info.ts";
 import { NEK_VERSION, VERSION } from "../src/config.ts";
 import { NEK_GUI_PROTOCOL_VERSION } from "../src/modes/rpc/gui/protocol.ts";
 
 describe("gui-info", () => {
+	it("does not pass Bun's embedded virtual entry back to the compiled executable", () => {
+		expect(resolveLaunchArgs("B:\\~BUN\\root\\nek.exe", true)).toEqual([]);
+		expect(resolveLaunchArgs("/$bunfs/root/nek", true)).toEqual([]);
+		expect(resolveLaunchArgs(undefined, true)).toEqual([]);
+	});
 	let root: string;
 
 	beforeEach(() => {

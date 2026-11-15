@@ -8,7 +8,15 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, NEK_VERSION, VERSION } from "../config.ts";
+import {
+	APP_NAME,
+	ENV_SESSION_DIR,
+	expandTildePath,
+	getAgentDir,
+	isBunBinary,
+	NEK_VERSION,
+	VERSION,
+} from "../config.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { NEK_GUI_PROTOCOL_VERSION, type RpcGuiInfo } from "../modes/rpc/gui/protocol.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -44,7 +52,10 @@ function sourceResolverUrl(): string {
 }
 
 /** Launch arguments the GUI prepends to the nek arguments. */
-export function resolveLaunchArgs(entry: string | undefined): string[] {
+export function resolveLaunchArgs(entry: string | undefined, compiled = isBunBinary): string[] {
+	// The executable is already node.path. Bun's argv[1] is a virtual embedded entry,
+	// not a real script or prompt that a GUI should pass back to that executable.
+	if (compiled) return [];
 	if (!isSourceEntry(entry)) {
 		return entry === undefined ? [] : [entry];
 	}

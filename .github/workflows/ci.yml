@@ -344,6 +344,18 @@ jobs:
           printf '%s\n' "$output"
           [[ "$output" == "nek $VERSION (pi "* ]]
           "$binary" --help
+          NEK_GUI_INFO="$("$binary" gui-info --json)" node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { spawnSync } from 'node:child_process';
+          const info = JSON.parse(process.env.NEK_GUI_INFO);
+          assert.equal(info.capabilities?.historyPages, 1);
+          assert.equal(info.capabilities?.historyStream, 1);
+          assert.equal(info.nekVersion, process.env.VERSION);
+          assert.deepEqual(info.launch.args, [], 'compiled executable must not receive its embedded virtual entry');
+          const launched = spawnSync(info.node.path, [...info.launch.args, 'gui-info', '--json'], { encoding: 'utf8', timeout: 15000 });
+          assert.equal(launched.status, 0, launched.stderr);
+          assert.equal(JSON.parse(launched.stdout).nekVersion, info.nekVersion);
+          NODE
 
   release-assets:
     if: ${{ inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/nek-') }}
