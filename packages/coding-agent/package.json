@@ -6,7 +6,7 @@
 	"nekConfig": {
 		"name": "nek",
 		"configDir": ".nek",
-		"version": "0.5.1-beta.2"
+		"version": "0.5.1-beta.3"
 	},
 	"bin": {
 		"nek": "dist/bundle/cli.js"
