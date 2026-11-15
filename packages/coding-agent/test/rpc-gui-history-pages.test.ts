@@ -23,12 +23,7 @@ import type { SessionEntry, SessionHeader } from "../src/core/session-entries.ts
 import type { GuiContext } from "../src/modes/rpc/gui/context.ts";
 import { GUI_COMMAND_TYPES, handleGuiCommand } from "../src/modes/rpc/gui/handlers.ts";
 import { readHistoryCommand } from "../src/modes/rpc/gui/history.ts";
-import type {
-	RpcHistoryCommand,
-	RpcHistoryCommandResult,
-	RpcHistoryContent,
-	RpcHistoryTurnPage,
-} from "../src/modes/rpc/gui/history-protocol.ts";
+import type { RpcHistoryCommand, RpcHistoryCommandResult } from "../src/modes/rpc/gui/history-protocol.ts";
 import { NEK_CONTROL_COMMANDS } from "../src/modes/rpc/gui/protocol.ts";
 
 const TMP = resolve(import.meta.dirname, "../../../.tmp/history-tests");
@@ -256,7 +251,7 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		const answer = entries[43];
 		if (answer.type !== "message" || answer.message.role !== "assistant")
 			throw new Error("fixture assistant missing");
-		answer.message.content = [{ type: "text", text: "oversized observation body ".repeat(5000) }];
+		answer.message.content = [{ type: "text", text: "observation body ".repeat(1000) }];
 		entries.splice(2, 0, {
 			type: "message",
 			id: "old-spawn",
@@ -284,7 +279,6 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		for (let index = 0; index < entries.length; index++) entries[index].parentId = entries[index - 1]?.id ?? null;
 		const sessionPath = fixture("observation-append", entries);
 		const page = read({ type: "read_history_page", sessionPath, maxBytes: 65536 });
-		const contentRef = page.entries.find((entry) => entry.id === "a21")!.omissions[0].ref;
 		expect(page.olderCursor).toBeDefined();
 		appendHistory(sessionPath, rounds(23).slice(-2));
 		const beforeReads = hash(sessionPath);
@@ -294,9 +288,8 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 			{ type: "read_session_metadata" },
 			{ type: "read_history_page", view: "entries", beforeCursor: page.olderCursor },
 			{ type: "read_history_page", view: "summary" },
-			{ type: "read_history_turn", turnId: "turn:u21" },
+			{ type: "read_history_page", view: "target", aroundEntryId: "a21" },
 			{ type: "read_history_directory", query: "round", limit: 2 },
-			{ type: "read_history_content", ref: contentRef, limit: 262144 },
 			{ type: "read_history_subagent", subagentId: "observed-child" },
 			{ type: "read_history_subagent", limit: 1 },
 		];
@@ -310,7 +303,6 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 			};
 			const result = read(request);
 			expect(result.observationCursor).toBe(metadata.observationCursor);
-			if (command.type === "read_history_content") expect(result).toHaveProperty("nextOffset");
 			expect(
 				Buffer.byteLength(
 					JSON.stringify({ id: request.id, type: "response", command: request.type, success: true, data: result }),
@@ -333,7 +325,7 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		expect(hash(sessionPath)).toBe(beforeReads);
 		expect(existsSync(`${sessionPath}.lock`)).toBe(false);
 	});
-	it("HO2 observations reject prefix rewrite/truncation before body, turn, directory or content projection", () => {
+	it("HO2 observations reject prefix rewrite/truncation before body, target or directory projection", () => {
 		for (const mutation of ["rewrite", "truncate"] as const) {
 			const entries = rounds(3);
 			const name = `observation-${mutation}`;
@@ -374,9 +366,8 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 				for (const command of [
 					{ type: "read_history_page" },
 					{ type: "read_history_page", view: "summary" },
-					{ type: "read_history_turn", turnId: "missing" },
+					{ type: "read_history_page", view: "target", aroundEntryId: "u0" },
 					{ type: "read_history_directory", query: "round" },
-					{ type: "read_history_content", ref: "bad-ref" },
 					{ type: "read_history_subagent" },
 				] as const) {
 					error({ ...command, sessionPath, observationCursor: initial.observationCursor }, "STALE_CURSOR");
@@ -485,9 +476,11 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		expect(hash(sessionPath)).toBe(before);
 		expect(hash(copied)).toBe(before);
 	});
-	it("HP1 latest 20 then 20 then 20 then 10; 1000-round first payload remains bounded", () => {
-		const sessionPath = fixture("seventy", rounds(70));
+	it("HC1/HP1 latest 20 complete turns then 20/20/10; 1000-turn first page is fast and bounded", () => {
+		const entries = rounds(70);
+		const sessionPath = fixture("seventy", entries);
 		let page = read({ type: "read_history_page", sessionPath });
+		const pages = [page];
 		const lengths = [page.turns.length];
 		expect(page.turns[0].id).toBe("turn:u50");
 		if (format === "sqlite")
@@ -499,82 +492,231 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		while (page.olderCursor) {
 			page = read({ type: "read_history_page", sessionPath, beforeCursor: page.olderCursor });
 			lengths.push(page.turns.length);
+			pages.unshift(page);
 		}
 		expect(lengths).toEqual([20, 20, 20, 10]);
-		const large = read({ type: "read_history_page", sessionPath: fixture("thousand", rounds(1000)) });
+		for (const part of pages) {
+			expect(JSON.stringify(part)).not.toMatch(/"(?:omissions|continuationCursor)":/u);
+			for (const turn of part.turns) {
+				const loaded = part.entries.filter((entry) => entry.turnId === turn.id);
+				expect(loaded.map((entry) => entry.position)).toEqual([turn.position * 2, turn.position * 2 + 1]);
+				expect(loaded.map((entry) => entry.entry)).toEqual(entries.slice(turn.position * 2, turn.position * 2 + 2));
+				expect(loaded).toHaveLength(turn.entryCount);
+			}
+		}
+		expect(pages.flatMap((part) => part.entries.map((entry) => entry.id))).toEqual(entries.map((entry) => entry.id));
+		const thousand = fixture("thousand", rounds(1000));
+		sql = [];
+		const started = performance.now();
+		const large = read({ type: "read_history_page", sessionPath: thousand });
+		expect(performance.now() - started).toBeLessThan(5000);
 		expect(large.turns).toHaveLength(20);
 		expect(Buffer.byteLength(JSON.stringify(large))).toBeLessThan(65536);
 		if (format === "sqlite") {
 			expect(sql.some((call) => /SELECT record FROM entries/iu.test(call.text))).toBe(false);
 			const bodyReads = sql.filter((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"));
 			expect(bodyReads.every((call) => Number(call.args[1]) <= 65536)).toBe(true);
+			expect(bodyReads).toHaveLength(40);
 		}
 	});
-	it("HP3 huge text/image/tool fields reconstruct exactly; HP4 counts full UTF8 envelope", () => {
-		const entries = rounds(1);
-		const original = `${'界\\"\n😀'.repeat(2000)}END`;
-		entries[0] = { ...entries[0], type: "message", message: { role: "user", content: original, timestamp: 1 } };
-		const sessionPath = fixture("giant", entries);
-		const command = { type: "read_history_page", sessionPath, maxBytes: 65536, id: "utf8-界" } as const;
-		const page = read(command);
-		const lazy = page.entries[0].omissions.find((item) => item.pointer === "/message/content")!;
-		expect(lazy).toBeDefined();
-		expect(page.turns[0].header.id).toBe("u0");
-		const chunks: Buffer[] = [];
-		let offset: number | undefined = 0;
-		do {
-			const chunk: RpcHistoryContent = read({
-				type: "read_history_content",
-				sessionPath,
-				ref: lazy.ref,
-				offset,
-				limit: 3001,
-				maxBytes: 65536,
-			});
-			chunks.push(Buffer.from(chunk.data, "base64"));
-			offset = chunk.nextOffset;
-		} while (offset !== undefined);
-		expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toBe(original);
-		expect(
-			Buffer.byteLength(
-				JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data: page }),
-			),
-		).toBeLessThanOrEqual(command.maxBytes);
-		error({ type: "read_history_page", sessionPath, maxBytes: 65535 }, "INVALID_REQUEST");
-		error({ type: "read_history_page", sessionPath, turnLimit: 21 }, "INVALID_REQUEST");
+	it("HC2/HC7 large assistant text, user images and tool bodies stay exact except display-only stripping", () => {
+		const [user, answer] = rounds(1);
+		if (
+			user.type !== "message" ||
+			user.message.role !== "user" ||
+			answer.type !== "message" ||
+			answer.message.role !== "assistant"
+		)
+			throw new Error("fixture");
+		const text = `${'界\\"\n😀'.repeat(20000)}END`;
+		const image = "abcd".repeat(75000);
+		user.message.content = [
+			{ type: "text", text: "user text\n".repeat(1000) },
+			{ type: "image", data: image, mimeType: "image/png" },
+		];
+		answer.message.content = [
+			{ type: "text", text, textSignature: "private text signature" },
+			{
+				type: "thinking",
+				thinking: "exact thinking".repeat(1000),
+				thinkingSignature: "private thinking signature",
+				redacted: true,
+			},
+			{ type: "toolCall", id: "big-call", name: "bash", arguments: { command: "echo 界\n".repeat(1000) } },
+		];
+		answer.message.errorMessage = "exact error\n".repeat(1000);
+		const tool: SessionEntry = {
+			type: "message",
+			id: "tool",
+			parentId: answer.id,
+			timestamp: TIME,
+			message: {
+				role: "toolResult",
+				toolCallId: "big-call",
+				toolName: "bash",
+				isError: false,
+				timestamp: 1,
+				content: [
+					{ type: "text", text: "long output 界😀\n".repeat(10000) },
+					{ type: "image", data: "hidden".repeat(1000), mimeType: "image/jpeg" },
+				],
+				details: { exact: "tool details\n".repeat(2000), image: { data: "details data stays" } },
+			},
+		};
+		const entries = [user, answer, tool];
+		const expected = JSON.parse(JSON.stringify(entries));
+		delete expected[1].message.content[0].textSignature;
+		delete expected[1].message.content[1].thinkingSignature;
+		delete expected[2].message.content[1].data;
+		const sessionPath = fixture("complete-large", entries);
+		const page = read({ type: "read_history_page", sessionPath, maxBytes: 2 * 1024 * 1024 });
+		expect(page.entries.map((entry) => entry.entry)).toEqual(expected);
+		expect(page.turns[0].header.entry).toEqual(user);
+		expect(page.turns[0].header).toEqual(page.entries[0]);
+		expect(page.entries[2].toolCallOrigin).toMatchObject({ entryId: "a0", toolCallId: "big-call", name: "bash" });
+		const target = read({
+			type: "read_history_page",
+			sessionPath,
+			view: "target",
+			aroundEntryId: "tool",
+			maxBytes: 2 * 1024 * 1024,
+		});
+		expect(target.entries.map((entry) => entry.entry)).toEqual([expected[0], expected[2]]);
 	});
-	it("HP3/HP4 within-turn continuation advances through many process entries", () => {
-		const entries = rounds(1);
-		for (let i = 0; i < 600; i++)
-			entries.push({
+	it("HC2 compaction, bash and custom content/details retain complete persisted values", () => {
+		const entries: SessionEntry[] = [
+			...rounds(1),
+			{
+				type: "compaction",
+				id: "compaction",
+				parentId: "a0",
+				timestamp: TIME,
+				summary: "summary 界😀\n".repeat(5000),
+				firstKeptEntryId: "u0",
+				tokensBefore: 30000,
+				details: { exact: "compaction details".repeat(1000) },
+			},
+			{
 				type: "message",
-				id: `t${i}`,
-				parentId: entries.at(-1)!.id,
+				id: "bash",
+				parentId: "compaction",
 				timestamp: TIME,
 				message: {
-					role: "toolResult",
-					toolCallId: `call${i}`,
-					toolName: "read",
-					isError: false,
+					role: "bashExecution",
+					command: "echo test",
+					output: "bash output 界😀\n".repeat(5000),
+					exitCode: 0,
+					cancelled: false,
+					truncated: false,
 					timestamp: 1,
-					content: [{ type: "text", text: "result" }],
 				},
+			},
+			{
+				type: "custom_message",
+				id: "custom",
+				parentId: "bash",
+				timestamp: TIME,
+				customType: "note",
+				content: [{ type: "image", data: "custom image data".repeat(1000), mimeType: "image/png" }],
+				display: true,
+				details: { textSignature: "details are not content blocks", text: "custom details".repeat(1000) },
+			},
+		];
+		const sessionPath = fixture("complete-other-bodies", entries);
+		expect(read({ type: "read_history_page", sessionPath }).entries.map((entry) => entry.entry)).toEqual(entries);
+	});
+	it("HC3 byte budgets admit fewer whole turns newest-first and continue symmetrically after", () => {
+		const entries = rounds(25);
+		for (const entry of entries)
+			if (entry.type === "message" && entry.message.role === "assistant")
+				entry.message.content = [{ type: "text", text: '界😀\\"\n'.repeat(1000) }];
+		const sessionPath = fixture("budget", entries);
+		const latest = read({ type: "read_history_page", sessionPath, maxBytes: 65536, id: "budget-界😀" });
+		expect(latest.turns.length).toBeGreaterThan(0);
+		expect(latest.turns.length).toBeLessThan(20);
+		expect(latest.turns.at(-1)?.position).toBe(24);
+		const pages = [latest];
+		let current = latest;
+		while (current.olderCursor) {
+			const older = read({
+				type: "read_history_page",
+				sessionPath,
+				beforeCursor: current.olderCursor,
+				maxBytes: 65536,
 			});
-		const sessionPath = fixture("process", entries);
-		const page = read({ type: "read_history_page", sessionPath, maxBytes: 65536 });
-		expect(page.turns).toHaveLength(1);
-		const ids = page.entries.map((entry) => entry.id);
-		let cursor = page.turns[0].continuationCursor;
-		expect(cursor).toBeDefined();
-		while (cursor) {
-			const turn = read({ type: "read_history_turn", sessionPath, turnId: "turn:u0", cursor, maxBytes: 65536 });
-			expect(turn.turn.header.id).toBe("u0");
-			expect(turn.entries.length).toBeGreaterThan(0);
-			ids.push(...turn.entries.map((entry) => entry.id));
-			cursor = turn.continuationCursor;
+			expect(older.turns.at(-1)!.position + 1).toBe(current.turns[0].position);
+			pages.unshift(older);
+			current = older;
 		}
-		expect([...new Set(ids)].sort()).toEqual(entries.map((entry) => entry.id).sort());
-		expect(ids.filter((id) => id !== "u0")).toHaveLength(entries.length - 1);
+		expect(pages.flatMap((part) => part.entries.map((entry) => entry.entry))).toEqual(entries);
+		const newer = read({ type: "read_history_page", sessionPath, afterCursor: current.newerCursor, maxBytes: 65536 });
+		expect(newer.turns[0].position).toBe(current.turns.at(-1)!.position + 1);
+		for (const part of [...pages, newer]) {
+			expect(part.entries).toHaveLength(part.turns.length * 2);
+			expect(part.turns.map((turn) => turn.position)).toEqual(
+				Array.from({ length: part.turns.length }, (_, index) => part.turns[0].position + index),
+			);
+			expect(
+				Buffer.byteLength(
+					JSON.stringify({
+						...(part === latest ? { id: "budget-界😀" } : {}),
+						type: "response",
+						command: "read_history_page",
+						success: true,
+						data: part,
+					}),
+				),
+			).toBeLessThanOrEqual(65536);
+		}
+	});
+	it("HC3 exact UTF8 envelope budget includes duplicated header, seed and both boundary cursors", () => {
+		const entries = rounds(3);
+		const answer = entries[3];
+		if (answer.type !== "message" || answer.message.role !== "assistant") throw new Error("fixture");
+		answer.message.content = [{ type: "text", text: '界😀\\"\n'.repeat(10000) }];
+		const sessionPath = fixture("exact-envelope", entries);
+		const command = {
+			type: "read_history_page",
+			sessionPath,
+			aroundEntryId: "a1",
+			turnLimit: 1,
+			id: "页-界😀",
+		} as const;
+		const page = read(command);
+		const size = Buffer.byteLength(
+			JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data: page }),
+		);
+		expect(size).toBeGreaterThan(65536);
+		expect(page).toMatchObject({
+			hasOlder: true,
+			hasNewer: true,
+			seed: { model: { provider: "mock", modelId: "offline" } },
+		});
+		expect(read({ ...command, maxBytes: size })).toEqual(page);
+		error({ ...command, maxBytes: size - 1 }, "RESPONSE_LIMIT");
+	});
+	it("HC4 oversized anchor fails with position/size/budget and never partial data", () => {
+		const entries = rounds(1);
+		const answer = entries[1];
+		if (answer.type !== "message" || answer.message.role !== "assistant") throw new Error("fixture");
+		answer.message.content = [{ type: "text", text: "x".repeat(100000) }];
+		const sessionPath = fixture("too-large", entries);
+		const result = readHistoryCommand(ctx, { type: "read_history_page", sessionPath, maxBytes: 65536 });
+		expect(result).toMatchObject({
+			ok: false,
+			error: { code: "RESPONSE_LIMIT", message: expect.stringMatching(/position 0.*\d+ bytes.*65536/u) },
+		});
+		expect(result).not.toHaveProperty("entries");
+	});
+	it("HC8 maxBytes validates 64 KiB through 32 MiB and turn limits stay 1..20", () => {
+		const sessionPath = fixture("limits", rounds(1));
+		for (const maxBytes of [65536, 4 * 1024 * 1024 + 1, 32 * 1024 * 1024]) {
+			expect(read({ type: "read_history_page", sessionPath, maxBytes }).entries).toHaveLength(2);
+		}
+		for (const maxBytes of [65535, 32 * 1024 * 1024 + 1, 65536.5, Number.NaN])
+			error({ type: "read_history_page", sessionPath, maxBytes }, "INVALID_REQUEST");
+		for (const turnLimit of [0, 21, 1.5])
+			error({ type: "read_history_page", sessionPath, turnLimit }, "INVALID_REQUEST");
 	});
 	it("HP5/HP6 stable directory, around, refetch, foreign/corrupt cursor and branch invalidation", () => {
 		const entries = rounds(70);
@@ -584,6 +726,22 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		expect(around.entries.find((entry) => entry.id === "a55")?.position).toBe(
 			page.entries.find((entry) => entry.id === "a55")?.position,
 		);
+		const single = read({ type: "read_history_page", sessionPath, view: "target", aroundEntryId: "a55" });
+		expect(single.turns.map((turn) => turn.position)).toEqual([55]);
+		expect(single.entries.map((entry) => entry.entry)).toEqual(entries.slice(110, 112));
+		expect(single).toMatchObject({
+			hasOlder: true,
+			hasNewer: true,
+			seed: { model: { provider: "mock", modelId: "offline" } },
+		});
+		expect(
+			read({ type: "read_history_page", sessionPath, beforeCursor: single.olderCursor, turnLimit: 1 }).turns[0]
+				.position,
+		).toBe(54);
+		expect(
+			read({ type: "read_history_page", sessionPath, afterCursor: single.newerCursor, turnLimit: 1 }).turns[0]
+				.position,
+		).toBe(56);
 		const target = read({ type: "read_history_directory", sessionPath, aroundEntryId: "u55", limit: 1 });
 		expect(target.items[0]).toMatchObject({ entryId: "u55", turnId: "turn:u55", position: 110 });
 		expect(
@@ -653,288 +811,134 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		expect(child.subagent).not.toHaveProperty("finalText");
 		error({ type: "read_history_subagent", sessionPath, subagentId: "unrelated" }, "NOT_FOUND");
 	});
-	it("HP13 latest 20 long rounds include every real header and final reply without reading prefixes", () => {
-		const entries = Array.from({ length: 20 }, (_, index) => longRound(index)).flat();
-		for (let i = 0; i < entries.length; i++) entries[i].parentId = entries[i - 1]?.id ?? null;
-		const sessionPath = fixture("twenty-long", entries);
-		const page = read({ type: "read_history_page", sessionPath });
-		expect(page.turns).toHaveLength(20);
-		expect(page.entries.length).toBeLessThanOrEqual(256);
-		for (let i = 0; i < 20; i++) {
-			expect(page.turns[i].header.id).toBe(`u${i}`);
-			expect(page.entries.find((entry) => entry.id === `a${i}`)?.entry.message).toMatchObject({
-				content: [{ type: "text", text: `answer ${i}` }],
-			});
-			expect(page.turns[i].continuationCursor).toBeDefined();
-		}
-		expect(page.entries.map((entry) => entry.position)).toEqual(
-			page.entries.map((entry) => entry.position).sort((a, b) => a - b),
+	it("HC4 entry cap admits only complete turns, accepts exactly 2000 entries, rejects a larger anchor", () => {
+		const entries = [...longRound(0), ...longRound(1)];
+		for (let index = 0; index < entries.length; index++) entries[index].parentId = entries[index - 1]?.id ?? null;
+		const sessionPath = fixture("entry-cap", entries);
+		const page = read({ type: "read_history_page", sessionPath, maxBytes: 32 * 1024 * 1024 });
+		expect(page.turns.map((turn) => turn.position)).toEqual([1]);
+		expect(page.entries.map((entry) => entry.entry)).toEqual(entries.slice(1002));
+		expect(read({ type: "read_history_page", sessionPath, beforeCursor: page.olderCursor }).entries).toHaveLength(
+			1002,
 		);
-		if (format === "sqlite") {
-			const bodies = sql.filter((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"));
-			expect(bodies.length).toBeGreaterThan(0);
-			// SQLite row = branch position + 3. Only headers and tail process entries are hydrated.
-			expect(
-				bodies.every((call) => {
-					const position = Number(call.args[2]) - 3;
-					return position % 1002 === 0 || position % 1002 > 740;
-				}),
-			).toBe(true);
-		}
-		const around = read({ type: "read_history_page", sessionPath, aroundEntryId: "t10-500", maxBytes: 65536 });
-		expect(around.entries.some((entry) => entry.id === "t10-500")).toBe(true);
-		for (let i = 0; i < 20; i++) {
-			expect(around.turns[i].header.id).toBe(`u${i}`);
-			if (i !== 10) expect(around.entries.some((entry) => entry.id === `a${i}`)).toBe(true);
-		}
-	}, 120000);
-	it("HP13 a 1000-tool-call turn opens its final answer with bounded body reads and original anchors", () => {
-		const entries = longRound();
-		const expanded: SessionEntry[] = [entries[0]];
-		for (const result of entries.slice(1, -1)) {
-			if (result.type !== "message" || result.message.role !== "toolResult") throw new Error("fixture");
-			const call: SessionEntry = {
-				...rounds(1)[1],
-				id: `call-${result.id}`,
-				parentId: expanded.at(-1)!.id,
-			};
-			if (call.type !== "message" || call.message.role !== "assistant") throw new Error("fixture");
-			call.message.content = [
-				{ type: "toolCall", id: result.message.toolCallId, name: "read", arguments: { path: "file.ts" } },
-			];
-			expanded.push(call, { ...result, parentId: call.id });
-		}
-		expanded.push({ ...entries.at(-1)!, parentId: expanded.at(-1)!.id });
-		const sessionPath = fixture("thousand-calls", expanded);
-		const page = read({ type: "read_history_page", sessionPath, maxBytes: 65536 });
-		expect(page.entries.at(-1)).toMatchObject({ id: "a0", position: 2001 });
-		expect(page.entries.at(-1)!.entry.message).toMatchObject({ content: [{ type: "text", text: "answer 0" }] });
-		expect(page.entries.find((entry) => entry.id === "t0-999")?.toolCallOrigin).toMatchObject({
-			entryId: "call-t0-999",
-			position: 1999,
-			toolCallId: "call0-999",
-		});
-		if (format === "sqlite") {
-			const bodies = sql.filter((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"));
-			expect(bodies.length).toBeLessThan(600);
-			expect(bodies.every((call) => Number(call.args[2]) === 3 || Number(call.args[2]) > 1700)).toBe(true);
-		}
+		const exact = [...longRound(0), ...longRound(1).slice(1, -3)];
+		for (let index = 0; index < exact.length; index++) exact[index].parentId = exact[index - 1]?.id ?? null;
+		expect(exact).toHaveLength(2000);
+		const exactPath = fixture("exact-cap", exact);
+		expect(
+			read({ type: "read_history_page", sessionPath: exactPath, maxBytes: 32 * 1024 * 1024 }).entries,
+		).toHaveLength(2000);
+		appendHistory(exactPath, [{ ...exact.at(-1)!, id: "over-cap", parentId: exact.at(-1)!.id }]);
+		error({ type: "read_history_page", sessionPath: exactPath, maxBytes: 32 * 1024 * 1024 }, "RESPONSE_LIMIT");
 	});
-	it("HP14 around a deep entry hydrates that entry and leaves oversized fields explicitly readable", () => {
-		const entries = longRound();
+	it("HC5 around admission anchors target then alternates older/newer and stops at the first nonfit", () => {
+		const entries = rounds(12);
+		for (const entry of entries)
+			if (entry.type === "message" && entry.message.role === "assistant")
+				entry.message.content = [{ type: "text", text: "x".repeat(18000) }];
+		const sessionPath = fixture("around-admission", entries);
+		const around = read({
+			type: "read_history_page",
+			sessionPath,
+			aroundEntryId: "a6",
+			turnLimit: 7,
+			maxBytes: 65536,
+		});
+		expect(around.turns.map((turn) => turn.position)).toEqual([5, 6, 7]);
+		expect(around.entries.map((entry) => entry.entry)).toEqual(entries.slice(10, 16));
+		expect(around).toMatchObject({ hasOlder: true, hasNewer: true });
+		expect(
+			read({ type: "read_history_page", sessionPath, beforeCursor: around.olderCursor, turnLimit: 1 }).turns[0]
+				.position,
+		).toBe(4);
+		expect(
+			read({ type: "read_history_page", sessionPath, afterCursor: around.newerCursor, turnLimit: 1 }).turns[0]
+				.position,
+		).toBe(8);
+		for (const [target, expected] of [
+			[0, [0, 1, 2]],
+			[11, [9, 10, 11]],
+		] as const) {
+			const edge = read({
+				type: "read_history_page",
+				sessionPath,
+				aroundEntryId: `a${target}`,
+				turnLimit: 7,
+				maxBytes: 65536,
+			});
+			expect(edge.turns.map((turn) => turn.position)).toEqual(expected);
+		}
+		const older = entries[11];
+		if (older.type !== "message" || older.message.role !== "assistant") throw new Error("fixture");
+		older.message.content = [{ type: "text", text: "x".repeat(100000) }];
+		const stopped = read({
+			type: "read_history_page",
+			sessionPath: fixture("around-stop", entries),
+			aroundEntryId: "a6",
+			maxBytes: 65536,
+		});
+		expect(stopped.turns.map((turn) => turn.position)).toEqual([6]);
+		const anchor = entries[13];
+		if (anchor.type !== "message" || anchor.message.role !== "assistant") throw new Error("fixture");
+		anchor.message.content = [{ type: "text", text: "anchor".repeat(12000) }];
+		error(
+			{
+				type: "read_history_page",
+				sessionPath: fixture("around-anchor-too-large", entries),
+				aroundEntryId: "a6",
+				maxBytes: 65536,
+			},
+			"RESPONSE_LIMIT",
+		);
+	});
+	it("HC6 target view returns complete header + target only for a 1000-entry live turn", () => {
+		const entries = longRound(0);
 		const target = entries[501];
 		if (target.type !== "message" || target.message.role !== "toolResult") throw new Error("fixture");
 		target.message.content = [{ type: "text", text: "deep 界😀".repeat(2000) }];
-		const sessionPath = fixture("deep", entries);
-		const page = read({ type: "read_history_page", sessionPath, aroundEntryId: target.id, maxBytes: 65536 });
-		const loaded = page.entries.find((entry) => entry.id === target.id);
-		expect(loaded).toMatchObject({ id: target.id, position: 501, turnId: "turn:u0", role: "toolResult" });
-		expect(loaded!.entry.message).toMatchObject({ role: "toolResult", content: null });
-		const lazy = loaded!.omissions.find((item) => item.pointer === "/message/content")!;
-		expect(lazy).toBeDefined();
-		const chunk = read({ type: "read_history_content", sessionPath, ref: lazy.ref, limit: 256 * 1024 });
-		expect(JSON.parse(Buffer.from(chunk.data, "base64").toString("utf8"))).toEqual(target.message.content);
-		expect(page.turns[0].header.id).toBe("u0");
-	});
-	it("HP13 budget-cut tail windows never open on a tool result whose call is outside the page", () => {
-		const [user, answer] = rounds(1);
-		if (answer.type !== "message" || answer.message.role !== "assistant") throw new Error("fixture");
-		const entries: SessionEntry[] = [user];
-		for (let i = 0; i < 300; i++) {
-			entries.push({
-				...answer,
-				id: `call-${i}`,
-				parentId: entries.at(-1)!.id,
-				message: {
-					...answer.message,
-					stopReason: "toolUse",
-					content: [{ type: "toolCall", id: `tool-${i}`, name: "read", arguments: { path: `file-${i}.ts` } }],
-				},
-			});
-			entries.push({
-				type: "message",
-				id: `result-${i}`,
-				parentId: `call-${i}`,
-				timestamp: TIME,
-				message: {
-					role: "toolResult",
-					toolCallId: `tool-${i}`,
-					toolName: "read",
-					isError: false,
-					timestamp: 1,
-					content: [{ type: "text", text: `result ${i} `.repeat(40) }],
-				},
-			});
-		}
-		entries.push({ ...answer, parentId: entries.at(-1)!.id });
-		const sessionPath = fixture("orphan-window", entries);
-		for (let maxBytes = 65536; maxBytes < 65536 + 4000; maxBytes += 250) {
-			const page = read({ type: "read_history_page", sessionPath, maxBytes });
-			const loaded = new Set(page.entries.map((entry) => entry.position));
-			for (const entry of page.entries)
-				if (entry.toolCallOrigin) expect(loaded.has(entry.toolCallOrigin.position), `${maxBytes}`).toBe(true);
-			const ids = page.entries.map((entry) => entry.id);
-			let cursor = page.turns[0].continuationCursor;
-			while (cursor) {
-				const turn = read({ type: "read_history_turn", sessionPath, turnId: "turn:u0", cursor });
-				ids.push(...turn.entries.map((entry) => entry.id).filter((id) => id !== "u0"));
-				cursor = turn.continuationCursor;
-			}
-			expect([...ids].sort()).toEqual(entries.map((entry) => entry.id).sort());
-		}
-	});
-	it("HP14 oversized assistant content keeps tool call identities and omits only oversized block fields", () => {
-		const [user, answer] = rounds(1);
-		if (answer.type !== "message" || answer.message.role !== "assistant") throw new Error("fixture");
-		const thinking = "推理😀".repeat(4000);
-		const call: SessionEntry = {
-			...answer,
-			id: "call",
-			parentId: user.id,
-			message: {
-				...answer.message,
-				stopReason: "toolUse",
-				content: [
-					{ type: "thinking", thinking, thinkingSignature: "reasoning_content" },
-					{ type: "toolCall", id: "call-big", name: "bash", arguments: { command: "ls" } },
-				],
-			},
-		};
-		const result: SessionEntry = {
-			type: "message",
-			id: "result",
-			parentId: call.id,
-			timestamp: TIME,
-			message: {
-				role: "toolResult",
-				toolCallId: "call-big",
-				toolName: "bash",
-				isError: false,
-				timestamp: 1,
-				content: [{ type: "text", text: "ok" }],
-			},
-		};
-		const sessionPath = fixture("assistant-blocks", [user, call, result, { ...answer, parentId: result.id }]);
-		const page = read({ type: "read_history_page", sessionPath });
-		const loaded = page.entries.find((entry) => entry.id === "call")!;
-		expect(loaded.entry.message).toMatchObject({
-			role: "assistant",
-			content: [
-				{ type: "thinking", thinking: null, thinkingSignature: "reasoning_content" },
-				{ type: "toolCall", id: "call-big", name: "bash", arguments: { command: "ls" } },
-			],
+		const sessionPath = fixture("target-live", entries);
+		sql = [];
+		const command = {
+			type: "read_history_page",
+			sessionPath,
+			view: "target",
+			aroundEntryId: target.id,
+			maxBytes: 65536,
+		} as const;
+		const page = read(command);
+		expect(page).toMatchObject({
+			view: "target",
+			totalEntries: 1002,
+			totalTurns: 1,
+			hasOlder: false,
+			hasNewer: false,
 		});
-		expect(loaded.omissions.map((item) => item.pointer)).toEqual(["/message/content/0/thinking"]);
-		const chunks: Buffer[] = [];
-		let offset: number | undefined = 0;
-		do {
-			const chunk: RpcHistoryContent = read({
-				type: "read_history_content",
-				sessionPath,
-				ref: loaded.omissions[0].ref,
-				offset,
-			});
-			chunks.push(Buffer.from(chunk.data, "base64"));
-			offset = chunk.nextOffset;
-		} while (offset !== undefined);
-		expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toBe(thinking);
-		expect(page.entries.find((entry) => entry.id === "result")?.toolCallOrigin).toMatchObject({
-			entryId: "call",
-			toolCallId: "call-big",
-			name: "bash",
-		});
-	});
-	it.each([undefined, "t0-500"])(
-		"HP15 continuation covers both omitted sides once with no cursor loop (%s)",
-		(aroundEntryId) => {
-			const entries = longRound(0, "界😀".repeat(60));
-			const sessionPath = fixture(`itinerary-${aroundEntryId ?? "tail"}`, entries);
-			const command = {
-				type: "read_history_page",
-				sessionPath,
-				aroundEntryId,
-				id: "页-😀",
-				maxBytes: 65536,
-			} as const;
-			const page = read(command);
-			const ids = page.entries.map((entry) => entry.id);
-			let cursor = page.turns[0].continuationCursor;
-			expect(cursor).toBeDefined();
-			const target = aroundEntryId ? entries.findIndex((entry) => entry.id === aroundEntryId) : entries.length - 1;
-			expect(page.entries.some((entry) => entry.position === target)).toBe(true);
-			if (aroundEntryId) {
-				expect(page.entries.some((entry) => entry.position > 0 && entry.position < target)).toBe(true);
-				expect(page.entries.some((entry) => entry.position > target)).toBe(true);
-			}
-			const seen = new Set<string>();
-			while (cursor) {
-				expect(seen.has(cursor)).toBe(false);
-				seen.add(cursor);
-				expect(seen.size).toBeLessThan(100);
-				const request = {
-					type: "read_history_turn",
-					sessionPath,
-					turnId: "turn:u0",
-					cursor,
-					id: "续-😀",
-					maxBytes: 65536,
-				} as const;
-				const turn = read(request);
-				expect(turn.turn.header.id).toBe("u0");
-				expect(turn.entries.length).toBeGreaterThan(0);
-				expect(turn.entries.length).toBeLessThanOrEqual(256);
-				expect(turn.entries.map((entry) => entry.position)).toEqual(
-					turn.entries.map((entry) => entry.position).sort((a, b) => a - b),
-				);
-				expect(
-					Buffer.byteLength(
-						JSON.stringify({
-							id: request.id,
-							type: "response",
-							command: request.type,
-							success: true,
-							data: turn,
-						}),
-					),
-				).toBeLessThanOrEqual(request.maxBytes);
-				ids.push(...turn.entries.map((entry) => entry.id));
-				expect(turn.hasMore).toBe(turn.continuationCursor !== undefined);
-				cursor = turn.continuationCursor;
-			}
-			const withoutHeader = ids.filter((id) => id !== "u0");
-			expect(withoutHeader.length).toBe(new Set(withoutHeader).size);
-			expect([...new Set(ids)].sort()).toEqual(entries.map((entry) => entry.id).sort());
-			expect(
-				Buffer.byteLength(
-					JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data: page }),
-				),
-			).toBeLessThanOrEqual(command.maxBytes);
-		},
-	);
-	it("HP15 malformed, foreign, wrong-turn, wrong-kind and stale continuations fail explicitly", () => {
-		const entries = [...longRound(), ...rounds(1).map((entry) => ({ ...entry, id: `${entry.id}-next` }))];
-		for (let i = 0; i < entries.length; i++) entries[i].parentId = entries[i - 1]?.id ?? null;
-		const sessionPath = fixture("cursor-owner", entries);
-		const page = read({ type: "read_history_page", sessionPath, turnLimit: 1, aroundEntryId: "t0-500" });
-		const cursor = page.turns[0].continuationCursor!;
-		const request = { type: "read_history_turn", sessionPath, turnId: "turn:u0", cursor } as const;
-		expect(read(request)).toEqual(read(request));
-		error({ ...request, cursor: `${cursor}x` }, "INVALID_CURSOR");
-		error({ ...request, cursor: "" }, "INVALID_CURSOR");
-		error({ ...request, sessionPath: fixture("cursor-foreign", entries) }, "FOREIGN_CURSOR");
-		error({ ...request, turnId: "turn:u0-next" }, "INVALID_CURSOR");
-		error({ ...request, cursor: page.newerCursor }, "INVALID_CURSOR");
+		expect(page.turns).toHaveLength(1);
+		expect(page.turns[0].entryCount).toBe(1002);
+		expect(page.entries.map((entry) => entry.entry)).toEqual([entries[0], target]);
 		if (format === "sqlite") {
-			const db = new DatabaseSync(sessionPath);
-			db.exec("DELETE FROM entries WHERE id>4");
-			db.close();
-		} else writeFileSync(sessionPath, `${JSON.stringify(header("cursor-owner"))}\n${JSON.stringify(entries[0])}\n`);
-		error(request, "STALE_CURSOR");
+			const reads = sql.filter((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"));
+			expect(new Set(reads.map((call) => call.args[2]))).toEqual(new Set([3, 504]));
+		}
+		expect(read({ ...command, aroundEntryId: "u0", turnLimit: 1 }).entries).toHaveLength(1);
+		error({ ...command, aroundEntryId: undefined }, "INVALID_REQUEST");
+		error({ ...command, beforeCursor: "bad" }, "INVALID_REQUEST");
+		error({ ...command, afterCursor: "bad" }, "INVALID_REQUEST");
+		error({ ...command, turnLimit: 2 }, "INVALID_REQUEST");
+		error({ ...command, aroundEntryId: "absent" }, "NOT_FOUND");
+		target.message.content = [{ type: "text", text: "x".repeat(100000) }];
+		error({ ...command, sessionPath: fixture("target-too-large", entries) }, "RESPONSE_LIMIT");
 	});
 	it("HP16 summary refreshes latest boundaries without body reads, projections or content refs", () => {
 		const entries = longRound(0, "huge 界😀".repeat(2000));
 		const sessionPath = fixture("summary-growth", entries);
-		const spanSpy = vi.spyOn(historyStorage, "historyEntrySpans");
+		const open = historyStorage.openHistoryStorage;
+		const bytes = vi.fn(() => {
+			throw new Error("summary must not open display bodies");
+		});
+		const sourceSpy = vi
+			.spyOn(historyStorage, "openHistoryStorage")
+			.mockImplementation((path) => ({ ...open(path), bytes }));
 		try {
 			const summary = read({ type: "read_history_page", sessionPath, view: "summary" } as const);
 			expect(summary).toMatchObject({ view: "summary", totalTurns: 1, totalEntries: 1002 });
@@ -949,32 +953,28 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 			expect(summary.turns[0]).not.toHaveProperty("header");
 			expect(JSON.stringify(summary)).not.toContain("omissions");
 			expect(JSON.stringify(summary)).not.toContain("huge");
-			expect(spanSpy).not.toHaveBeenCalled();
+			expect(bytes).not.toHaveBeenCalled();
+			sourceSpy.mockRestore();
 			if (format === "sqlite")
 				expect(sql.some((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"))).toBe(false);
-			const page = read({ type: "read_history_page", sessionPath });
+			const page = read({ type: "read_history_page", sessionPath, view: "target", aroundEntryId: "a0" });
 			expect(page).toMatchObject({
-				view: "entries",
+				view: "target",
 				branchRevision: summary.branchRevision,
 				leafId: summary.leafId,
 				watermark: summary.watermark,
 			});
-			const all = read({
-				type: "read_history_turn",
-				sessionPath,
-				turnId: "turn:u0",
-				cursor: summary.turns[0].continuationCursor,
-			});
-			expect(all.entries[0].id).toBe("u0");
+			expect(JSON.stringify(summary)).not.toContain("continuationCursor");
+			expect(page.entries[0].id).toBe("u0");
 			error(
 				{ type: "read_history_page", sessionPath, view: "bad" } as unknown as RpcHistoryCommand,
 				"INVALID_REQUEST",
 			);
 		} finally {
-			spanSpy.mockRestore();
+			sourceSpy.mockRestore();
 		}
 	}, 120000);
-	it("HP15/HP16 long live append refreshes metadata while old turn itineraries remain bounded to their snapshot", () => {
+	it("HC6/HP16 long live append refreshes metadata and target bodies without loading the whole turn", () => {
 		const entries = longRound();
 		const sessionPath = fixture("live-boundaries", entries);
 		const initial = read({ type: "read_history_page", sessionPath, view: "summary" });
@@ -990,15 +990,15 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		expect(summary.branchRevision).not.toBe(initial.branchRevision);
 		if (format === "sqlite")
 			expect(sql.some((call) => call.text.startsWith("SELECT substr(CAST(record AS BLOB)"))).toBe(false);
-		let cursor: string | undefined = initial.turns[0].continuationCursor;
-		const ids: string[] = [];
-		while (cursor) {
-			const part: RpcHistoryTurnPage = read({ type: "read_history_turn", sessionPath, turnId: "turn:u0", cursor });
-			ids.push(...part.entries.map((entry) => entry.id));
-			cursor = part.continuationCursor;
-		}
-		expect(ids).toEqual(entries.map((entry) => entry.id));
-		const latest = read({ type: "read_history_page", sessionPath });
+		const latest = read({
+			type: "read_history_page",
+			sessionPath,
+			view: "target",
+			aroundEntryId: "a1",
+			observationCursor: initial.observationCursor,
+		});
+		expect(latest.entries.map((entry) => entry.id)).toEqual(["u0", "a1"]);
+		error({ type: "read_history_page", sessionPath }, "RESPONSE_LIMIT");
 		expect(latest.entries.at(-1)?.id).toBe("a1");
 		expect(latest.branchRevision).toBe(summary.branchRevision);
 	});
@@ -1219,7 +1219,7 @@ it("HP2 >64MiB SQLite and legacy JSONL stay read-only and first-page bodies stay
 	}
 }, 120000);
 
-it("HP3 huge image/tool arrays and derived custom entries have exact lazy sources", () => {
+it("HC2 complete tool arrays and derived custom messages preserve every displayed value", () => {
 	const entries = rounds(1);
 	const blocks = Array.from({ length: 3000 }, (_, i) => ({ type: "text" as const, text: `tool ${i} 界` }));
 	entries.push({
@@ -1237,20 +1237,11 @@ it("HP3 huge image/tool arrays and derived custom entries have exact lazy source
 		},
 	});
 	for (const sessionPath of [sqlite("blocks", entries), jsonl("blocks", entries)]) {
-		const page = read({ type: "read_history_page", sessionPath, maxBytes: 65536 });
-		const lazy = page.entries.find((entry) => entry.id === "large-tool")!.omissions[0];
-		const chunk = read({ type: "read_history_content", sessionPath, ref: lazy.ref, limit: 256 * 1024 });
-		expect(JSON.parse(Buffer.from(chunk.data, "base64").toString("utf8"))).toEqual(
-			(entries.at(-1) as unknown as { message: { content: unknown } }).message.content,
-		);
-		error(
-			{
-				type: "read_history_content",
-				sessionPath: sqlite(`foreign-${sessionPath.endsWith("sqlite")}`, rounds(1)),
-				ref: lazy.ref,
-			},
-			"FOREIGN_CURSOR",
-		);
+		const page = read({ type: "read_history_page", sessionPath });
+		expect(page.entries.at(-1)!.entry.message).toMatchObject({
+			content: [...blocks, { type: "image", mimeType: "image/png" }],
+		});
+		expect((page.entries.at(-1)!.entry.message as { content: unknown[] }).content.at(-1)).not.toHaveProperty("data");
 	}
 	const path = sqlite("derived", rounds(1));
 	const db = new DatabaseSync(path);
@@ -1262,33 +1253,38 @@ it("HP3 huge image/tool arrays and derived custom entries have exact lazy source
 			id: 5,
 			conversationId: 1,
 			kind: "nek.message",
-			data: { message: { role: "custom", customType: "large-note", display: true, content: "note".repeat(10000) } },
+			data: {
+				message: {
+					role: "custom",
+					customType: "large-note",
+					display: true,
+					content: "note".repeat(10000),
+					details: { exact: "details".repeat(10000) },
+				},
+			},
 		}),
 	);
 	db.close();
 	const page = read({ type: "read_history_page", sessionPath: path });
-	const lazy = page.entries.at(-1)!.omissions[0];
-	expect(lazy).toMatchObject({ pointer: "", format: "durable-record" });
-	const content = read({ type: "read_history_content", sessionPath: path, ref: lazy.ref });
-	expect(JSON.parse(Buffer.from(content.data, "base64").toString("utf8")).data.message.content).toBe(
-		"note".repeat(10000),
-	);
+	expect(page.entries.at(-1)!.entry).toMatchObject({
+		type: "custom_message",
+		customType: "large-note",
+		content: "note".repeat(10000),
+		details: { exact: "details".repeat(10000) },
+	});
 });
 
-it("HP3/HP4 excessive object members are one explicit source ref, never an oversized envelope", () => {
+it("HC2/HC4 extra persisted members remain exact or reject as a whole, including full headers", () => {
 	const entries = rounds(1);
 	Object.assign(
 		entries[0],
 		Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`extra${i}`, "x".repeat(1000)])),
 	);
 	for (const sessionPath of [sqlite("members", entries), jsonl("members", entries)]) {
-		const page = read({ type: "read_history_page", sessionPath, maxBytes: 65536 });
-		expect(page.turns[0].header.id).toBe("u0");
-		expect(page.entries[0].omissions[0]).toMatchObject({
-			pointer: "",
-			format: sessionPath.endsWith("sqlite") ? "durable-record" : "session-entry",
-		});
-		expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(65536);
+		error({ type: "read_history_page", sessionPath, maxBytes: 65536 }, "RESPONSE_LIMIT");
+		const page = read({ type: "read_history_page", sessionPath, maxBytes: 2 * 1024 * 1024 });
+		expect(page.turns[0].header.entry).toEqual(entries[0]);
+		expect(page.entries[0].entry).toEqual(entries[0]);
 	}
 });
 
@@ -1541,21 +1537,26 @@ it("HP11 persisted watermark/active leaf fencing and explicit foreign session se
 	const foreign = sqlite("explicit", rounds(2));
 	expect(read({ type: "read_session_metadata", sessionPath: foreign }).sessionId).toBe("explicit");
 });
-it("HP12 capability, exported command table, control allowlist and real handler agree", async () => {
+it("HC8 capability v2, removed commands, exported command table, control allowlist and handler agree", async () => {
 	const info = buildGuiInfo({ agentDir: join(root, "agent"), cwd: root, entryPath: join(root, "cli.ts") });
-	expect(info.capabilities).toEqual({ historyPages: 1, historyStream: 1 });
+	expect(info.capabilities).toEqual({ historyPages: 2, historyStream: 1 });
 	expect(NEK_CONTROL_COMMANDS).not.toContain("set_history_stream");
 	const sessionPath = sqlite("handler", rounds(1));
 	for (const type of [
 		"read_session_metadata",
 		"read_history_page",
-		"read_history_turn",
 		"read_history_directory",
-		"read_history_content",
 		"read_history_subagent",
 	]) {
 		expect(GUI_COMMAND_TYPES.has(type)).toBe(true);
 		expect(NEK_CONTROL_COMMANDS).toContain(type);
+	}
+	for (const type of ["read_history_turn", "read_history_content", "unknown_history_command"]) {
+		expect(GUI_COMMAND_TYPES.has(type)).toBe(false);
+		expect(NEK_CONTROL_COMMANDS).not.toContain(type);
+		expect(
+			await handleGuiCommand({ type }, ctx, { reload: async () => ({ deferred: false, diagnostics: [] }) }),
+		).toBeUndefined();
 	}
 	const result = await handleGuiCommand({ type: "read_history_page", sessionPath } as RpcHistoryCommand, ctx, {
 		reload: async () => ({ deferred: false, diagnostics: [] }),

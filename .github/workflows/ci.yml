@@ -350,7 +350,7 @@ jobs:
           import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
           import { join, resolve } from 'node:path';
           const info = JSON.parse(process.env.NEK_GUI_INFO);
-          assert.equal(info.capabilities?.historyPages, 1);
+          assert.equal(info.capabilities?.historyPages, 2);
           assert.equal(info.capabilities?.historyStream, 1);
           assert.equal(info.nekVersion, process.env.VERSION);
           assert.deepEqual(info.launch.args, [], 'compiled executable must not receive its embedded virtual entry');

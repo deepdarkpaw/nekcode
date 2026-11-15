@@ -42,9 +42,7 @@ export const GUI_COMMAND_TYPES: ReadonlySet<string> = new Set<RpcGuiCommand["typ
 	"read_session_snapshot",
 	"read_session_metadata",
 	"read_history_page",
-	"read_history_turn",
 	"read_history_directory",
-	"read_history_content",
 	"read_history_subagent",
 	"import_session",
 	"export_session",
@@ -105,11 +103,7 @@ export async function handleGuiCommand(
 				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
 			case "read_history_page":
 				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
-			case "read_history_turn":
-				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
 			case "read_history_directory":
-				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
-			case "read_history_content":
 				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));
 			case "read_history_subagent":
 				return guiSuccess(historyId, cmd.type, readHistoryCommand(ctx, cmd));

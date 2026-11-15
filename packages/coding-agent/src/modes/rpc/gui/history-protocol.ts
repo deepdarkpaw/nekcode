@@ -6,7 +6,7 @@ export interface RpcHistoryOptions {
 	branchRevision?: string;
 	/** Append-safe proof of the previously observed session/branch prefix; retries are non-consuming. */
 	observationCursor?: string;
-	/** Entire UTF8 RPC response, including envelope. Default 1MiB, range 64KiB..4MiB. */
+	/** Entire UTF8 RPC response, including envelope. Default 1 MiB, range 64 KiB..32 MiB. */
 	maxBytes?: number;
 }
 export type RpcHistoryCommand =
@@ -14,14 +14,13 @@ export type RpcHistoryCommand =
 	| ({
 			id?: string;
 			type: "read_history_page";
-			/** Default entries; summary refreshes persisted boundaries without loading display bodies. */
-			view?: "summary" | "entries";
+			/** Default entries loads whole turns; target loads only the owning header and requested entry. */
+			view?: "summary" | "entries" | "target";
 			beforeCursor?: string;
 			afterCursor?: string;
 			aroundEntryId?: string;
 			turnLimit?: number;
 	  } & RpcHistoryOptions)
-	| ({ id?: string; type: "read_history_turn"; turnId: string; cursor?: string } & RpcHistoryOptions)
 	| ({
 			id?: string;
 			type: "read_history_directory";
@@ -31,7 +30,6 @@ export type RpcHistoryCommand =
 			aroundEntryId?: string;
 			limit?: number;
 	  } & RpcHistoryOptions)
-	| ({ id?: string; type: "read_history_content"; ref: string; offset?: number; limit?: number } & RpcHistoryOptions)
 	| RpcHistorySubagentCommand;
 
 /** Single-id lookup retains its original shape; omission of the id enumerates persisted parent-branch facts. */
@@ -77,16 +75,6 @@ export interface RpcHistorySelection {
 	model?: { provider: string; modelId: string };
 	thinkingLevel?: string;
 }
-export interface RpcHistoryOmission {
-	/** RFC6901 pointer into the display entry; null replaces this original JSON value. */
-	pointer: string;
-	/** Root omissions identify the original source record; durable records need projectRecord before display. */
-	format?: "durable-record" | "session-entry";
-	ref: string;
-	totalBytes: number;
-	mediaType: "application/json";
-	encoding: "base64";
-}
 export interface RpcHistoryEntry {
 	id: string;
 	parentId: string | null;
@@ -101,9 +89,8 @@ export interface RpcHistoryEntry {
 	/** At most eight related child summaries; lookup any further id through read_history_subagent. */
 	subagents?: RpcHistorySubagentRecord[];
 	subagentCount?: number;
-	/** Complete only when omissions is empty. Never use a display projection as model context. */
+	/** Complete projection, minus assistant signatures/tool-result image data. Never use as model context. */
 	entry: Record<string, unknown>;
-	omissions: RpcHistoryOmission[];
 }
 export interface RpcHistoryTurn {
 	id: string;
@@ -111,9 +98,8 @@ export interface RpcHistoryTurn {
 	position: number;
 	preview: string;
 	entryCount: number;
+	/** The same complete projection returned in entries, without a separate header byte cap. */
 	header: RpcHistoryEntry;
-	/** Opaque remaining-range itinerary, not a direction. Drain with read_history_turn; sort by position. */
-	continuationCursor?: string;
 }
 export interface RpcHistoryMetadata extends RpcHistoryIdentity {
 	session: RpcSessionSummary;
@@ -126,9 +112,9 @@ export interface RpcHistoryMetadata extends RpcHistoryIdentity {
 	status: "persisted";
 }
 export interface RpcHistoryPage extends RpcHistoryPageBoundary {
-	view: "entries";
+	view: "entries" | "target";
 	turns: RpcHistoryTurn[];
-	/** Original order: real headers plus bounded tail/around windows, not necessarily contiguous. */
+	/** Original position order: whole admitted turns, or just the owning header and target in target view. */
 	entries: RpcHistoryEntry[];
 	seed: RpcHistorySelection;
 }
@@ -138,8 +124,6 @@ export interface RpcHistorySummaryPage extends RpcHistoryPageBoundary {
 	turns: (Pick<RpcHistoryTurn, "id" | "userEntryId" | "position" | "preview" | "entryCount"> & {
 		headerEntryId: string;
 		headerPosition: number;
-		/** Full observed turn itinerary, NOT the remaining cursor of any previously loaded window. */
-		continuationCursor: string;
 	})[];
 }
 export interface RpcHistoryPageBoundary extends RpcHistoryIdentity {
@@ -150,27 +134,11 @@ export interface RpcHistoryPageBoundary extends RpcHistoryIdentity {
 	totalTurns: number;
 	totalEntries: number;
 }
-export interface RpcHistoryTurnPage extends RpcHistoryIdentity {
-	turn: RpcHistoryTurn;
-	entries: RpcHistoryEntry[];
-	hasMore: boolean;
-	continuationCursor?: string;
-}
 export interface RpcHistoryDirectory extends RpcHistoryIdentity {
 	items: { entryId: string; turnId: string; position: number; preview: string }[];
 	hasMore: boolean;
 	nextCursor?: string;
 	totalTurns: number;
-}
-export interface RpcHistoryContent extends RpcHistoryIdentity {
-	ref: string;
-	offset: number;
-	totalBytes: number;
-	mediaType: "application/json";
-	encoding: "base64";
-	/** Base64 of raw UTF8 JSON bytes: concatenate decoded chunks, then JSON.parse. */
-	data: string;
-	nextOffset?: number;
 }
 export interface RpcHistorySubagentRecord {
 	id: string;
@@ -205,7 +173,7 @@ export type RpcHistoryCommandResult<C extends RpcHistoryCommand> = C extends { t
 	: C extends { type: "read_history_page" }
 		? C extends { view: "summary" }
 			? RpcHistoryResult<RpcHistorySummaryPage>
-			: C extends { view?: "entries" }
+			: C extends { view?: "entries" | "target" }
 				? RpcHistoryResult<RpcHistoryPage>
 				: "view" extends keyof C
 					? RpcHistoryResult<RpcHistoryPage | RpcHistorySummaryPage>
@@ -214,8 +182,6 @@ export type RpcHistoryCommandResult<C extends RpcHistoryCommand> = C extends { t
 export interface RpcHistoryResponseData {
 	read_session_metadata: RpcHistoryResult<RpcHistoryMetadata>;
 	read_history_page: RpcHistoryResult<RpcHistoryPage | RpcHistorySummaryPage>;
-	read_history_turn: RpcHistoryResult<RpcHistoryTurnPage>;
 	read_history_directory: RpcHistoryResult<RpcHistoryDirectory>;
-	read_history_content: RpcHistoryResult<RpcHistoryContent>;
 	read_history_subagent: RpcHistoryResult<RpcHistorySubagent | RpcHistorySubagentDirectory>;
 }

@@ -339,29 +339,3 @@ export function legacyHistoryProjection(
 	}
 	return projected;
 }
-
-/** Selected-entry raw value spans only; the index never contains body strings. */
-export function historyEntrySpans(source: HistoryBytes): Map<string, { start: number; end: number }> | undefined {
-	const spans = new Map<string, { start: number; end: number }>();
-	let oversized = false;
-	new HistoryJson(source).walk((span) => {
-		if (oversized) return;
-		// Entry top-level and message top-level fields. Large content arrays stay out-of-line as one JSON value.
-		const path = span.path;
-		const direct = path.length === 1 || (path.length === 2 && path[0] === "message");
-		const stored =
-			path[0] === "data" &&
-			path[1] === "entry" &&
-			(path.length === 3 || (path.length === 4 && path[2] === "message"));
-		const model = path[0] === "model" && path[1] === 0 && path.length === 3;
-		const custom = path[0] === "data" && path[1] === "message" && path.length === 3;
-		if (!(direct || stored || model || custom)) return;
-		if (spans.size >= 128) {
-			oversized = true;
-			spans.clear();
-			return;
-		}
-		spans.set(JSON.stringify(path), { start: span.start, end: span.end });
-	});
-	return oversized ? undefined : spans;
-}

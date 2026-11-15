@@ -2,11 +2,10 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { EntryRecord } from "@earendil-works/pi-durable";
-import { type HistoryBytes, HistoryJson } from "../../../core/durable/history-json.ts";
+import { HistoryJson } from "../../../core/durable/history-json.ts";
 import {
 	type HistoryStorage,
 	type HistoryStoredEntry,
-	historyEntrySpans,
 	legacyHistoryProjection,
 } from "../../../core/durable/history-storage.ts";
 import { isSessionLocked, readSessionLockOwner, sessionLockPath } from "../../../core/durable/lock.ts";
@@ -17,13 +16,11 @@ import type { GuiContext } from "./context.ts";
 import type {
 	RpcHistoryCommand,
 	RpcHistoryCommandResult,
-	RpcHistoryContent,
 	RpcHistoryDirectory,
 	RpcHistoryEntry,
 	RpcHistoryErrorCode,
 	RpcHistoryIdentity,
 	RpcHistoryMetadata,
-	RpcHistoryOmission,
 	RpcHistoryPage,
 	RpcHistoryResponseData,
 	RpcHistorySelection,
@@ -32,30 +29,23 @@ import type {
 	RpcHistorySubagentRecord,
 	RpcHistorySummaryPage,
 	RpcHistoryTurn,
-	RpcHistoryTurnPage,
 } from "./history-protocol.ts";
 import { openHistorySource } from "./history-source.ts";
 
 const SECRET = randomBytes(32);
 const DEFAULT_BYTES = 1024 * 1024;
-const MAX_ENTRIES = 256;
+const MAX_TOOL_ANCHORS = 256;
+const MAX_PAGE_ENTRIES = 2000;
 const CHILD_TOOLS = ["subagent", "await", "stop_subagent"];
 type Turn = { id: string; start: number; header: number; end: number; userEntryId: string | null };
-type Range = [start: number, end: number];
-type TurnWindow = { turn: Turn; descriptor: RpcHistoryTurn; low: number; high: number; around: boolean; left: boolean };
 type Token = {
 	session: string;
 	count: number;
 	prefix: string;
 	kind: string;
 	position: number;
-	turnId?: string;
 	query?: string;
 	direction?: string;
-	entryId?: string;
-	start?: number;
-	end?: number;
-	remaining?: Range[];
 };
 type View = {
 	storage: HistoryStorage;
@@ -237,15 +227,6 @@ function untoken(view: CursorAuthority, encoded: string, kind: string): Token {
 		fail("STALE_CURSOR", "History branch was removed, replaced or navigated");
 	return value;
 }
-function omission(view: View, position: number, pointer: string, start: number, end: number): RpcHistoryOmission {
-	return {
-		pointer,
-		ref: token(view, { kind: "content", position, entryId: view.branch[position].entry.id, start, end }),
-		totalBytes: end - start,
-		mediaType: "application/json",
-		encoding: "base64",
-	};
-}
 function projected(view: View, position: number, raw: unknown): SessionEntry {
 	const base = view.branch[position].entry;
 	if (view.storage.format === "jsonl")
@@ -286,7 +267,8 @@ function toolOrigin(view: View, position: number, toolCallId: string): RpcHistor
 				if (path.length !== contentAt + 2) return;
 				if (block.type === "toolCall" && block.id && block.name) {
 					const origin = { entryId: entry.id, position: prior, toolCallId: block.id, name: block.name };
-					if (view.callOwners!.size >= MAX_ENTRIES) view.callOwners!.delete(view.callOwners!.keys().next().value!);
+					if (view.callOwners!.size >= MAX_TOOL_ANCHORS)
+						view.callOwners!.delete(view.callOwners!.keys().next().value!);
 					view.callOwners!.set(`${prior}:${block.id}`, origin);
 					if (block.id === toolCallId) throw found;
 				}
@@ -301,42 +283,8 @@ function toolOrigin(view: View, position: number, toolCallId: string): RpcHistor
 	}
 	return null;
 }
-type ValueSpan = { start: number; end: number };
-type ContentBlockSpan = { span: ValueSpan; fields?: [field: string, span: ValueSpan][] };
-/** Small discriminator/identity fields that stay inline even when a block's body is omitted. */
-const BLOCK_IDENTITY_FIELDS = ["type", "id", "name", "redacted"];
-const MAX_CONTENT_BLOCK_SPANS = 4096;
-function pointerToken(field: string): string {
-	return field.replace(/~/gu, "~0").replace(/\//gu, "~1");
-}
-/** Block and block-field spans of one content array; undefined when it is not an array or exceeds the bound. */
-function contentBlockSpans(source: HistoryBytes, span: ValueSpan): ContentBlockSpan[] | undefined {
-	if (source.read(span.start, 1)[0] !== 91) return undefined;
-	const json = new HistoryJson(source);
-	json.position = span.start;
-	const blocks: ContentBlockSpan[] = [];
-	let count = 0;
-	let oversized = false;
-	json.walk((value) => {
-		const path = value.path;
-		if (oversized || path.length === 0 || path.length > 2) return;
-		if (++count > MAX_CONTENT_BLOCK_SPANS) {
-			oversized = true;
-			return;
-		}
-		const index = path[0] as number;
-		const block = blocks[index] ?? { span: { start: 0, end: 0 }, fields: [] };
-		blocks[index] = block;
-		// The walk is post-order: a block's fields arrive before the block itself.
-		if (path.length === 2) block.fields?.push([String(path[1]), { start: value.start, end: value.end }]);
-		else {
-			block.span = { start: value.start, end: value.end };
-			if (source.read(value.start, 1)[0] !== 123) block.fields = undefined;
-		}
-	});
-	return oversized ? undefined : blocks;
-}
-function displayEntry(view: View, position: number, inlineBytes = 8192): RpcHistoryEntry {
+/** Complete display projection: strip only assistant signatures and tool-result image data, never display bodies. */
+function displayEntry(view: View, position: number): RpcHistoryEntry {
 	const stored = view.branch[position];
 	const base = stored.entry;
 	const message = base.type === "message" ? base.message : undefined;
@@ -350,7 +298,6 @@ function displayEntry(view: View, position: number, inlineBytes = 8192): RpcHist
 		...(message ? { role: message.role } : {}),
 		preview: preview(base),
 		entry: {},
-		omissions: [],
 	};
 	if (message?.role === "toolResult") result.toolCallOrigin = toolOrigin(view, position, message.toolCallId);
 	const details = (
@@ -372,112 +319,21 @@ function displayEntry(view: View, position: number, inlineBytes = 8192): RpcHist
 	}
 	const source = view.storage.bytes(stored);
 	try {
-		if (source.length <= inlineBytes) {
-			result.entry = projected(
-				view,
-				position,
-				JSON.parse(source.read(0, source.length).toString("utf8")),
-			) as unknown as Record<string, unknown>;
-			return result;
-		}
-		const rootReference = () => {
-			result.entry = { type: base.type, id: base.id, parentId: base.parentId, timestamp: base.timestamp };
-			result.omissions = [
-				{
-					...omission(view, position, "", 0, source.length),
-					format: view.storage.format === "sqlite" ? "durable-record" : "session-entry",
-				},
-			];
-			return result;
-		};
-		const spans = historyEntrySpans(source);
-		if (!spans) return rootReference();
-		const hasStored = [...spans.keys()].some((key) => key.startsWith('["data","entry",'));
-		const root = view.storage.format === "jsonl" ? [] : hasStored ? ["data", "entry"] : [];
-		const body: Record<string, unknown> = {
-			type: base.type,
-			id: base.id,
-			parentId: base.parentId,
-			timestamp: base.timestamp,
-		};
-		let remaining = inlineBytes;
-		let blockProjected = false;
-		/** Inline a value within the entry budget, otherwise replace it by null plus an explicit omission. */
-		const take = (span: ValueSpan, pointer: string): unknown => {
-			const bytes = span.end - span.start;
-			if (bytes <= remaining && bytes <= 4096) {
-				remaining -= bytes;
-				return JSON.parse(source.read(span.start, bytes).toString("utf8"));
-			}
-			result.omissions.push(omission(view, position, pointer, span.start, span.end));
-			return null;
-		};
-		const copy = (path: (string | number)[], key: string, target: Record<string, unknown>, pointer: string) => {
-			const span = spans.get(JSON.stringify(path));
-			if (span) target[key] = take(span, pointer);
-		};
-		/**
-		 * Oversized assistant content keeps its block structure: tool call identities are the anchors consumers need
-		 * to attach results, so only oversized block fields (thinking/text/arguments) become explicit omissions.
-		 */
-		const takeBlocks = (span: ValueSpan, pointer: string): unknown[] | undefined => {
-			const bytes = span.end - span.start;
-			if (bytes <= remaining && bytes <= 4096) return undefined;
-			const nested = contentBlockSpans(source, span);
-			if (!nested) return undefined;
-			blockProjected = true;
-			return nested.map((block, index) => {
-				const blockPointer = `${pointer}/${index}`;
-				const blockBytes = block.span.end - block.span.start;
-				if (!block.fields || (blockBytes <= remaining && blockBytes <= 4096)) return take(block.span, blockPointer);
-				const projectedBlock: Record<string, unknown> = {};
-				for (const [field, fieldSpan] of block.fields) {
-					const fieldBytes = fieldSpan.end - fieldSpan.start;
-					if (BLOCK_IDENTITY_FIELDS.includes(field) && fieldBytes <= 256) {
-						projectedBlock[field] = JSON.parse(source.read(fieldSpan.start, fieldBytes).toString("utf8"));
-						remaining = Math.max(0, remaining - fieldBytes);
-					} else projectedBlock[field] = take(fieldSpan, `${blockPointer}/${pointerToken(field)}`);
-				}
-				return projectedBlock;
-			});
-		};
-		if (view.storage.format === "jsonl" || hasStored) {
-			for (const key of spans.keys()) {
-				const path = JSON.parse(key) as (string | number)[];
-				if (path.length !== root.length + 1 || !root.every((part, i) => part === path[i])) continue;
-				const field = String(path.at(-1));
-				if (field === "message") continue;
-				copy(path, field, body, `/${pointerToken(field)}`);
+		const entry = projected(view, position, JSON.parse(source.read(0, source.length).toString("utf8")));
+		if (
+			entry.type === "message" &&
+			(entry.message.role === "assistant" || entry.message.role === "toolResult") &&
+			Array.isArray(entry.message.content)
+		) {
+			for (const block of entry.message.content) {
+				const fields = block as unknown as Record<string, unknown>;
+				if (entry.message.role === "assistant") {
+					delete fields.thinkingSignature;
+					delete fields.textSignature;
+				} else if (entry.message.role === "toolResult" && block.type === "image") delete fields.data;
 			}
 		}
-		if (base.type === "message") {
-			const ownMessage = [...root, "message"];
-			const prefix = spans.has(JSON.stringify([...ownMessage, "role"]))
-				? ownMessage
-				: spans.has('["model",0,"role"]')
-					? ["model", 0]
-					: ["data", "message"];
-			const msg: Record<string, unknown> = {};
-			for (const key of spans.keys()) {
-				const path = JSON.parse(key) as (string | number)[];
-				if (path.length !== prefix.length + 1 || !prefix.every((part, i) => part === path[i])) continue;
-				const field = String(path.at(-1));
-				const pointer = `/message/${pointerToken(field)}`;
-				const blocks =
-					field === "content" && message?.role === "assistant" ? takeBlocks(spans.get(key)!, pointer) : undefined;
-				if (blocks) msg.content = blocks;
-				else copy(path, field, msg, pointer);
-			}
-			body.message = msg;
-		}
-		if (!hasStored && view.storage.format === "sqlite" && base.type !== "message") {
-			// Derived summaries/custom entries may transform multiple source fields. Keep their source exact,
-			// rather than inventing a partially transformed entry or allocating its original giant values.
-			return rootReference();
-		}
-		result.entry = view.storage.format === "jsonl" ? legacyHistoryProjection(body, base) : body;
-		// A root reference would erase the tool call identities kept above; the page budget still bounds the response.
-		if (!blockProjected && Buffer.byteLength(JSON.stringify(result)) > inlineBytes + 4096) return rootReference();
+		result.entry = entry as unknown as Record<string, unknown>;
 		return result;
 	} finally {
 		source.close();
@@ -621,7 +477,7 @@ function turnDescriptor(view: View, turn: Turn): RpcHistoryTurn {
 		position: view.turnAt[turn.start],
 		preview: preview(view.branch[turn.header].entry),
 		entryCount: turn.end - turn.start,
-		header: displayEntry(view, turn.header, 512),
+		header: displayEntry(view, turn.header),
 	};
 }
 function responseSize(command: RpcHistoryCommand, data: object): number {
@@ -629,97 +485,117 @@ function responseSize(command: RpcHistoryCommand, data: object): number {
 		JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data }),
 	);
 }
-/** Remaining ranges are bounded, disjoint and pinned to this read's observed branch end. */
-function turnCursor(view: View, turn: Turn, remaining: Range[]): string | undefined {
-	if (!remaining.length) return undefined;
-	return token(view, { kind: "turn", turnId: turn.id, position: remaining[0][0], remaining });
+/** Boundaries always describe admitted whole turns, never the initially selected candidate range. */
+function pageBoundary(view: View, start: number, end: number) {
+	return {
+		...view.identity,
+		hasOlder: start > 0,
+		hasNewer: end < view.turns.length,
+		totalTurns: view.turns.length,
+		totalEntries: view.branch.length,
+		...(start > 0 ? { olderCursor: token(view, { kind: "before", position: start }) } : {}),
+		...(end < view.turns.length ? { newerCursor: token(view, { kind: "after", position: end }) } : {}),
+	};
 }
-function windowCursor(view: View, window: TurnWindow): string | undefined {
-	const { turn, low, high } = window;
-	const remaining: Range[] = [];
-	if (turn.start < low) remaining.push([turn.start, low]);
-	if (high < turn.end) {
-		// An emptied window leaves adjacent ranges; itineraries require disjoint, non-touching ranges.
-		if (remaining.length && remaining[0][1] === high) remaining[0] = [remaining[0][0], turn.end];
-		else remaining.push([high, turn.end]);
+/** Alternate from the target, continuing along the remaining side at either edge. */
+function admissionOrder(start: number, end: number, target: number | undefined, forward: boolean): number[] {
+	if (target === undefined)
+		return Array.from({ length: end - start }, (_, index) => (forward ? start + index : end - 1 - index));
+	const order = [target];
+	for (let distance = 1; order.length < end - start; distance++) {
+		if (target - distance >= start) order.push(target - distance);
+		if (target + distance < end) order.push(target + distance);
 	}
-	return turnCursor(view, turn, remaining);
+	return order;
 }
-/**
- * A window never opens on tool results whose call lies before it: consumers anchor results to their call.
- * Such leading results move back into the continuation itinerary, so every entry is still delivered exactly once.
- */
-function trimOrphanResults(view: View, result: RpcHistoryPage, window: TurnWindow, target?: number): void {
-	const { turn } = window;
-	while (window.low < window.high && window.low !== turn.header && window.low !== target) {
-		const index = result.entries.findIndex((entry) => entry.position === window.low);
-		const origin = result.entries[index]?.toolCallOrigin;
-		if (!origin || origin.position >= window.low) break;
-		result.entries.splice(index, 1);
-		window.low++;
-	}
-	window.descriptor.continuationCursor = windowCursor(view, window);
-}
-/** Admit every turn's header and target/tail first, then grow windows fairly within the shared budget. */
-function loadWindows(
+/** Measure bodies once; reserve the current boundary/seed envelope separately from the growing arrays. */
+function completePage(
 	view: View,
-	command: RpcHistoryCommand,
-	result: RpcHistoryPage,
+	command: Extract<RpcHistoryCommand, { type: "read_history_page" }>,
 	budget: number,
-	target?: number,
-): void {
-	const windows: TurnWindow[] = result.turns.map((descriptor) => {
-		const turn = view.turns[descriptor.position];
-		const around = target !== undefined && view.turnAt[target] === descriptor.position && target !== turn.header;
-		const position = around ? target! : turn.end - 1;
-		const window = { turn, descriptor, low: position, high: position + 1, around, left: true };
-		descriptor.continuationCursor = windowCursor(view, window);
-		result.entries.push(descriptor.header);
-		return window;
+	order: number[],
+): RpcHistoryPage {
+	const admitted: { descriptor: RpcHistoryTurn; entries: RpcHistoryEntry[] }[] = [];
+	let bodyBytes = 0;
+	let entryCount = 0;
+	let first = order[0] ?? 0;
+	let last = first - 1;
+	const shell = (low: number, high: number): RpcHistoryPage => ({
+		...pageBoundary(view, low, high + 1),
+		view: "entries",
+		turns: [],
+		entries: [],
+		seed: selection(view, view.turns[low]?.header ?? 0),
 	});
-	const available = budget - responseSize(command, { ok: true, ...result });
-	const inlineBytes = Math.max(512, Math.min(8192, Math.floor(available / Math.max(1, windows.length)) - 2048));
-	for (const window of windows) {
-		if (window.low !== window.turn.header) result.entries.push(displayEntry(view, window.low, inlineBytes));
-	}
-	if (responseSize(command, { ok: true, ...result }) > budget)
-		fail("RESPONSE_LIMIT", "Turn headers and target projections exceed response budget; reduce turnLimit");
-	let pending = windows;
-	while (pending.length && result.entries.length < MAX_ENTRIES) {
-		const next: TurnWindow[] = [];
-		for (const window of pending) {
-			if (result.entries.length >= MAX_ENTRIES) break;
-			const { turn, low, high } = window;
-			const left = low > turn.start && (!window.around || window.left || high === turn.end);
-			const position = left ? low - 1 : high;
-			if (position >= turn.end) continue;
-			if (left) window.low--;
-			else window.high++;
-			const previousCursor = window.descriptor.continuationCursor;
-			window.descriptor.continuationCursor = windowCursor(view, window);
-			const header = position === turn.header;
-			if (!header) result.entries.push(displayEntry(view, position, inlineBytes));
-			if (responseSize(command, { ok: true, ...result }) > budget) {
-				if (!header) result.entries.pop();
-				Object.assign(window, { low, high });
-				window.descriptor.continuationCursor = previousCursor;
-				continue;
-			}
-			window.left = !left;
-			next.push(window);
+	for (const position of order) {
+		const turn = view.turns[position];
+		const count = turn.end - turn.start;
+		if (entryCount + count > MAX_PAGE_ENTRIES) {
+			if (!admitted.length)
+				fail(
+					"RESPONSE_LIMIT",
+					`Turn at position ${position} has ${count} entries; page cap ${MAX_PAGE_ENTRIES}, byte budget ${budget}`,
+				);
+			break;
 		}
-		pending = next;
+		const descriptor = turnDescriptor(view, turn);
+		const entries: RpcHistoryEntry[] = [];
+		let bytes = Buffer.byteLength(JSON.stringify(descriptor));
+		for (let index = turn.start; index < turn.end; index++) {
+			const entry = index === turn.header ? descriptor.header : displayEntry(view, index);
+			entries.push(entry);
+			bytes += Buffer.byteLength(JSON.stringify(entry));
+		}
+		// Each noninitial array item adds one comma, including entries within this turn.
+		bytes += count - 1 + (admitted.length ? 2 : 0);
+		const low = Math.min(first, position);
+		const high = Math.max(last, position);
+		const required = responseSize(command, { ok: true, ...shell(low, high) }) + bodyBytes + bytes;
+		if (required > budget) {
+			if (!admitted.length)
+				fail("RESPONSE_LIMIT", `Turn at position ${position} requires ${required} bytes; byte budget ${budget}`);
+			break;
+		}
+		admitted.push({ descriptor, entries });
+		bodyBytes += bytes;
+		entryCount += count;
+		first = low;
+		last = high;
 	}
-	for (const window of windows) trimOrphanResults(view, result, window, target);
-	result.entries.sort((a, b) => a.position - b.position);
+	const assemble = (): RpcHistoryPage => {
+		const sorted = [...admitted].sort((a, b) => a.descriptor.position - b.descriptor.position);
+		const low = sorted[0]?.descriptor.position ?? 0;
+		const high = sorted.at(-1)?.descriptor.position ?? -1;
+		return {
+			...shell(low, high),
+			turns: sorted.map((turn) => turn.descriptor),
+			entries: sorted.flatMap((turn) => turn.entries),
+		};
+	};
+	const result = assemble();
+	const size = responseSize(command, { ok: true, ...result });
+	if (size <= budget) return result;
+	if (admitted.length <= 1)
+		fail("RESPONSE_LIMIT", `Turn at position ${first} requires ${size} bytes; byte budget ${budget}`);
+	// Never evict the anchor. Removing the last neighbour preserves a contiguous admitted range.
+	admitted.pop();
+	return assemble();
 }
 function page(
 	view: View,
 	command: Extract<RpcHistoryCommand, { type: "read_history_page" }>,
 	budget: number,
 ): RpcHistoryPage | RpcHistorySummaryPage {
-	if (command.view !== undefined && command.view !== "entries" && command.view !== "summary")
-		fail("INVALID_REQUEST", "History page view must be entries or summary");
+	if (command.view !== undefined && !["entries", "summary", "target"].includes(command.view))
+		fail("INVALID_REQUEST", "History page view must be entries, summary or target");
+	if (
+		command.view === "target" &&
+		(command.aroundEntryId === undefined ||
+			command.beforeCursor !== undefined ||
+			command.afterCursor !== undefined ||
+			(command.turnLimit !== undefined && command.turnLimit !== 1))
+	)
+		fail("INVALID_REQUEST", "Target view requires aroundEntryId, no cursors, and turnLimit omitted or 1");
 	if (
 		[command.beforeCursor, command.afterCursor, command.aroundEntryId].filter((value) => value !== undefined).length >
 		1
@@ -743,15 +619,19 @@ function page(
 		start = Math.max(0, view.turnAt[target] - Math.floor(limit / 2));
 		end = Math.min(view.turns.length, start + limit);
 	}
-	const boundary = {
-		...view.identity,
-		hasOlder: start > 0,
-		hasNewer: end < view.turns.length,
-		totalTurns: view.turns.length,
-		totalEntries: view.branch.length,
-		...(start > 0 ? { olderCursor: token(view, { kind: "before", position: start }) } : {}),
-		...(end < view.turns.length ? { newerCursor: token(view, { kind: "after", position: end }) } : {}),
-	};
+	if (command.view === "target") {
+		const position = view.turnAt[target!];
+		const turn = view.turns[position];
+		const descriptor = turnDescriptor(view, turn);
+		return {
+			...pageBoundary(view, position, position + 1),
+			view: "target",
+			turns: [descriptor],
+			entries: target === turn.header ? [descriptor.header] : [descriptor.header, displayEntry(view, target!)],
+			seed: selection(view, turn.header),
+		};
+	}
+	const boundary = pageBoundary(view, start, end);
 	const selected = view.turns.slice(start, end);
 	if (command.view === "summary")
 		return {
@@ -765,72 +645,19 @@ function page(
 				entryCount: turn.end - turn.start,
 				headerEntryId: view.branch[turn.header].entry.id,
 				headerPosition: turn.header,
-				continuationCursor: turnCursor(view, turn, [[turn.start, turn.end]])!,
 			})),
 		};
-	const result: RpcHistoryPage = {
-		...boundary,
-		view: "entries",
-		turns: selected.map((turn) => turnDescriptor(view, turn)),
-		entries: [],
-		seed: selection(view, view.turns[start]?.header ?? 0),
-	};
-	loadWindows(view, command, result, budget, target);
-	return result;
-}
-function turnRanges(cursor: Token, turn: Turn): Range[] {
-	const ranges = cursor.remaining;
-	if (cursor.turnId !== turn.id || !Array.isArray(ranges) || !ranges.length || ranges.length > 2)
-		fail("INVALID_CURSOR", "Turn continuation does not belong to this turn");
-	let previous = turn.start - 1;
-	for (const range of ranges) {
-		if (
-			!Array.isArray(range) ||
-			range.length !== 2 ||
-			!range.every(Number.isSafeInteger) ||
-			range[0] < turn.start ||
-			range[0] <= previous ||
-			range[0] >= range[1] ||
-			range[1] > Math.min(turn.end, cursor.count)
-		)
-			fail("INVALID_CURSOR", "Invalid or nonadvancing turn itinerary");
-		previous = range[1];
-	}
-	if (cursor.position !== ranges[0][0]) fail("INVALID_CURSOR", "Turn itinerary position mismatch");
-	return ranges;
-}
-function turnPage(
-	view: View,
-	command: Extract<RpcHistoryCommand, { type: "read_history_turn" }>,
-	budget: number,
-): RpcHistoryTurnPage {
-	const cursor = command.cursor ? untoken(view, command.cursor, "turn") : undefined;
-	const turn = view.turns.find((turn) => turn.id === command.turnId);
-	if (!turn) fail("NOT_FOUND", "Unknown effective branch turn");
-	let remaining: Range[] = cursor ? turnRanges(cursor, turn) : [[turn.start, turn.end]];
-	const result: RpcHistoryTurnPage = {
-		...view.identity,
-		turn: turnDescriptor(view, turn),
-		entries: [],
-		hasMore: true,
-		continuationCursor: turnCursor(view, turn, remaining),
-	};
-	while (remaining.length && result.entries.length < MAX_ENTRIES) {
-		const [start, end] = remaining[0];
-		const next: Range[] = start + 1 === end ? remaining.slice(1) : [[start + 1, end], ...remaining.slice(1)];
-		result.entries.push(start === turn.header ? result.turn.header : displayEntry(view, start));
-		result.hasMore = next.length > 0;
-		result.continuationCursor = turnCursor(view, turn, next);
-		if (responseSize(command, { ok: true, ...result }) > budget) {
-			result.entries.pop();
-			result.hasMore = true;
-			result.continuationCursor = turnCursor(view, turn, remaining);
-			break;
-		}
-		remaining = next;
-	}
-	if (!result.entries.length) fail("RESPONSE_LIMIT", "One entry projection exceeds response budget");
-	return result;
+	return completePage(
+		view,
+		command,
+		budget,
+		admissionOrder(
+			start,
+			end,
+			target === undefined ? undefined : view.turnAt[target],
+			command.afterCursor !== undefined,
+		),
+	);
 }
 function contains(view: View, position: number, query: string): boolean {
 	if (preview(view.branch[position].entry).toLowerCase().includes(query)) return true;
@@ -906,51 +733,6 @@ function directory(
 	if (result.hasMore) result.nextCursor = token(view, { kind: "directory", position, query, direction });
 	return result;
 }
-function content(
-	view: View,
-	command: Extract<RpcHistoryCommand, { type: "read_history_content" }>,
-	budget: number,
-): RpcHistoryContent {
-	const ref = untoken(view, command.ref, "content");
-	const stored = view.branch[ref.position];
-	if (
-		!stored ||
-		stored.entry.id !== ref.entryId ||
-		!Number.isSafeInteger(ref.start) ||
-		!Number.isSafeInteger(ref.end) ||
-		ref.start! < 0 ||
-		ref.end! <= ref.start! ||
-		ref.end! > stored.length
-	)
-		fail("INVALID_CURSOR", "Invalid content range/owner");
-	const totalBytes = ref.end! - ref.start!;
-	const offset = integer(command.offset, 0, 0, totalBytes);
-	const limit = integer(command.limit, 65536, 1, 256 * 1024);
-	const result: RpcHistoryContent = {
-		...view.identity,
-		ref: command.ref,
-		offset,
-		totalBytes,
-		mediaType: "application/json",
-		encoding: "base64",
-		data: "",
-		nextOffset: totalBytes,
-	};
-	// Reserve the largest possible offset spelling and the exact envelope before base64 expansion.
-	const available = budget - responseSize(command, { ok: true, ...result });
-	const length = Math.min(limit, totalBytes - offset, Math.floor(available / 4) * 3);
-	if (length < 0 || (length === 0 && offset < totalBytes))
-		fail("RESPONSE_LIMIT", "Content metadata exceeds response budget");
-	const source = view.storage.bytes(stored);
-	try {
-		result.data = source.read(ref.start! + offset, length).toString("base64");
-		if (offset + length < totalBytes) result.nextOffset = offset + length;
-		else delete result.nextOffset;
-		return result;
-	} finally {
-		source.close();
-	}
-}
 function subagent(
 	view: View,
 	command: Extract<RpcHistoryCommand, { type: "read_history_subagent" }>,
@@ -1021,34 +803,27 @@ export function readHistoryCommand(
 	try {
 		if (command.id !== undefined && (typeof command.id !== "string" || Buffer.byteLength(command.id) > 256))
 			fail("INVALID_REQUEST", "History request id exceeds 256 bytes");
-		const budget = integer(command.maxBytes, DEFAULT_BYTES, 65536, 4 * 1024 * 1024);
+		const budget = integer(command.maxBytes, DEFAULT_BYTES, 65536, 32 * 1024 * 1024);
 		for (const field of [
 			"beforeCursor",
 			"afterCursor",
 			"cursor",
-			"ref",
 			"sessionPath",
 			"branchRevision",
 			"observationCursor",
 			"aroundEntryId",
-			"turnId",
 			"subagentId",
 		]) {
 			const value = (command as unknown as Record<string, unknown>)[field];
 			if (value !== undefined && (typeof value !== "string" || !value || Buffer.byteLength(value) > 4096))
-				fail(
-					field.toLowerCase().includes("cursor") || field === "ref" ? "INVALID_CURSOR" : "INVALID_REQUEST",
-					`Invalid ${field}`,
-				);
+				fail(field.toLowerCase().includes("cursor") ? "INVALID_CURSOR" : "INVALID_REQUEST", `Invalid ${field}`);
 		}
 		view = openView(ctx, command);
 		let data:
 			| RpcHistoryMetadata
 			| RpcHistoryPage
 			| RpcHistorySummaryPage
-			| RpcHistoryTurnPage
 			| RpcHistoryDirectory
-			| RpcHistoryContent
 			| RpcHistorySubagent
 			| RpcHistorySubagentDirectory;
 		switch (command.type) {
@@ -1058,14 +833,8 @@ export function readHistoryCommand(
 			case "read_history_page":
 				data = page(view, command, budget);
 				break;
-			case "read_history_turn":
-				data = turnPage(view, command, budget);
-				break;
 			case "read_history_directory":
 				data = directory(view, command, budget);
-				break;
-			case "read_history_content":
-				data = content(view, command, budget);
 				break;
 			case "read_history_subagent":
 				data = subagent(view, command, budget);
@@ -1073,7 +842,8 @@ export function readHistoryCommand(
 		}
 		view.storage.verify();
 		const result = { ok: true as const, ...data };
-		if (responseSize(command, result) > budget)
+		const checkedCompletePage = command.type === "read_history_page" && (command.view ?? "entries") === "entries";
+		if (!checkedCompletePage && responseSize(command, result) > budget)
 			fail("RESPONSE_LIMIT", "History response exceeds requested byte budget");
 		return result;
 	} catch (error) {

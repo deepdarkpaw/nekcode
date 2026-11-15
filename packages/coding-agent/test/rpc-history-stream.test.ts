@@ -412,7 +412,7 @@ describe("opt-in bounded live history", () => {
 		await stream.drain();
 		expect(frames.at(-1)).toMatchObject({ type: "history_stream_error", code: "STREAM_LIMIT" });
 	});
-	it("HP8 persisted locator resolves through bounded history page/content on a real read-only storage path", async () => {
+	it("HC6/HP8 persisted locator resolves through complete target history on a real read-only storage path", async () => {
 		const manager = SessionManager.create(root, join(root, "sessions"));
 		manager.appendMessage({ role: "user", content: "question", timestamp: 1 });
 		await manager.flush();
@@ -438,10 +438,13 @@ describe("opt-in bounded live history", () => {
 			type: ref.ref.command,
 			sessionPath: ref.ref.sessionPath,
 			aroundEntryId: ref.ref.aroundEntryId,
+			view: "target",
+			maxBytes: 2 * 1024 * 1024,
 		});
 		expect(result).toMatchObject({ ok: true });
 		if (!result.ok) throw new Error(result.error.message);
-		expect(result.entries.find((entry) => entry.id === id)?.omissions.length).toBeGreaterThan(0);
+		expect(result.entries).toHaveLength(2);
+		expect(result.entries.find((entry) => entry.id === id)?.entry.data).toEqual({ text: "x".repeat(1024 * 1024) });
 		expect(JSON.stringify(frames).length).toBeLessThan(4096);
 	});
 	it("HP9 read-only persistence observation never consumes a write failure from the original session owner", async () => {

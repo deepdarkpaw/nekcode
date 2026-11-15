@@ -37,7 +37,7 @@ export type RpcEndpointApi = (typeof NEK_ENDPOINT_APIS)[number];
 /** Output of `nek gui-info --json`. */
 export interface RpcGuiInfo {
 	protocolVersion: number;
-	capabilities: { historyPages: 1; historyStream: 1 };
+	capabilities: { historyPages: 2; historyStream: 1 };
 	/** nek version from package.json `nekConfig.version`, e.g. "0.4.0". */
 	nekVersion: string;
 	/** Base pi version, e.g. "1.0.2". */
@@ -162,9 +162,7 @@ export const NEK_CONTROL_COMMANDS: readonly string[] = [
 	"read_session_snapshot",
 	"read_session_metadata",
 	"read_history_page",
-	"read_history_turn",
 	"read_history_directory",
-	"read_history_content",
 	"read_history_subagent",
 	"import_session",
 	"auth_status",
