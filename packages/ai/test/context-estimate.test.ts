@@ -94,4 +94,27 @@ describe("context token estimation", () => {
 			lastUsageIndex: 3,
 		});
 	});
+
+	it("counts Unicode MCP-like tool output instead of treating every character as a quarter token", () => {
+		const context = normalizeContext({
+			messages: [
+				createAssistant(100, 100),
+				{
+					role: "toolResult" as const,
+					toolCallId: "call-1",
+					toolName: "mcp__docs__search",
+					content: [{ type: "text" as const, text: "文".repeat(1_000) }],
+					isError: false,
+					timestamp: 200,
+				},
+			],
+		});
+
+		expect(estimateContextTokens(context)).toEqual({
+			tokens: 1_100,
+			usageTokens: 100,
+			trailingTokens: 1_000,
+			lastUsageIndex: 0,
+		});
+	});
 });

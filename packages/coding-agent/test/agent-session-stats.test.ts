@@ -55,12 +55,12 @@ function createUserMessage(text: string, timestamp: number) {
 	};
 }
 
-function createToolResultMessage(usage: Usage): ToolResultMessage {
+function createToolResultMessage(usage: Usage, text = "tool result"): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId: "tool-call-1",
 		toolName: "test_tool",
-		content: [{ type: "text", text: "tool result" }],
+		content: [{ type: "text", text }],
 		usage,
 		isError: false,
 		timestamp: 1,
@@ -111,6 +111,20 @@ describe("AgentSession.getSessionStats", () => {
 			expect(stats.contextUsage?.tokens).toBe(200);
 			expect(stats.contextUsage?.contextWindow).toBe(model.contextWindow);
 			expect(stats.contextUsage?.percent).toBe((200 / model.contextWindow) * 100);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("counts Unicode MCP output in current context usage", async () => {
+		const { session, sessionManager } = await createSession();
+
+		try {
+			sessionManager.appendMessage(createAssistantMessage("tool call", 100, 2));
+			sessionManager.appendMessage(createToolResultMessage(createUsage(0), "文".repeat(1_000)));
+			syncAgentMessages(session, sessionManager);
+
+			expect(session.getContextUsage()?.tokens).toBe(1_100);
 		} finally {
 			session.dispose();
 		}

@@ -307,76 +307,68 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 // Cut point detection
 // ============================================================================
 
-const ESTIMATED_IMAGE_CHARS = 4800;
+const ASCII_CHARS_PER_TOKEN = 4;
+const ESTIMATED_IMAGE_TOKENS = Math.ceil(4800 / ASCII_CHARS_PER_TOKEN);
 
-function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
-	if (typeof content === "string") {
-		return content.length;
+/** Keep the existing ASCII heuristic while treating CJK and other non-ASCII code points as roughly one token each. */
+function estimateTextTokens(text: string): number {
+	let asciiCharacters = 0;
+	let nonAsciiCodePoints = 0;
+	for (const character of text) {
+		if ((character.codePointAt(0) ?? 0) <= 0x7f) asciiCharacters += character.length;
+		else nonAsciiCodePoints++;
 	}
-
-	let chars = 0;
-	for (const block of content) {
-		if (block.type === "text" && block.text) {
-			chars += block.text.length;
-		} else if (block.type === "image") {
-			chars += ESTIMATED_IMAGE_CHARS;
-		}
-	}
-	return chars;
+	return Math.ceil(asciiCharacters / ASCII_CHARS_PER_TOKEN + nonAsciiCodePoints);
 }
 
-/**
- * Estimate token count for a message using chars/4 heuristic.
- * This is conservative (overestimates tokens).
- */
-export function estimateTokens(message: AgentMessage): number {
-	let chars = 0;
+function estimateTextAndImageContentTokens(content: string | Array<{ type: string; text?: string }>): number {
+	if (typeof content === "string") return estimateTextTokens(content);
 
+	let tokens = 0;
+	for (const block of content) {
+		if (block.type === "text" && block.text) tokens += estimateTextTokens(block.text);
+		else if (block.type === "image") tokens += ESTIMATED_IMAGE_TOKENS;
+	}
+	return tokens;
+}
+
+/** Estimate token count for a message while preserving the ASCII heuristic and accounting for Unicode output. */
+export function estimateTokens(message: AgentMessage): number {
 	switch (message.role) {
 		case "system": {
 			const system = message as SystemMessage;
-			chars = estimateTextAndImageContentChars(system.content);
+			let tokens = estimateTextAndImageContentTokens(system.content);
 			if (system.sections) {
 				for (const section of Object.values(system.sections)) {
-					if (section) chars += section.length;
+					if (section) tokens += estimateTextTokens(section);
 				}
 			}
-			if (system.toolsAdded) chars += JSON.stringify(system.toolsAdded).length;
-			return Math.ceil(chars / 4);
+			if (system.toolsAdded) tokens += estimateTextTokens(JSON.stringify(system.toolsAdded));
+			return tokens;
 		}
-		case "user": {
-			chars = estimateTextAndImageContentChars(
+		case "user":
+			return estimateTextAndImageContentTokens(
 				(message as { content: string | Array<{ type: string; text?: string }> }).content,
 			);
-			return Math.ceil(chars / 4);
-		}
 		case "assistant": {
 			const assistant = message as AssistantMessage;
+			let tokens = 0;
 			for (const block of assistant.content) {
-				if (block.type === "text") {
-					chars += block.text.length;
-				} else if (block.type === "thinking") {
-					chars += block.thinking.length;
-				} else if (block.type === "toolCall") {
-					chars += block.name.length + JSON.stringify(block.arguments).length;
-				}
+				if (block.type === "text") tokens += estimateTextTokens(block.text);
+				else if (block.type === "thinking") tokens += estimateTextTokens(block.thinking);
+				else if (block.type === "toolCall")
+					tokens += estimateTextTokens(`${block.name}${JSON.stringify(block.arguments)}`);
 			}
-			return Math.ceil(chars / 4);
+			return tokens;
 		}
 		case "custom":
-		case "toolResult": {
-			chars = estimateTextAndImageContentChars(message.content);
-			return Math.ceil(chars / 4);
-		}
-		case "bashExecution": {
-			chars = message.command.length + message.output.length;
-			return Math.ceil(chars / 4);
-		}
+		case "toolResult":
+			return estimateTextAndImageContentTokens(message.content);
+		case "bashExecution":
+			return estimateTextTokens(`${message.command}${message.output}`);
 		case "branchSummary":
-		case "compactionSummary": {
-			chars = message.summary.length;
-			return Math.ceil(chars / 4);
-		}
+		case "compactionSummary":
+			return estimateTextTokens(message.summary);
 	}
 
 	return 0;

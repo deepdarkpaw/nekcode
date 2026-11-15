@@ -12,8 +12,9 @@ export interface ContextUsageEstimate {
 	lastUsageIndex: number | null;
 }
 
-const CHARS_PER_TOKEN = 3.5;
-const ESTIMATED_IMAGE_CHARS = 4800;
+const ASCII_CHARS_PER_TOKEN = 3.5;
+/** A conservative token estimate for one image when the provider does not report image tokens. */
+const ESTIMATED_IMAGE_TOKENS = Math.ceil(4800 / ASCII_CHARS_PER_TOKEN);
 
 export function calculateContextTokens(usage: Usage): number {
 	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
@@ -27,24 +28,32 @@ function safeJsonStringify(value: unknown): string {
 	}
 }
 
-function estimateTextAndImageContentChars(content: string | Array<TextContent | ImageContent>): number {
-	if (typeof content === "string") return content.length;
-
-	let chars = 0;
-	for (const block of content) chars += block.type === "text" ? block.text.length : ESTIMATED_IMAGE_CHARS;
-	return chars;
-}
-
+/**
+ * Estimate text tokens without treating every Unicode code point like four ASCII characters.
+ * Most provider tokenizers keep CJK characters close to one token each, while ASCII prose and
+ * JSON remain close to the existing 3.5 characters/token heuristic.
+ */
 export function estimateTextTokens(text: string): number {
-	return Math.ceil(text.length / CHARS_PER_TOKEN);
+	let asciiCharacters = 0;
+	let nonAsciiCodePoints = 0;
+	for (const character of text) {
+		if ((character.codePointAt(0) ?? 0) <= 0x7f) asciiCharacters += character.length;
+		else nonAsciiCodePoints++;
+	}
+	return Math.ceil(asciiCharacters / ASCII_CHARS_PER_TOKEN + nonAsciiCodePoints);
 }
 
 export function estimateTextAndImageContentTokens(content: string | Array<TextContent | ImageContent>): number {
-	return Math.ceil(estimateTextAndImageContentChars(content) / CHARS_PER_TOKEN);
+	if (typeof content === "string") return estimateTextTokens(content);
+
+	let tokens = 0;
+	for (const block of content)
+		tokens += block.type === "text" ? estimateTextTokens(block.text) : ESTIMATED_IMAGE_TOKENS;
+	return tokens;
 }
 
 export function estimateMessageTokens(message: Message): number {
-	let chars = 0;
+	let tokens = 0;
 
 	if (message.role === "system") {
 		return (
@@ -58,14 +67,14 @@ export function estimateMessageTokens(message: Message): number {
 
 	for (const block of message.content) {
 		if (block.type === "text") {
-			chars += block.text.length;
+			tokens += estimateTextTokens(block.text);
 		} else if (block.type === "thinking") {
-			chars += block.thinking.length;
+			tokens += estimateTextTokens(block.thinking);
 		} else {
-			chars += block.name.length + safeJsonStringify(block.arguments).length;
+			tokens += estimateTextTokens(`${block.name}${safeJsonStringify(block.arguments)}`);
 		}
 	}
-	return Math.ceil(chars / CHARS_PER_TOKEN);
+	return tokens;
 }
 
 function getLastAssistantUsageInfo(messages: readonly Message[]): { usage: Usage; index: number } | undefined {
