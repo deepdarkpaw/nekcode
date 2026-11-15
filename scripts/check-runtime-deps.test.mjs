@@ -40,6 +40,7 @@ test("accepts runtime declarations, builtins, self imports, relative imports, an
 		peerDependencies: { peer: "1.0.0" },
 	}, `
 import "node:fs";
+import "bun:sqlite";
 import "fs/promises";
 import "./local.ts";
 import "example/subpath";
@@ -52,6 +53,12 @@ export type { Type } from "export-type-only";
 export { type OtherType } from "export-inline-type-only";
 `);
 	assert.equal(result.status, 0, result.stderr);
+});
+
+test("rejects unknown Bun specifiers rather than exempting the whole protocol", async (t) => {
+	const result = await check(t, {}, 'import "bun:not-a-builtin";');
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /bun:not-a-builtin is not declared/);
 });
 
 test("rejects dev-only dependencies, side-effect imports, mixed exports, and literal runtime loads", async (t) => {

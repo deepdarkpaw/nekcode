@@ -347,6 +347,8 @@ jobs:
           NEK_GUI_INFO="$("$binary" gui-info --json)" node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { spawnSync } from 'node:child_process';
+          import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+          import { join, resolve } from 'node:path';
           const info = JSON.parse(process.env.NEK_GUI_INFO);
           assert.equal(info.capabilities?.historyPages, 1);
           assert.equal(info.capabilities?.historyStream, 1);
@@ -355,6 +357,32 @@ jobs:
           const launched = spawnSync(info.node.path, [...info.launch.args, 'gui-info', '--json'], { encoding: 'utf8', timeout: 15000 });
           assert.equal(launched.status, 0, launched.stderr);
           assert.equal(JSON.parse(launched.stdout).nekVersion, info.nekVersion);
+          const temp = resolve('.tmp');
+          mkdirSync(temp, { recursive: true });
+          const sandbox = mkdtempSync(join(temp, 'gui-history-'));
+          const agentDir = join(sandbox, 'agent');
+          mkdirSync(agentDir);
+          const session = join(sandbox, 'session.jsonl');
+          const timestamp = '2026-11-15T00:00:00.000Z';
+          writeFileSync(session, [
+            { type: 'session', version: 3, id: 'binary-smoke', timestamp, cwd: sandbox },
+            { type: 'message', id: 'u1', parentId: null, timestamp, message: { role: 'user', content: 'offline fixture', timestamp: 1 } },
+          ].map(value => JSON.stringify(value)).join('\n') + '\n');
+          const commands = [
+            { id: 'state', type: 'get_state' },
+            { id: 'stream', type: 'set_history_stream', version: 1 },
+            { id: 'page', type: 'read_history_page', turnLimit: 20 },
+          ].map(value => JSON.stringify(value)).join('\n') + '\n';
+          const rpc = spawnSync(info.node.path, [...info.launch.args, '--mode', 'rpc', '--session', session, '--approve'], {
+            input: commands, encoding: 'utf8', timeout: 30000, maxBuffer: 2 * 1024 * 1024, cwd: sandbox,
+            env: { ...process.env, HOME: sandbox, USERPROFILE: sandbox, NEK_CODING_AGENT_DIR: agentDir },
+          });
+          assert.equal(rpc.status, 0, rpc.stderr);
+          const frames = rpc.stdout.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
+          const response = id => frames.find(frame => frame.type === 'response' && frame.id === id);
+          assert.equal(response('stream')?.data?.version, 1, rpc.stdout);
+          assert.equal(response('page')?.data?.ok, true, rpc.stdout);
+          assert.equal(response('page')?.data?.totalTurns, 1, rpc.stdout);
           NODE
 
   release-assets:

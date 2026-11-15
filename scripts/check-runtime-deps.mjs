@@ -35,7 +35,8 @@ function checkSource(source, manifest) {
 	function checkSpecifier(node) {
 		if (!node || !(isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node))) return;
 		const specifier = node.text;
-		if (specifier.startsWith(".") || specifier.startsWith("/") || isBuiltin(specifier)) return;
+		// The compiled frontend uses this Bun builtin; it is not an npm dependency.
+		if (specifier.startsWith(".") || specifier.startsWith("/") || isBuiltin(specifier) || specifier === "bun:sqlite") return;
 		const name = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
 		if (declared.has(name)) return;
 		const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
