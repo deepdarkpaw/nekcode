@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { EntryRecord } from "@earendil-works/pi-durable";
-import { HistoryJson } from "../../../core/durable/history-json.ts";
+import { type HistoryBytes, HistoryJson } from "../../../core/durable/history-json.ts";
 import {
 	type HistoryStorage,
 	type HistoryStoredEntry,
@@ -301,6 +301,41 @@ function toolOrigin(view: View, position: number, toolCallId: string): RpcHistor
 	}
 	return null;
 }
+type ValueSpan = { start: number; end: number };
+type ContentBlockSpan = { span: ValueSpan; fields?: [field: string, span: ValueSpan][] };
+/** Small discriminator/identity fields that stay inline even when a block's body is omitted. */
+const BLOCK_IDENTITY_FIELDS = ["type", "id", "name", "redacted"];
+const MAX_CONTENT_BLOCK_SPANS = 4096;
+function pointerToken(field: string): string {
+	return field.replace(/~/gu, "~0").replace(/\//gu, "~1");
+}
+/** Block and block-field spans of one content array; undefined when it is not an array or exceeds the bound. */
+function contentBlockSpans(source: HistoryBytes, span: ValueSpan): ContentBlockSpan[] | undefined {
+	if (source.read(span.start, 1)[0] !== 91) return undefined;
+	const json = new HistoryJson(source);
+	json.position = span.start;
+	const blocks: ContentBlockSpan[] = [];
+	let count = 0;
+	let oversized = false;
+	json.walk((value) => {
+		const path = value.path;
+		if (oversized || path.length === 0 || path.length > 2) return;
+		if (++count > MAX_CONTENT_BLOCK_SPANS) {
+			oversized = true;
+			return;
+		}
+		const index = path[0] as number;
+		const block = blocks[index] ?? { span: { start: 0, end: 0 }, fields: [] };
+		blocks[index] = block;
+		// The walk is post-order: a block's fields arrive before the block itself.
+		if (path.length === 2) block.fields?.push([String(path[1]), { start: value.start, end: value.end }]);
+		else {
+			block.span = { start: value.start, end: value.end };
+			if (source.read(value.start, 1)[0] !== 123) block.fields = undefined;
+		}
+	});
+	return oversized ? undefined : blocks;
+}
 function displayEntry(view: View, position: number, inlineBytes = 8192): RpcHistoryEntry {
 	const stored = view.branch[position];
 	const base = stored.entry;
@@ -366,17 +401,45 @@ function displayEntry(view: View, position: number, inlineBytes = 8192): RpcHist
 			timestamp: base.timestamp,
 		};
 		let remaining = inlineBytes;
-		const copy = (path: (string | number)[], key: string, target: Record<string, unknown>, pointer: string) => {
-			const span = spans.get(JSON.stringify(path));
-			if (!span) return;
+		let blockProjected = false;
+		/** Inline a value within the entry budget, otherwise replace it by null plus an explicit omission. */
+		const take = (span: ValueSpan, pointer: string): unknown => {
 			const bytes = span.end - span.start;
 			if (bytes <= remaining && bytes <= 4096) {
-				target[key] = JSON.parse(source.read(span.start, bytes).toString("utf8"));
 				remaining -= bytes;
-			} else {
-				target[key] = null;
-				result.omissions.push(omission(view, position, pointer, span.start, span.end));
+				return JSON.parse(source.read(span.start, bytes).toString("utf8"));
 			}
+			result.omissions.push(omission(view, position, pointer, span.start, span.end));
+			return null;
+		};
+		const copy = (path: (string | number)[], key: string, target: Record<string, unknown>, pointer: string) => {
+			const span = spans.get(JSON.stringify(path));
+			if (span) target[key] = take(span, pointer);
+		};
+		/**
+		 * Oversized assistant content keeps its block structure: tool call identities are the anchors consumers need
+		 * to attach results, so only oversized block fields (thinking/text/arguments) become explicit omissions.
+		 */
+		const takeBlocks = (span: ValueSpan, pointer: string): unknown[] | undefined => {
+			const bytes = span.end - span.start;
+			if (bytes <= remaining && bytes <= 4096) return undefined;
+			const nested = contentBlockSpans(source, span);
+			if (!nested) return undefined;
+			blockProjected = true;
+			return nested.map((block, index) => {
+				const blockPointer = `${pointer}/${index}`;
+				const blockBytes = block.span.end - block.span.start;
+				if (!block.fields || (blockBytes <= remaining && blockBytes <= 4096)) return take(block.span, blockPointer);
+				const projectedBlock: Record<string, unknown> = {};
+				for (const [field, fieldSpan] of block.fields) {
+					const fieldBytes = fieldSpan.end - fieldSpan.start;
+					if (BLOCK_IDENTITY_FIELDS.includes(field) && fieldBytes <= 256) {
+						projectedBlock[field] = JSON.parse(source.read(fieldSpan.start, fieldBytes).toString("utf8"));
+						remaining = Math.max(0, remaining - fieldBytes);
+					} else projectedBlock[field] = take(fieldSpan, `${blockPointer}/${pointerToken(field)}`);
+				}
+				return projectedBlock;
+			});
 		};
 		if (view.storage.format === "jsonl" || hasStored) {
 			for (const key of spans.keys()) {
@@ -384,7 +447,7 @@ function displayEntry(view: View, position: number, inlineBytes = 8192): RpcHist
 				if (path.length !== root.length + 1 || !root.every((part, i) => part === path[i])) continue;
 				const field = String(path.at(-1));
 				if (field === "message") continue;
-				copy(path, field, body, `/${field.replace(/~/gu, "~0").replace(/\//gu, "~1")}`);
+				copy(path, field, body, `/${pointerToken(field)}`);
 			}
 		}
 		if (base.type === "message") {
@@ -399,7 +462,11 @@ function displayEntry(view: View, position: number, inlineBytes = 8192): RpcHist
 				const path = JSON.parse(key) as (string | number)[];
 				if (path.length !== prefix.length + 1 || !prefix.every((part, i) => part === path[i])) continue;
 				const field = String(path.at(-1));
-				copy(path, field, msg, `/message/${field.replace(/~/gu, "~0").replace(/\//gu, "~1")}`);
+				const pointer = `/message/${pointerToken(field)}`;
+				const blocks =
+					field === "content" && message?.role === "assistant" ? takeBlocks(spans.get(key)!, pointer) : undefined;
+				if (blocks) msg.content = blocks;
+				else copy(path, field, msg, pointer);
 			}
 			body.message = msg;
 		}
@@ -409,7 +476,8 @@ function displayEntry(view: View, position: number, inlineBytes = 8192): RpcHist
 			return rootReference();
 		}
 		result.entry = view.storage.format === "jsonl" ? legacyHistoryProjection(body, base) : body;
-		if (Buffer.byteLength(JSON.stringify(result)) > inlineBytes + 4096) return rootReference();
+		// A root reference would erase the tool call identities kept above; the page budget still bounds the response.
+		if (!blockProjected && Buffer.byteLength(JSON.stringify(result)) > inlineBytes + 4096) return rootReference();
 		return result;
 	} finally {
 		source.close();
@@ -570,8 +638,27 @@ function windowCursor(view: View, window: TurnWindow): string | undefined {
 	const { turn, low, high } = window;
 	const remaining: Range[] = [];
 	if (turn.start < low) remaining.push([turn.start, low]);
-	if (high < turn.end) remaining.push([high, turn.end]);
+	if (high < turn.end) {
+		// An emptied window leaves adjacent ranges; itineraries require disjoint, non-touching ranges.
+		if (remaining.length && remaining[0][1] === high) remaining[0] = [remaining[0][0], turn.end];
+		else remaining.push([high, turn.end]);
+	}
 	return turnCursor(view, turn, remaining);
+}
+/**
+ * A window never opens on tool results whose call lies before it: consumers anchor results to their call.
+ * Such leading results move back into the continuation itinerary, so every entry is still delivered exactly once.
+ */
+function trimOrphanResults(view: View, result: RpcHistoryPage, window: TurnWindow, target?: number): void {
+	const { turn } = window;
+	while (window.low < window.high && window.low !== turn.header && window.low !== target) {
+		const index = result.entries.findIndex((entry) => entry.position === window.low);
+		const origin = result.entries[index]?.toolCallOrigin;
+		if (!origin || origin.position >= window.low) break;
+		result.entries.splice(index, 1);
+		window.low++;
+	}
+	window.descriptor.continuationCursor = windowCursor(view, window);
 }
 /** Admit every turn's header and target/tail first, then grow windows fairly within the shared budget. */
 function loadWindows(
@@ -623,6 +710,7 @@ function loadWindows(
 		}
 		pending = next;
 	}
+	for (const window of windows) trimOrphanResults(view, result, window, target);
 	result.entries.sort((a, b) => a.position - b.position);
 }
 function page(

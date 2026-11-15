@@ -736,6 +736,114 @@ describe.each(["sqlite", "jsonl"] as const)("bounded GUI history %s", (format) =
 		expect(JSON.parse(Buffer.from(chunk.data, "base64").toString("utf8"))).toEqual(target.message.content);
 		expect(page.turns[0].header.id).toBe("u0");
 	});
+	it("HP13 budget-cut tail windows never open on a tool result whose call is outside the page", () => {
+		const [user, answer] = rounds(1);
+		if (answer.type !== "message" || answer.message.role !== "assistant") throw new Error("fixture");
+		const entries: SessionEntry[] = [user];
+		for (let i = 0; i < 300; i++) {
+			entries.push({
+				...answer,
+				id: `call-${i}`,
+				parentId: entries.at(-1)!.id,
+				message: {
+					...answer.message,
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: `tool-${i}`, name: "read", arguments: { path: `file-${i}.ts` } }],
+				},
+			});
+			entries.push({
+				type: "message",
+				id: `result-${i}`,
+				parentId: `call-${i}`,
+				timestamp: TIME,
+				message: {
+					role: "toolResult",
+					toolCallId: `tool-${i}`,
+					toolName: "read",
+					isError: false,
+					timestamp: 1,
+					content: [{ type: "text", text: `result ${i} `.repeat(40) }],
+				},
+			});
+		}
+		entries.push({ ...answer, parentId: entries.at(-1)!.id });
+		const sessionPath = fixture("orphan-window", entries);
+		for (let maxBytes = 65536; maxBytes < 65536 + 4000; maxBytes += 250) {
+			const page = read({ type: "read_history_page", sessionPath, maxBytes });
+			const loaded = new Set(page.entries.map((entry) => entry.position));
+			for (const entry of page.entries)
+				if (entry.toolCallOrigin) expect(loaded.has(entry.toolCallOrigin.position), `${maxBytes}`).toBe(true);
+			const ids = page.entries.map((entry) => entry.id);
+			let cursor = page.turns[0].continuationCursor;
+			while (cursor) {
+				const turn = read({ type: "read_history_turn", sessionPath, turnId: "turn:u0", cursor });
+				ids.push(...turn.entries.map((entry) => entry.id).filter((id) => id !== "u0"));
+				cursor = turn.continuationCursor;
+			}
+			expect([...ids].sort()).toEqual(entries.map((entry) => entry.id).sort());
+		}
+	});
+	it("HP14 oversized assistant content keeps tool call identities and omits only oversized block fields", () => {
+		const [user, answer] = rounds(1);
+		if (answer.type !== "message" || answer.message.role !== "assistant") throw new Error("fixture");
+		const thinking = "推理😀".repeat(4000);
+		const call: SessionEntry = {
+			...answer,
+			id: "call",
+			parentId: user.id,
+			message: {
+				...answer.message,
+				stopReason: "toolUse",
+				content: [
+					{ type: "thinking", thinking, thinkingSignature: "reasoning_content" },
+					{ type: "toolCall", id: "call-big", name: "bash", arguments: { command: "ls" } },
+				],
+			},
+		};
+		const result: SessionEntry = {
+			type: "message",
+			id: "result",
+			parentId: call.id,
+			timestamp: TIME,
+			message: {
+				role: "toolResult",
+				toolCallId: "call-big",
+				toolName: "bash",
+				isError: false,
+				timestamp: 1,
+				content: [{ type: "text", text: "ok" }],
+			},
+		};
+		const sessionPath = fixture("assistant-blocks", [user, call, result, { ...answer, parentId: result.id }]);
+		const page = read({ type: "read_history_page", sessionPath });
+		const loaded = page.entries.find((entry) => entry.id === "call")!;
+		expect(loaded.entry.message).toMatchObject({
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: null, thinkingSignature: "reasoning_content" },
+				{ type: "toolCall", id: "call-big", name: "bash", arguments: { command: "ls" } },
+			],
+		});
+		expect(loaded.omissions.map((item) => item.pointer)).toEqual(["/message/content/0/thinking"]);
+		const chunks: Buffer[] = [];
+		let offset: number | undefined = 0;
+		do {
+			const chunk: RpcHistoryContent = read({
+				type: "read_history_content",
+				sessionPath,
+				ref: loaded.omissions[0].ref,
+				offset,
+			});
+			chunks.push(Buffer.from(chunk.data, "base64"));
+			offset = chunk.nextOffset;
+		} while (offset !== undefined);
+		expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toBe(thinking);
+		expect(page.entries.find((entry) => entry.id === "result")?.toolCallOrigin).toMatchObject({
+			entryId: "call",
+			toolCallId: "call-big",
+			name: "bash",
+		});
+	});
 	it.each([undefined, "t0-500"])(
 		"HP15 continuation covers both omitted sides once with no cursor loop (%s)",
 		(aroundEntryId) => {
