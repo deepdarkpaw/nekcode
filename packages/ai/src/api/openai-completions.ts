@@ -461,9 +461,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					} else {
 						Object.assign(block, toolState(block).arguments.finish());
 					}
-					// Finalize in-place and strip the scratch buffers so replay only
-					// carries parsed arguments.					delete toolState(block).customInput;
-					delete toolState(block).streamIndex;
+					// Streaming state stays outside the finalized content block.
+					delete toolState(block).customInput;
 					stream.push({
 						type: "toolcall_end",
 						contentIndex,
@@ -499,6 +498,24 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				if (!block && toolCall.id) {
 					block = toolCallBlocksById.get(toolCall.id);
 				}
+				if (!block && !name) {
+					// Some gateways rewrite both identity fields on the first argument
+					// delta, which otherwise creates an empty metadata block plus a real
+					// call. Only use this conservative fallback for an unnamed delta with
+					// payload and exactly one still-empty compatible block; never merge by
+					// tool name, because parallel calls may legitimately share a name.
+					const argumentDelta = toolCall.function?.arguments ?? toolCall.custom?.input;
+					if (argumentDelta) {
+						const customCall = toolCall.custom !== undefined && toolCall.function === undefined;
+						const candidates = blocks.filter(
+							(candidate): candidate is StreamingToolCallBlock =>
+								candidate.type === "toolCall" &&
+								(toolState(candidate).customInput !== undefined) === customCall &&
+								!toolState(candidate).arguments.text.trim(),
+						);
+						if (candidates.length === 1) block = candidates[0];
+					}
+				}
 				if (!block) {
 					// Note: the "input" fallback here should/must not be taken.  in case the LLM makes up
 					// a tool we don't knwo about, we at least have a place to stash our stuff.
@@ -531,9 +548,15 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						partial: output,
 					});
 				}
-				if (streamIndex !== undefined && toolState(block).streamIndex === undefined) {
+				if (streamIndex !== undefined) {
+					// A few OpenAI-compatible gateways change the call id or index while forwarding
+					// one logical call. Keep every observed index as an alias after resolving by id;
+					// otherwise the next argument delta starts a second, empty tool block.
+					const indexedBlock = toolCallBlocksByIndex.get(streamIndex);
+					if (indexedBlock === undefined || indexedBlock === block) {
+						toolCallBlocksByIndex.set(streamIndex, block);
+					}
 					toolState(block).streamIndex = streamIndex;
-					toolCallBlocksByIndex.set(streamIndex, block);
 				}
 				if (toolCall.id) {
 					toolCallBlocksById.set(toolCall.id, block);

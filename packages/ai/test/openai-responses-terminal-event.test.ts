@@ -225,6 +225,14 @@ async function* createUnfinishedToolCallEvents(): AsyncIterable<ResponseStreamEv
 	} as ResponseStreamEvent;
 }
 
+async function* createRepeatedCompletedToolCallEvents(): AsyncIterable<ResponseStreamEvent> {
+	const item = { type: "function_call", id: "fc_duplicate", call_id: "call_duplicate", name: "read", arguments: "{}" };
+	yield { type: "response.output_item.added", output_index: 0, item } as ResponseStreamEvent;
+	yield { type: "response.output_item.done", output_index: 0, item } as ResponseStreamEvent;
+	// A proxy replaying output_item.done must not create a second empty tool block.
+	yield { type: "response.output_item.done", output_index: 0, item } as ResponseStreamEvent;
+}
+
 // llama.cpp omits output_index from every event and sends both done events after all deltas.
 async function* createToolCallsWithoutOutputIndexEvents(outputIndex?: number): AsyncIterable<ResponseStreamEvent> {
 	const call = (n: string) => ({ type: "function_call", id: `fc_${n}`, call_id: `call_${n}`, name: "bash" });
@@ -263,6 +271,19 @@ describe("OpenAI Responses terminal event handling", () => {
 				model,
 			),
 		).rejects.toThrow("OpenAI Responses stream completed with an unfinished tool call: bash (call_1|fc_1)");
+	});
+
+	it("rejects a repeated completed output_index instead of creating an empty tool call", async () => {
+		const model = createModel();
+
+		await expect(
+			processResponsesStream(
+				createRepeatedCompletedToolCallEvents(),
+				createOutput(model),
+				new AssistantMessageEventStream(),
+				model,
+			),
+		).rejects.toThrow("OpenAI Responses stream repeated completed output_index 0");
 	});
 
 	// https://github.com/earendil-works/pi/issues/9974

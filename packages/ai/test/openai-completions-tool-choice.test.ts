@@ -814,7 +814,7 @@ describe("openai-completions tool_choice", () => {
 		]);
 	});
 
-	it("coalesces tool call deltas by stable index when provider mutates ids mid-stream", async () => {
+	it("coalesces tool call deltas when a gateway mutates ids and indexes mid-stream", async () => {
 		mockState.chunks = [
 			{
 				id: "chatcmpl-kimi-bad-stream",
@@ -841,7 +841,9 @@ describe("openai-completions tool_choice", () => {
 						delta: {
 							tool_calls: [
 								{
-									index: 0,
+									// The gateway changed both identity fields after the initial
+									// metadata frame; the function name is omitted on the delta.
+									index: 1,
 									id: "chatcmpl-tool-a",
 									type: "function",
 									function: { name: null, arguments: '{"path":"README' },
@@ -859,7 +861,7 @@ describe("openai-completions tool_choice", () => {
 						delta: {
 							tool_calls: [
 								{
-									index: 0,
+									index: 1,
 									id: "chatcmpl-tool-b",
 									type: "function",
 									function: { name: null, arguments: '.md"}' },

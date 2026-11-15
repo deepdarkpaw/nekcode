@@ -66,7 +66,7 @@ const baseModel = {
 
 const context: TranscriptContext = normalizeContext({ messages: [{ role: "user", content: "write", timestamp: 0 }] });
 
-function* anthropicEvents(deltas: readonly string[]): Generator<string> {
+function* anthropicEvents(deltas: readonly string[], initialInput: Record<string, unknown> = {}): Generator<string> {
 	yield sse(
 		{
 			type: "message_start",
@@ -78,7 +78,7 @@ function* anthropicEvents(deltas: readonly string[]): Generator<string> {
 		{
 			type: "content_block_start",
 			index: 0,
-			content_block: { type: "tool_use", id: "toolu_1", name: "write", input: {} },
+			content_block: { type: "tool_use", id: "toolu_1", name: "write", input: initialInput },
 		},
 		"content_block_start",
 	);
@@ -385,6 +385,31 @@ describe.each(PATHS)("$name tool-call argument streaming", (path) => {
 		})();
 		await collectGarbage();
 		expect(references.filter((reference) => reference.deref() !== undefined)).toHaveLength(0);
+	});
+});
+
+describe("provider-supplied initial tool input", () => {
+	it("preserves Anthropic content_block_start input when no JSON delta follows", async () => {
+		const events = streamAnthropic(
+			{
+				...baseModel,
+				id: "claude-test",
+				name: "c",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				baseUrl: "https://api.anthropic.com",
+			},
+			context,
+			{
+				apiKey: "sk-ant-test",
+				fetch: sseFetch(() => anthropicEvents([], { path: "/src/file.ts" })),
+			},
+		);
+
+		const message = await consume(events);
+		expect(message.content).toEqual([
+			{ type: "toolCall", id: "toolu_1", name: "write", arguments: { path: "/src/file.ts" } },
+		]);
 	});
 });
 

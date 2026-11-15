@@ -501,6 +501,7 @@ export async function processResponsesStream<TApi extends Api>(
 ): Promise<void> {
 	let sawTerminalResponseEvent = false;
 	const outputSlots = new Map<number, ResponsesOutputSlot>();
+	const completedOutputIndexes = new Set<number>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
 	const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
 		if (item.type === "message" && item.phase === "final_answer") {
@@ -528,6 +529,9 @@ export async function processResponsesStream<TApi extends Api>(
 			throw new Error(
 				`OpenAI Responses stream reused output_index ${outputIndex} before the previous item completed`,
 			);
+		}
+		if (completedOutputIndexes.has(outputIndex)) {
+			throw new Error(`OpenAI Responses stream repeated completed output_index ${outputIndex}`);
 		}
 		if (item.type === "reasoning") {
 			const block: ThinkingContent = { type: "thinking", thinking: "" };
@@ -756,6 +760,7 @@ export async function processResponsesStream<TApi extends Api>(
 					partial: output,
 				});
 				outputSlots.delete(event.output_index);
+				completedOutputIndexes.add(event.output_index);
 			} else if (item.type === "message" && slot?.type === "text") {
 				slot.block.text = item.content?.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("") || "";
 				slot.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
@@ -766,6 +771,7 @@ export async function processResponsesStream<TApi extends Api>(
 					partial: output,
 				});
 				outputSlots.delete(event.output_index);
+				completedOutputIndexes.add(event.output_index);
 			} else if (item.type === "function_call" && slot?.type === "toolCall" && slot.arguments !== undefined) {
 				if (item.arguments) slot.arguments.replace(item.arguments);
 				Object.assign(slot.block, slot.arguments.finish());
@@ -777,6 +783,7 @@ export async function processResponsesStream<TApi extends Api>(
 					partial: output,
 				});
 				outputSlots.delete(event.output_index);
+				completedOutputIndexes.add(event.output_index);
 			} else if (item.type === "custom_tool_call" && slot?.type === "toolCall" && slot.customInput) {
 				pushToolCallDelta(slot, appendCustomToolCallInput(slot, item.input ?? getCustomToolCallInput(slot), true));
 				if (item.namespace !== undefined) slot.block.namespace = item.namespace;
@@ -788,6 +795,7 @@ export async function processResponsesStream<TApi extends Api>(
 					partial: output,
 				});
 				outputSlots.delete(event.output_index);
+				completedOutputIndexes.add(event.output_index);
 			}
 		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
 			finalizeResponse(event.response);

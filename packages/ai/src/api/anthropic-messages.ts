@@ -633,6 +633,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			type Block = ThinkingContent | TextContent | ToolCall;
 			const blocks = output.content;
 			const blockIndices = new Map<number, number>();
+			const seenBlockIndices = new Set<number>();
 			const toolArguments = new Map<number, ToolCallArgumentsStream>();
 
 			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
@@ -662,6 +663,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
 				} else if (event.type === "content_block_start") {
+					if (seenBlockIndices.has(event.index)) {
+						throw new Error(`Anthropic stream reused content block index ${event.index}`);
+					}
+					seenBlockIndices.add(event.index);
 					if (event.content_block.type === "fallback") {
 						if (output.content.length > 0) {
 							throw new Error("Anthropic performed an unsupported mid-output model fallback");
@@ -774,7 +779,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								partial: output,
 							});
 						} else if (block.type === "toolCall") {
-							Object.assign(block, toolArguments.get(event.index)!.finish());
+							const argumentsStream = toolArguments.get(event.index)!;
+							const finalArguments = argumentsStream.finish();
+							// Anthropic-compatible gateways may put the complete input on
+							// content_block_start and emit no input_json_delta. Do not let the
+							// empty scratch stream erase that authoritative initial input.
+							if (argumentsStream.text.trim() || finalArguments.argumentsError) {
+								Object.assign(block, finalArguments);
+							}
 							toolArguments.delete(event.index);
 							stream.push({
 								type: "toolcall_end",
@@ -827,6 +839,15 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
+				}
+			}
+
+			for (const [eventIndex, contentIndex] of blockIndices) {
+				const block = blocks[contentIndex];
+				if (block?.type === "toolCall") {
+					throw new Error(
+						`Anthropic stream ended before content_block_stop for tool call: ${block.name} (${block.id}) at index ${eventIndex}`,
+					);
 				}
 			}
 
