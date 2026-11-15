@@ -100,10 +100,14 @@ describe("get_entries paging", () => {
 describe("get_entries over RPC", () => {
 	let tempDir: string | undefined;
 	let cleanup: (() => Promise<void>) | undefined;
+	let currentSession: AgentSession | undefined;
+	let rebind: (() => Promise<void>) | undefined;
 
 	afterEach(async () => {
 		await cleanup?.();
 		cleanup = undefined;
+		currentSession = undefined;
+		rebind = undefined;
 		rpcIo.outputLines = [];
 		rpcIo.lineHandler = undefined;
 		if (tempDir !== undefined && existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
@@ -111,7 +115,7 @@ describe("get_entries over RPC", () => {
 	});
 
 	/** Start RPC mode on a session holding five user messages, and answer every line as the client would. */
-	async function startWithEntries(): Promise<string[]> {
+	async function startWithEntries(persist = false): Promise<string[]> {
 		tempDir = join(tmpdir(), `nek-rpc-entries-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 		const model = getModel("anthropic", "claude-sonnet-4-5");
@@ -123,7 +127,9 @@ describe("get_entries over RPC", () => {
 				throw new Error("get_entries must not send a request");
 			},
 		});
-		const sessionManager = SessionManager.inMemory();
+		const sessionManager = persist
+			? SessionManager.create(tempDir, join(tempDir, "sessions"))
+			: SessionManager.inMemory();
 		for (const text of ["one", "two", "three", "four", "five"]) {
 			sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 		}
@@ -137,16 +143,19 @@ describe("get_entries over RPC", () => {
 			modelRuntime: getModelRuntime(modelRegistry),
 			resourceLoader: createTestResourceLoader(),
 		});
+		currentSession = session;
 		const runtimeHost = {
 			session,
 			newSession: vi.fn(async () => ({ cancelled: true })),
 			switchSession: vi.fn(async () => ({ cancelled: true })),
 			fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
 			dispose: vi.fn(async () => {}),
-			setRebindSession: vi.fn(),
+			setRebindSession: vi.fn((callback: () => Promise<void>) => {
+				rebind = callback;
+			}),
 		} as unknown as AgentSessionRuntime;
 		cleanup = async () => {
-			session.dispose();
+			await session.dispose();
 		};
 
 		rpcIo.outputLines = [];
@@ -170,6 +179,58 @@ describe("get_entries over RPC", () => {
 			.find((record) => record.id === id && record.type === "response");
 		return line!;
 	}
+
+	it("HP12 negotiates bounded live events only on explicit opt-in and restores legacy event semantics", async () => {
+		await startWithEntries(true);
+		expect(await request({ type: "set_history_stream", version: 1 })).toMatchObject({
+			success: true,
+			data: { version: 1, maxEventBytes: 1048576 },
+		});
+		await request({ type: "set_session_name", name: "bounded-name" });
+		await vi.waitFor(() =>
+			expect(
+				rpcIo.outputLines
+					.map((line) => JSON.parse(line))
+					.some((record) => record.type === "history_event" && record.event.type === "session_info_changed"),
+			).toBe(true),
+		);
+		expect(
+			rpcIo.outputLines.map((line) => JSON.parse(line)).some((record) => record.type === "session_info_changed"),
+		).toBe(false);
+		expect(await request({ type: "set_history_stream", version: 0 })).toMatchObject({
+			success: true,
+			data: { version: 0 },
+		});
+		await request({ type: "set_session_name", name: "legacy-name" });
+		expect(
+			rpcIo.outputLines
+				.map((line) => JSON.parse(line))
+				.some((record) => record.type === "session_info_changed" && record.name === "legacy-name"),
+		).toBe(true);
+	});
+
+	it("HP11 late extension callbacks from an old binding cannot acquire the replacement live epoch", async () => {
+		await startWithEntries(true);
+		await request({ type: "set_history_stream", version: 1 });
+		const oldEmit = currentSession!.resourceLoader.getExtensions().runtime.emitRpcEvent!;
+		expect(rebind).toBeDefined();
+		await rebind!();
+		oldEmit("late-old", { text: "must not resurrect" });
+		currentSession!.resourceLoader.getExtensions().runtime.emitRpcEvent!("fresh", { text: "new binding" });
+		await vi.waitFor(() =>
+			expect(
+				rpcIo.outputLines
+					.map((line) => JSON.parse(line))
+					.some((record) => record.type === "history_event" && record.event.name === "fresh"),
+			).toBe(true),
+		);
+		const records = rpcIo.outputLines.map((line) => JSON.parse(line));
+		expect(records.some((record) => record.type === "history_event" && record.event.name === "late-old")).toBe(false);
+		const reset = records.findLast((record) => record.type === "history_stream_reset");
+		expect(records.find((record) => record.type === "history_event" && record.event.name === "fresh").epoch).toBe(
+			reset.epoch,
+		);
+	});
 
 	interface EntriesData {
 		entries: Array<{ id: string }>;

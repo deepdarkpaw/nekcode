@@ -4122,7 +4122,11 @@ export class AgentSession {
 		await this.settingsManager.reload();
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
+		// The RPC owner's event sink is a binding of the session, not of one extension runtime: a reload builds a
+		// fresh runtime, and without the sink every later `pi.emitRpcEvent` (nek.state, subagents, MCP) is dropped.
+		const emitRpcEvent = this._resourceLoader.getExtensions().runtime.emitRpcEvent;
 		await this._resourceLoader.reload();
+		if (emitRpcEvent) this._resourceLoader.getExtensions().runtime.emitRpcEvent = emitRpcEvent;
 		this._buildRuntime({
 			activeToolNames: [
 				...previousToolNames,

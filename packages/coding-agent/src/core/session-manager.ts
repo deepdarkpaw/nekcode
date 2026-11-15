@@ -344,6 +344,11 @@ export class SessionManager extends SessionTree {
 		return this.#contextVersion;
 	}
 
+	/** Distinguish a deliberately unpersisted new session from a missing or deleted initialized store. */
+	hasInitializedStorage(): boolean {
+		return this.flushed;
+	}
+
 	/** Position in the stable committed prefix, independent of pending host appends. */
 	getCommittedEntryCount(): number {
 		return this.projectionPosition;
@@ -359,6 +364,15 @@ export class SessionManager extends SessionTree {
 				.slice(position, this.projectionPosition)
 				.filter((entry): entry is SessionEntry => entry.type !== "session"),
 		};
+	}
+
+	/** Read-only persistence barrier: never consumes a write failure that the session/model owner must still see. */
+	async waitForWrites(): Promise<void> {
+		if (!this.persist) {
+			await this.#memoryStore?.waitForWrites();
+			return;
+		}
+		if (this.sessionFile && this.flushed) await DurableSessionStore.forPath(this.sessionFile).waitForWrites();
 	}
 
 	/** Resolve once every entry appended so far is durably written; appends are synchronous unless an engine runs. */
@@ -377,6 +391,17 @@ export class SessionManager extends SessionTree {
 		const conversationId = placement?.home.get(piId);
 		if (at === undefined || conversationId === undefined) return undefined;
 		return { at, conversationId, atTip: placement?.tails.get(conversationId) === piId };
+	}
+
+	/** Read committed identity indexes only; never flush, refresh, parse a body, or create/write a session. */
+	hasCommittedEntry(piId: string): boolean {
+		if (this.#projection?.placement.durableIds.has(piId)) return true;
+		const store = this.persist
+			? this.sessionFile
+				? DurableSessionStore.forPath(this.sessionFile)
+				: undefined
+			: this.#memoryStore;
+		return store?.conversationOf(piId) !== undefined;
 	}
 
 	/** Durable entry ID of a pi entry, as of the last read of the store (`refresh()`). */

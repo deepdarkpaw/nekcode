@@ -35,6 +35,7 @@ import { createGuiContext, type GuiContext } from "./gui/context.ts";
 import { createGuiDeps, handleGuiCommand } from "./gui/handlers.ts";
 import type { RpcExtensionEvent } from "./gui/protocol.ts";
 import { createUiRequester } from "./gui/ui-requests.ts";
+import { createHistoryStreamEmitter, type HistoryStreamSource } from "./history-stream.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	RpcCommand,
@@ -290,14 +291,38 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			requestStructured,
 		});
 	const guiDeps = createGuiDeps(guiContext, () => session.isStreaming || session.isCompacting);
+	const historySource = (): HistoryStreamSource => {
+		const manager = session.sessionManager;
+		return {
+			sessionPath: session.sessionFile,
+			sessionId: manager.getSessionId(),
+			leafId: () => manager.getLeafId(),
+			waitForWrites: () => manager.waitForWrites(),
+			committedPosition: () => manager.getCommittedEntryCount(),
+			hasCommittedEntry: (entryId) => manager.hasCommittedEntry(entryId),
+			committedSince: (position) => manager.getCommittedEntriesSince(position),
+		};
+	};
+	const historyStream = createHistoryStreamEmitter(historySource(), async (frame) => {
+		output(frame);
+		await waitForRawStdoutBackpressure();
+	});
+	let historyBinding = 0;
 
 	runtimeHost.setRebindSession(async () => {
 		await rebindSession();
 	});
 
 	const rebindSession = async (): Promise<void> => {
+		const binding = ++historyBinding;
+		const external = (event: Record<string, unknown>) => {
+			if (historyStream.enabled()) {
+				if (binding === historyBinding) historyStream.publishExternal(event);
+			} else output(event);
+		};
 		ui.cancelAll();
 		session = runtimeHost.session;
+		await historyStream.rebind(historySource());
 		await session.bindExtensions({
 			uiContext: createExtensionUIContext(),
 			mode: "rpc",
@@ -332,23 +357,28 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				shutdownRequested = true;
 			},
 			onError: (err) => {
-				output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
+				external({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
 			},
 		});
 
+		if (historyStream.enabled() && binding !== historyBinding) return;
 		unsubscribe?.();
 		session.resourceLoader.getExtensions().runtime.emitRpcEvent = (name, payload) =>
-			output({ type: "extension_event", name, payload } satisfies RpcExtensionEvent);
+			external({ type: "extension_event", name, payload } satisfies RpcExtensionEvent);
 
 		unsubscribeBackpressure?.();
 		unsubscribe = session.subscribe((event) => {
-			output(toJsonEvent(event));
+			if (historyStream.enabled() && binding !== historyBinding) return;
+			if (historyStream.enabled()) historyStream.publish(event);
+			else output(toJsonEvent(event));
 			if (event.type === "agent_settled") {
 				if (event.outcome === "aborted") ui.cancelAll();
 				void checkShutdownRequested();
 			}
 		});
 		unsubscribeBackpressure = session.agent.subscribe(async () => {
+			if (historyStream.enabled() && binding !== historyBinding) return;
+			await historyStream.drain();
 			await waitForRawStdoutBackpressure();
 		});
 	};
@@ -383,6 +413,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		if (guiResponse) return guiResponse;
 
 		switch (command.type) {
+			case "set_history_stream": {
+				if (id !== undefined && (typeof id !== "string" || Buffer.byteLength(id) > 256))
+					return error(undefined, command.type, "History stream request id exceeds 256 bytes");
+				return success(id, command.type, await historyStream.configure(command.version));
+			}
 			// =================================================================
 			// Prompting
 			// =================================================================
@@ -732,7 +767,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		unsubscribeBackpressure?.();
 		cancelAuthLogins();
 		ui.cancelAll();
+		historyStream.seal();
+		if (signal === "SIGTERM") historyStream.stop();
 		await runtimeHost.dispose();
+		if (signal !== "SIGTERM") await historyStream.drain();
 		detachInput();
 		process.stdin.pause();
 		if (signal !== "SIGTERM") {
