@@ -75,7 +75,7 @@ With images:
 
 If the agent is streaming and no `streamingBehavior` is specified, the command returns an error.
 
-**Extension commands**: If the message is an extension command (e.g., `/mycommand`), it executes immediately even during streaming. Extension commands manage their own LLM interaction via `pi.sendMessage()`.
+**Extension commands**: An extension command (e.g., `/mycommand`) can run during streaming. During `agent_settled` it is deferred; a command registered with `runAfterSettlement` (such as `/nek-build`) returns `disposition: "queued"` in that case and runs after the source session's input drain. Extension commands manage their own LLM interaction.
 
 **Input expansion**: Skill commands (`/skill:name`) and prompt templates (`/template`) are expanded before sending/queueing.
 

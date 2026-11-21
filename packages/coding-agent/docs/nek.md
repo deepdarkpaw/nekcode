@@ -55,7 +55,7 @@ Enter Plan with `/plan`, switch modes with `alt+m`, or start in it with `nek --p
 
 `create_plan` creates a new plan file when `plan_id` is omitted. A session may contain multiple plans. To fully rewrite an existing plan, pass its stable `plan_id`; to make an incremental revision, read/edit the selected file and call `update_plan` (optionally with `plan_id`). The revision number increases only when the document changed, and the tool result shows only a diff for updates. `/plans` selects and previews a saved plan without printing it during mode changes. The `create_plan` row shows only the plan name, revision, and overview. When a review opens, the full reviewed revision is appended to the transcript, where fullscreen paging (PageUp/PageDown or the mouse wheel) and native terminal scrollback both work. The review panel above the editor stays compact: implement here, implement in a fresh session, keep planning, or exit Plan. Plan previews are display-only and never sent to the model; the plan already reaches it through the plan tool call or the approved-plan message.
 
-Plan mode only plans; Agent mode implements. Approving a reviewed revision switches to Agent, writes the plan's todos as ordinary todos, and sends the approved plan body as a user message. There is no separate execution phase: Escape stops the current run like any other Agent run, and the todos stay as they are. `/nek-build` approves a reviewed revision the same way; `--fresh` does it in a new session.
+Plan mode only plans; Agent mode implements. Approving a reviewed revision switches to Agent, writes the plan's todos as ordinary todos, and sends the approved plan body as a user message. There is no separate execution phase: Escape stops the current run like any other Agent run, and the todos stay as they are. `/nek-build` approves a reviewed revision the same way; `--fresh` does it in a new session. Supply `--revision <n>` (a positive integer) to require the selected plan's current saved revision on this branch. A mismatch stops the command before selecting or implementing the plan.
 
 Re-entering Plan treats the previous plan as reference, following Claude Code's reentry rule: compare the latest request with the existing plan, replace it for a different task, or revise it for the same task. Ask new questions when a decision is genuinely unresolved, then save and review the revised plan. A pending approval never applies to a draft or to a plan file changed after review.
 
@@ -102,7 +102,7 @@ Use `/subagents` to list subagents, show a result, or cancel a running subagent.
 | `/plan [text]` | Enter Plan silently; with text, submit a planning request |
 | `/agent` | Exit Plan without implementing anything |
 | `/plans` | Select and preview one saved plan |
-| `/nek-build [plan_id] [--fresh]` | Implement a selected reviewed revision in Agent, optionally in a new session |
+| `/nek-build [plan_id] [--revision <n>] [--fresh]` | Implement a reviewed plan in Agent, optionally requiring its revision or starting a new session |
 | `/todos` | Show the todo list of the current branch |
 | `/subagents` | List, inspect, or cancel subagents |
 | `/agents` | List configured subagent presets |

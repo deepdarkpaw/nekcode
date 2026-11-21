@@ -97,6 +97,7 @@ import {
 	type ExtensionUIContext,
 	type InputSource,
 	type ReplacedSessionContext,
+	type ResolvedCommand,
 	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
 	type SessionBoundaryDraft,
@@ -465,6 +466,8 @@ export class AgentSession {
 	private readonly _deferredSettledActions: Array<{ action: () => Promise<void>; messageRole: "user" | "custom" }> =
 		[];
 	private _deferredDrain?: Promise<void>;
+	/** One opted-in command may leave the drain to perform session-level work. */
+	private _postSettlementCommandPending = false;
 	/**
 	 * The durable run ended and its settlement (`agent_before_settle`, then `agent_settled` or a continuation) is
 	 * pending. Like pi's loop between `agent_end` and settlement, messages sent meanwhile are held, not placed.
@@ -2383,21 +2386,35 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		const preflightResult = options?.preflightResult;
+		const runner = this._extensionRunner;
+		const mayBeCommand = (options?.expandPromptTemplates ?? true) && text.startsWith("/");
+		const commandEnd = mayBeCommand ? text.indexOf(" ") : -1;
+		const command = mayBeCommand
+			? runner.getCommand(text.slice(1, commandEnd === -1 ? undefined : commandEnd))
+			: undefined;
+		const args = command && commandEnd !== -1 ? text.slice(commandEnd + 1) : "";
+		if (command?.runAfterSettlement && this._postSettlementCommandPending) {
+			throw new Error("A command is already scheduled after settlement.");
+		}
 		if (this._isEmittingAgentSettled) {
-			this._deferUntilAgentSettled(() => this.prompt(text, options), "user");
+			if (command?.runAfterSettlement) {
+				this._postSettlementCommandPending = true;
+				this._deferUntilAgentSettled(async () => {
+					// Only hand off here: teardown waits for this drain, so the drain cannot await the command.
+					void this._runCommandAfterSettlement(runner, command, args);
+				}, "user");
+				preflightResult?.("queued");
+			} else {
+				this._deferUntilAgentSettled(() => this.prompt(text, options), "user");
+			}
 			return;
 		}
 		if (this._reloadReservation !== undefined)
 			throw new Error("Wait for the current reload to finish before submitting input.");
-		const preflightResult = options?.preflightResult;
-		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		// Detect commands synchronously: unknown slash inputs must reserve before their first await too.
-		if (
-			expandPromptTemplates &&
-			text.startsWith("/") &&
-			this._extensionRunner.getCommand(text.slice(1).split(" ", 1)[0]!)
-		) {
-			await this._tryExecuteExtensionCommand(text);
+		if (command) {
+			await this._executeExtensionCommand(runner, command, args);
 			preflightResult?.("handled");
 			return;
 		}
@@ -2634,33 +2651,41 @@ export class AgentSession {
 		}
 	}
 
-	/**
-	 * Try to execute an extension command. Returns true if command was found and executed.
-	 */
-	private async _tryExecuteExtensionCommand(text: string): Promise<boolean> {
-		// Parse command name and args
-		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
-
-		const command = this._extensionRunner.getCommand(commandName);
-		if (!command) return false;
-
-		// Get command context from extension runner (includes session control methods)
-		const ctx = this._extensionRunner.createCommandContext();
-
+	/** A session-control command can await the source session only from outside its delivery and settle queues. */
+	private async _runCommandAfterSettlement(
+		runner: ExtensionRunner,
+		command: ResolvedCommand,
+		args: string,
+	): Promise<void> {
 		try {
-			await command.handler(args, ctx);
-			return true;
-		} catch (err) {
-			// Emit error via extension runner
-			this._extensionRunner.emitError({
-				extensionPath: `command:${commandName}`,
-				event: "command",
-				error: err instanceof Error ? err.message : String(err),
-			});
-			return true;
+			await this.waitForIdle();
+			if (this._disposed || this._extensionRunner !== runner || this._reloadReservation !== undefined) return;
+			await this._executeExtensionCommand(runner, command, args);
+		} catch (error) {
+			this._reportExtensionCommandError(runner, command, error);
+		} finally {
+			this._postSettlementCommandPending = false;
 		}
+	}
+
+	private async _executeExtensionCommand(
+		runner: ExtensionRunner,
+		command: ResolvedCommand,
+		args: string,
+	): Promise<void> {
+		try {
+			await command.handler(args, runner.createCommandContext());
+		} catch (error) {
+			this._reportExtensionCommandError(runner, command, error);
+		}
+	}
+
+	private _reportExtensionCommandError(runner: ExtensionRunner, command: ResolvedCommand, error: unknown): void {
+		runner.emitError({
+			extensionPath: `command:${command.invocationName}`,
+			event: "command",
+			error: error instanceof Error ? error.message : String(error),
+		});
 	}
 
 	/**

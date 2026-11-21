@@ -1,19 +1,32 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type FauxResponseStep,
 	fauxAssistantMessage,
+	fauxProvider,
 	fauxToolCall,
 	getCurrentSystemPrompt,
 	type JsonObject,
 } from "@earendil-works/pi-ai";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { VirtualTerminal } from "../../../tui/test/virtual-terminal.ts";
 import { CONFIG_DIR_NAME } from "../../src/config.ts";
+import {
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionFromServices,
+	createAgentSessionRuntime,
+	createAgentSessionServices,
+} from "../../src/core/agent-session-runtime.ts";
+import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type {
 	ExtensionCommandContextActions,
 	ExtensionUIContext,
 	ReplacedSessionContext,
 } from "../../src/core/extensions/index.ts";
+import { KeybindingsManager } from "../../src/core/keybindings.ts";
+import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { DEFAULT_NEK_CONFIG } from "../../src/extensions/nek/config.ts";
 import { createNekExtension } from "../../src/extensions/nek/index.ts";
@@ -23,7 +36,8 @@ import { planId } from "../../src/extensions/nek/services/plan-store.ts";
 import { activePlan, replayBranch } from "../../src/extensions/nek/state/session-state.ts";
 import type { PlanApprovalChoice } from "../../src/extensions/nek/ui/plan-approval.ts";
 import { initTheme, type Theme, theme } from "../../src/modes/interactive/theme/theme.ts";
-import { createHarness, type Harness } from "./harness.ts";
+import { createUiRequester } from "../../src/modes/rpc/gui/ui-requests.ts";
+import { createHarness, createTestUiContext, getMessageText, type Harness } from "./harness.ts";
 
 interface UiRecord {
 	modeStatus: string | undefined;
@@ -667,6 +681,153 @@ describe("nek plan mode", () => {
 		expect(harness.faux.state.callCount).toBe(1);
 	});
 
+	it.each(["tui", "rpc"] as const)(
+		"replaces the session after fresh plan approval outside the settled drain (%s)",
+		async (mode) => {
+			const root = mkdtempSync(join(tmpdir(), "nek-fresh-plan-"));
+			const agentDir = join(root, "agent");
+			const faux = fauxProvider();
+			const requests: string[] = [];
+			faux.setResponses([createPlanCall({ name: "Add auth" }), captureRequest(requests, "Implementation started")]);
+			const credentials = AuthStorage.inMemory();
+			await credentials.modify(faux.provider.id, async () => ({ type: "api_key", key: "faux-key" }));
+			const modelRuntime = await ModelRuntime.create({
+				credentials,
+				modelsPath: null,
+				allowModelNetwork: false,
+			});
+			modelRuntime.registerNativeProvider({
+				...faux.provider,
+				auth: { apiKey: { name: "Faux", resolve: async () => ({ auth: { apiKey: "faux-key" } }) } },
+			});
+			let drained = false;
+			const order: string[] = [];
+			const replacement = Promise.withResolvers<{ cancelled: boolean }>();
+			const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+				cwd,
+				agentDir,
+				sessionManager,
+				sessionStartEvent,
+			}) => {
+				const services = await createAgentSessionServices({
+					cwd,
+					agentDir,
+					modelRuntime,
+					resourceLoaderOptions: {
+						noContextFiles: true,
+						extensionFactories: [
+							createNekExtension({
+								role: "root",
+								config: { ...DEFAULT_NEK_CONFIG, todo: { ...DEFAULT_NEK_CONFIG.todo, settleReminder: false } },
+							}),
+							(pi) => {
+								if (sessionStartEvent?.reason === "new") return;
+								pi.on("agent_settled", () =>
+									pi.sendUserMessage("/drain-probe", { expandPromptTemplates: true }),
+								);
+								pi.registerCommand("drain-probe", {
+									handler: async () => {
+										drained = true;
+										order.push("deferred input");
+									},
+								});
+								pi.on("session_before_switch", () => {
+									order.push("replacement");
+									// Before the fix teardown would wait for the drain still executing /nek-build. Cancel here
+									// when the ordering is wrong so the regression fails instead of hanging the test process.
+									if (!drained) return { cancel: true };
+								});
+							},
+						],
+					},
+				});
+				return {
+					...(await createAgentSessionFromServices({
+						services,
+						sessionManager,
+						sessionStartEvent,
+						model: faux.getModel(),
+					})),
+					services,
+					diagnostics: services.diagnostics,
+				};
+			};
+			const runtime = await createAgentSessionRuntime(createRuntime, {
+				cwd: root,
+				agentDir,
+				sessionManager: SessionManager.create(root, join(root, "sessions")),
+			});
+			const rpcUi = createUiRequester((record) => {
+				expect(record).toMatchObject({
+					type: "extension_ui_request",
+					method: "structured",
+					kind: "nek.plan_review",
+					payload: { revision: 1 },
+				});
+				if (!("id" in record) || typeof record.id !== "string") throw new Error("Expected an RPC dialog id");
+				rpcUi.respond({ type: "extension_ui_response", id: record.id, result: { action: "implement_fresh" } });
+			});
+			const keybindings = new KeybindingsManager();
+			const tui = new TuiMainScreen(new VirtualTerminal());
+			const custom: ExtensionUIContext["custom"] = (factory) =>
+				new Promise((resolve, reject) => {
+					void Promise.resolve(factory(tui, theme, keybindings, resolve))
+						.then((view) => {
+							view.handleInput?.("\x1b[B");
+							view.handleInput?.("\r");
+						})
+						.catch(reject);
+				});
+			const errors: string[] = [];
+			const bind = async () => {
+				const session = runtime.session;
+				await session.bindExtensions({
+					mode,
+					uiContext: createTestUiContext(mode === "tui" ? { custom } : { structured: rpcUi.requestStructured }),
+					onError: (error) => errors.push(error.error),
+					commandContextActions: {
+						waitForIdle: () => session.waitForIdle(),
+						newSession: (options) => {
+							const operation = runtime.newSession(options);
+							void operation.then(replacement.resolve, replacement.reject);
+							return operation;
+						},
+						fork: async () => ({ cancelled: false }),
+						navigateTree: async () => ({ cancelled: false }),
+						switchSession: async () => ({ cancelled: false }),
+						reload: async () => {},
+					},
+				});
+			};
+			try {
+				runtime.setRebindSession(bind);
+				await bind();
+				const source = runtime.session;
+				await source.prompt("/plan");
+				await source.prompt("Plan auth");
+				expect(await replacement.promise).toEqual({ cancelled: false });
+				expect(order).toEqual(["deferred input", "replacement"]);
+				expect(runtime.session).not.toBe(source);
+				expect(runtime.session.sessionManager.getHeader()?.parentSession).toBe(source.sessionFile);
+				const state = replayBranch(runtime.session.sessionManager.getBranch());
+				expect(state).toMatchObject({
+					mode: "agent",
+					planStatus: "ready",
+					todos: [{ status: "in_progress" }, { status: "pending" }],
+				});
+				expect(activePlan(state)?.plan.revision).toBe(1);
+				expect(runtime.session.messages.filter(({ role }) => role === "user").map(getMessageText)).toEqual([
+					`${IMPLEMENT_FRESH_PREFIX}\n\n# Add auth\n\n- Add the schema`,
+				]);
+				expect(requests).toHaveLength(1);
+				expect(errors).toEqual([]);
+			} finally {
+				await runtime.dispose();
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+
 	it("/nek-build --fresh starts a new session in agent mode with the todos and the Codex prefix", async () => {
 		const harness = await createNekHarness(undefined);
 		const created = SessionManager.inMemory();
@@ -691,7 +852,7 @@ describe("nek plan mode", () => {
 		const saved = currentPlan(harness);
 		if (!saved) throw new Error("Expected saved plan");
 
-		await harness.session.prompt(`/nek-build ${planId(saved)} --fresh`);
+		await harness.session.prompt(`/nek-build ${planId(saved)} --revision ${saved.revision} --fresh`);
 
 		const state = replayBranch(created.getBranch());
 		expect(state.mode).toBe("agent");
@@ -702,6 +863,31 @@ describe("nek plan mode", () => {
 		expect(state.todoOwner).toBeUndefined();
 		expect(JSON.stringify(created.getBranch())).not.toContain('"execution"');
 		expect(sent).toEqual([`${IMPLEMENT_FRESH_PREFIX}\n\n# Add auth\n\n- Add the schema`]);
+	});
+
+	it("rejects a stale requested revision without selecting or implementing it", async () => {
+		const harness = await createNekHarness(undefined);
+		const errors: string[] = [];
+		await harness.session.bindExtensions({ onError: (error) => errors.push(error.error) });
+		await harness.session.prompt("/plan");
+		harness.setResponses([createPlanCall({ name: "Add auth" })]);
+		await harness.session.prompt("Plan auth");
+		const first = currentPlan(harness);
+		if (!first) throw new Error("Expected saved plan");
+		const id = planId(first);
+		harness.setResponses([createPlanCall({ plan_id: id, plan: "# Auth revision 2" })]);
+		await harness.session.prompt("Revise auth");
+		expect(currentPlan(harness)?.revision).toBe(2);
+		harness.setResponses([createPlanCall({ name: "Add caching" })]);
+		await harness.session.prompt("Plan caching separately");
+		const before = currentState(harness);
+		expect(before.activePlan).not.toBe(first.path);
+
+		await harness.session.prompt(`/nek-build ${id} --revision ${first.revision} --fresh`);
+
+		expect(errors).toEqual([expect.stringContaining("is now revision 2, not revision 1")]);
+		expect(currentState(harness)).toEqual(before);
+		expect(harness.faux.state.callCount).toBe(3);
 	});
 
 	it("requires renewed review when the file body changed after its snapshot", async () => {

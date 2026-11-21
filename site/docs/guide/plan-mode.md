@@ -106,8 +106,9 @@ todos:
 | 命令 | 作用 |
 |---|---|
 | `/plans` | 选择一份已保存的计划并预览 |
-| `/nek-build [plan_id]` | 批准并实施一份已审阅的计划修订版本（不带参数时选择） |
-| `/nek-build [plan_id] --fresh` | 同上，但在新会话里实施 |
+| `/nek-build [plan_id] [--revision <n>] [--fresh]` | 批准并实施已审阅的计划；省略 `plan_id` 时使用当前计划，`--fresh` 在新会话里实施 |
+
+`--revision <n>` 指定你审阅的正整数修订号。例如，`/nek-build login-rate-limit_3fa2c1 --revision 2 --fresh` 只会在当前分支记录的修订号仍为 2 时启动实施；计划已更新时，nek 会要求重新审阅，不会执行其他版本。
 
 ## 修改计划 {#revise}
 

@@ -16,6 +16,7 @@
 - Added the built-in `ast_grep` tool for structural code search (nekcode).
 - Added the built-in `nek` extension with `todo_write`, the todo widget, and `/todos` (nekcode).
 - Added plan mode with `switch_mode`, `create_plan`, `ask_question`, `/plan`, `/nek-build`, the `alt+m` shortcut, and `--plan` (nekcode).
+- Added `/nek-build [plan_id] --revision <n>` to require the exact reviewed revision, with or without `--fresh`.
 - Added subagents with the `task` and `await` tools, custom agent types in `~/.pi/agent/agents/` and `.pi/agents/`, and `/tasks` (nekcode).
 - Added Cursor-style `read` with negative `offset`, ast-grep symbol outlines, and 50-line fallback chunks (nekcode).
 - Added Claude Code-style `edit` with read-before-edit and stale-file checks, `replace_all`, atomic writes, and encoding and line-ending preservation (nekcode).
@@ -33,6 +34,7 @@
 
 ### Fixed
 
+- Fixed Plan review hanging when starting implementation in a fresh session from the TUI or GUI RPC.
 - Fixed X11 clipboard text being misidentified as an image when the clipboard owner accepts unadvertised image targets ([#9786](https://github.com/earendil-works/pi/issues/9786)).
 - Prevented managed git packages from automatically installing Pi peer dependencies and added warnings for extension packages that list host-provided modules in `dependencies` ([#9863](https://github.com/earendil-works/pi/issues/9863)).
 - Fixed pinned git extensions loaded with `-e` continuing to use the first downloaded commit after the ref changes ([#9982](https://github.com/earendil-works/pi/issues/9982)).

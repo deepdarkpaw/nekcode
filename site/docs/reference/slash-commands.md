@@ -23,7 +23,7 @@
 | `/plan <需求>` | 进入 Plan 模式并提交规划或修订请求 |
 | `/agent` | 退出 Plan 模式，不开始实施 |
 | `/plans` | 选择并预览一份已保存的计划 |
-| `/nek-build [plan_id] [--fresh]` | 批准并实施一份已审阅的计划修订版本；`--fresh` 在新会话中实施 |
+| `/nek-build [plan_id] [--revision <n>] [--fresh]` | 批准并实施已审阅的计划；`--revision` 要求修订号匹配，`--fresh` 在新会话中实施 |
 | `/todos` | 显示当前分支的 Todo 列表 |
 | `/subagents` | 列出子代理、查看结果、取消运行中的子代理 |
 | `/agents` | 列出可用的子代理类型 |

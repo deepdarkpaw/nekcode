@@ -50,6 +50,8 @@ export const MODE_STATUS_KEY = "nek.mode";
 export const NEK_BUILD_COMMAND = "nek-build";
 export const PLAN_FLAG = "plan";
 
+const BUILD_USAGE = "/nek-build [plan_id] [--revision <n>] [--fresh]";
+
 interface PendingImplementation {
 	text: string;
 	reference: PlanReference;
@@ -154,7 +156,8 @@ function registerPlanCommands(wiring: PlanWiring): void {
 		},
 	});
 	pi.registerCommand(NEK_BUILD_COMMAND, {
-		description: "Implement a saved plan ([plan_id] --fresh: in a new session)",
+		description: `Implement a saved plan: ${BUILD_USAGE}`,
+		runAfterSettlement: true,
 		handler: (args, ctx) => buildCommand(wiring, args, ctx),
 	});
 	pi.registerFlag(PLAN_FLAG, { description: "Start in plan mode", type: "boolean" });
@@ -347,7 +350,7 @@ async function offerPlanApproval(wiring: PlanWiring, ctx: ExtensionContext): Pro
 		return;
 	if (choice === "implement") implementPlan(wiring, ctx, plan);
 	else if (choice === "fresh") {
-		const text = `/${NEK_BUILD_COMMAND} ${planId(plan)} --fresh`;
+		const text = `/${NEK_BUILD_COMMAND} ${planId(plan)} --revision ${plan.revision} --fresh`;
 		wiring.pendingImplementation = { text, reference: plan, cancelled: false };
 		wiring.pi.sendUserMessage(text, { expandPromptTemplates: true });
 	} else if (choice === "stay") markDraft(wiring, ctx);
@@ -382,11 +385,27 @@ export function implementPlan(wiring: PlanWiring, ctx: ExtensionContext, plan: P
 	pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 }
 
-function buildArguments(args: string): { planId?: string; fresh: boolean } | undefined {
-	const tokens = args.trim() ? args.trim().split(/\s+/) : [];
-	const fresh = tokens.includes("--fresh");
-	const ids = tokens.filter((token) => token !== "--fresh");
-	return ids.length <= 1 ? { planId: ids[0], fresh } : undefined;
+function buildArguments(args: string): { planId?: string; expectedRevision?: number; fresh: boolean } | undefined {
+	const tokens = args.match(/\S+/g) ?? [];
+	let planId: string | undefined;
+	let expectedRevision: number | undefined;
+	let fresh = false;
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		if (token === "--fresh") {
+			if (fresh) return undefined;
+			fresh = true;
+		} else if (token === "--revision") {
+			const value = tokens[++i];
+			if (expectedRevision !== undefined || !value || !/^[1-9]\d*$/.test(value)) return undefined;
+			expectedRevision = Number(value);
+			if (!Number.isSafeInteger(expectedRevision)) return undefined;
+		} else {
+			if (planId !== undefined || token.startsWith("-")) return undefined;
+			planId = token;
+		}
+	}
+	return { planId, expectedRevision, fresh };
 }
 
 async function buildCommand(wiring: PlanWiring, args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -400,7 +419,7 @@ async function buildCommand(wiring: PlanWiring, args: string, ctx: ExtensionComm
 	}
 	const parsed = buildArguments(args);
 	if (!parsed) {
-		ctx.ui.notify("Usage: /nek-build [plan_id] [--fresh]", "warning");
+		ctx.ui.notify(`Usage: ${BUILD_USAGE}`, "warning");
 		return;
 	}
 	const selected = parsed.planId ? findPlan(wiring.nek.session, parsed.planId) : activePlan(wiring.nek.session);
@@ -419,6 +438,11 @@ async function buildCommand(wiring: PlanWiring, args: string, ctx: ExtensionComm
 		(pending.cancelled || !samePlanRevision(pending.reference, selected.plan))
 	)
 		return;
+	if (parsed.expectedRevision !== undefined && parsed.expectedRevision !== selected.plan.revision) {
+		throw new Error(
+			`Plan "${planId(selected.plan)}" is now revision ${selected.plan.revision}, not revision ${parsed.expectedRevision}. Review the current revision before implementation.`,
+		);
+	}
 	if (wiring.nek.session.activePlan !== selected.plan.path) activatePlan(wiring, ctx, selected);
 	if (!ctx.isIdle()) {
 		ctx.ui.notify("Interrupt the current run before starting plan implementation.", "warning");

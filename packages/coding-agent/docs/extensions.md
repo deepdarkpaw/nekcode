@@ -64,7 +64,7 @@ Automatic retries, recovery, compaction, or queued work can continue afterward.
 <a id="agent_start--agent_end--agent_before_settle--agent_settled"></a>
 
 `agent_before_settle` is the final actionable boundary: it can append entries and request one continuation.
-`agent_settled` is final and notification-only; use it when an integration needs to know nekcode will not continue automatically.
+`agent_settled` is final and notification-only; use it when an integration needs to know nekcode will not continue automatically. Submissions made in this event normally drain before the source run finishes. For commands that need to wait for that drain (for example, to replace the session), set `runAfterSettlement: true` in `pi.registerCommand()`. A command submitted during the event then runs after the drain, outside the source run's idle wait, and is skipped if that runtime is no longer active.
 
 <a id="extensionapi-methods"></a>
 
