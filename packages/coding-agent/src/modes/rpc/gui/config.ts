@@ -14,7 +14,7 @@ import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../../c
 import { loadMcpConfig } from "../../../extensions/mcp/config.ts";
 import { loadNekConfig } from "../../../extensions/nek/config.ts";
 import { discoverAgentTypes } from "../../../extensions/nek/services/agent-types.ts";
-import { resolvePath } from "../../../utils/paths.ts";
+import { pathsEqual, resolvePath } from "../../../utils/paths.ts";
 import type { GuiContext } from "./context.ts";
 import type { RpcConfigDiagnostic, RpcReloadResult } from "./protocol.ts";
 import { errorMessage } from "./response.ts";
@@ -28,6 +28,28 @@ export function isProjectTrusted(ctx: GuiContext, cwd: string): boolean {
 	if (trusted !== null) return trusted;
 	if (!hasTrustRequiringProjectResources(cwd)) return true;
 	return ctx.settingsManager.getDefaultProjectTrust() === "always";
+}
+
+/** The workspace and settings a cwd-scoped GUI command may use. */
+export interface GuiWorkspace {
+	cwd: string;
+	agentDir: string;
+	settingsManager: SettingsManager;
+	session?: GuiContext["session"];
+}
+
+/** Preserve session-only trust for the current directory; other directories use their stored policy. */
+export function resolveGuiWorkspace(ctx: GuiContext, cwd?: string): GuiWorkspace {
+	if (cwd !== undefined && (typeof cwd !== "string" || !cwd.trim() || cwd.includes("\0"))) {
+		throw new Error("cwd must be a non-empty directory path");
+	}
+	const sessionCwd = ctx.session?.sessionManager.getCwd();
+	const directory = resolvePath(cwd ?? sessionCwd ?? ctx.cwd);
+	const session = sessionCwd !== undefined && pathsEqual(directory, resolvePath(sessionCwd)) ? ctx.session : undefined;
+	const settingsManager =
+		session?.settingsManager ??
+		SettingsManager.create(directory, ctx.agentDir, { projectTrusted: isProjectTrusted(ctx, directory) });
+	return { cwd: directory, agentDir: ctx.agentDir, settingsManager, session };
 }
 
 /** Split `"<path>: message"` diagnostics produced by the loaders, keeping absolute Windows paths intact. */
@@ -152,32 +174,32 @@ export function createReloadScheduler(
 	getContext: () => GuiContext,
 	isBusy: () => boolean,
 ): () => Promise<RpcReloadResult> {
-	const state: { queued?: Promise<RpcConfigDiagnostic[]> } = {};
+	let running: Promise<RpcConfigDiagnostic[]> | undefined;
+	let queued = false;
 	const run = async (): Promise<RpcConfigDiagnostic[]> => {
+		// Another command may have written settings after the current reload read them.
+		while (running) await running.catch(() => {});
+		running = reloadRuntime(getContext());
 		try {
-			return await reloadRuntime(getContext());
+			return await running;
 		} finally {
-			state.queued = undefined;
+			running = undefined;
 		}
 	};
-	/** One reload waits for the settle of the current run; later requests during it reuse that promise. */
-	const queue = (): Promise<RpcConfigDiagnostic[]> =>
-		new Promise<RpcConfigDiagnostic[]>((resolve, reject) => {
-			const session = getContext().session;
-			if (!session) {
-				void run().then(resolve, reject);
-				return;
-			}
+
+	return async () => {
+		const ctx = getContext();
+		const session = ctx.session;
+		if (!session || !isBusy()) return { deferred: false, diagnostics: await run() };
+		if (!queued) {
+			queued = true;
 			const unsubscribe = session.subscribe((event) => {
 				if (event.type !== "agent_settled") return;
 				unsubscribe();
-				void run().then(resolve, reject);
+				queued = false;
+				void run().catch((error: unknown) => console.error(`Deferred RPC reload failed: ${errorMessage(error)}`));
 			});
-		});
-
-	return async () => {
-		if (!isBusy()) return { deferred: false, diagnostics: await run() };
-		state.queued ??= queue();
-		return { deferred: true, diagnostics: await validateConfig(getContext(), undefined) };
+		}
+		return { deferred: true, diagnostics: await validateConfig(ctx, undefined) };
 	};
 }

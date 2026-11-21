@@ -300,7 +300,7 @@ export class FileSettingsStorage implements SettingsStorage {
 				release = this.acquireLockSyncWithRetry(path);
 			}
 			const current = fileExists ? readFileSync(path, "utf-8") : undefined;
-			const next = fn(current);
+			let next = fn(current);
 			if (next !== undefined) {
 				// Only create directory when we actually need to write
 				if (!existsSync(dir)) {
@@ -308,8 +308,10 @@ export class FileSettingsStorage implements SettingsStorage {
 				}
 				if (!release) {
 					release = this.acquireLockSyncWithRetry(path);
+					// Another process may have created the file before we acquired the lock.
+					if (existsSync(path)) next = fn(readFileSync(path, "utf-8"));
 				}
-				writeFileSync(path, next, "utf-8");
+				if (next !== undefined) writeFileSync(path, next, "utf-8");
 			}
 		} finally {
 			if (release) {
@@ -1186,6 +1188,35 @@ export class SettingsManager {
 		this.updateProjectSettings("extensions", (settings) => {
 			settings.extensions = paths;
 		});
+	}
+
+	/** Edit an override against the latest array under lock; independent writers may toggle different entries. */
+	updateResourcePaths(
+		scope: SettingsScope,
+		resourceType: "skills" | "prompts",
+		update: (current: string[]) => string[],
+	): Promise<void> {
+		const write = this.writeQueue.then(() => {
+			if (scope === "project") this.assertProjectTrustedForWrite();
+			let paths: string[] | undefined;
+			this.storage.withLock(scope, (current) => {
+				const settings = current ? SettingsManager.migrateSettings(JSON.parse(stripBom(current))) : {};
+				const previous = settings[resourceType] ?? [];
+				if (!Array.isArray(previous) || previous.some((entry) => typeof entry !== "string")) {
+					throw new Error(`Expected an array of paths and overrides in ${scope} settings: ${resourceType}`);
+				}
+				const next = update(previous);
+				paths = next === previous ? settings[resourceType] : next;
+				if (next === previous) return undefined;
+				return JSON.stringify({ ...settings, [resourceType]: next }, null, 2);
+			});
+			const scopedSettings = scope === "global" ? this.globalSettings : this.projectSettings;
+			scopedSettings[resourceType] = paths;
+			this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		});
+		// The caller observes its own write error; keep the queue usable for later writes.
+		this.writeQueue = write.catch(() => {});
+		return write;
 	}
 
 	getSkillPaths(): string[] {

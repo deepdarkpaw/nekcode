@@ -951,7 +951,47 @@ Response data: `targets`, each with `kind` (`"agent"` or `"skill"`), `name`, opt
 
 Subagent types come first, in the order of the `subagents` system prompt section: the built-in types, then user presets, then project presets. Skills follow in the order of the session's loaded skills.
 
-`cwd` names the directory to describe. A session answers from its live resources, so extension-provided skills and its own trust decision apply; asked about a different directory, it answers from that directory's files instead. The control process always answers from the files of `cwd` (default: its working directory), which means `<agentDir>/skills` and, once the project is trusted, `<cwd>/.nek/skills`.
+`cwd` names the directory to describe. A session answers from its live resources, so startup arguments, extension-provided skills, and its own trust decision apply. The control process, or a session asked about a different directory, resolves enabled skills through the same package manager and skill loader as a new session, without installing packages or loading extensions. That includes settings paths, installed packages, and the two default locations.
+
+### list_resources
+
+List skills or prompt templates for a workspace in either RPC mode. Requires `nek gui-info --json` capability `resources: 1`.
+
+```json
+{"type": "list_resources", "cwd": "/home/user/project", "resourceType": "skills"}
+```
+
+`resourceType` is `"skills"` or `"prompts"`. `cwd` defaults to the active session directory in session mode and to the process's working directory in control mode. A request for the active session directory uses that session's settings and trust decision; other directories use the stored project trust and settings on disk. Untrusted project settings and automatic resources are excluded.
+
+Response data is `{resources, diagnostics, projectTrusted}`. Each resource has `resourceType`, `name` (skill name or prompt command without `/`), optional `description`, absolute Markdown `path`, `scope`, `source` (the original nek metadata string), `enabled`, and `toggleable`. `scope` is `"user"` for automatic `<agentDir>` resources, `"project"` for automatic `<cwd>/.nek` resources, and `"temporary"` for explicit paths, packages, or session-only sources such as startup arguments and extensions. Only the live session can report its session-only sources. Inspection does not install missing packages or execute extensions.
+
+Disabled entries are included. `enabled` reports the resolved setting, not whether the name wins a collision or whether a startup flag such as `--no-skills` suppresses loading. Files the loader cannot parse are reported through `diagnostics` rather than as resource entries. Diagnostics are `{type: "warning" | "error" | "collision", message, path?}`.
+
+### set_resource_enabled
+
+Change the setting for a skill or prompt in either RPC mode. Requires capability `resources: 1`.
+
+```json
+{"type": "set_resource_enabled", "cwd": "/home/user/project", "resourceType": "skills", "path": "/home/user/project/.nek/skills/review/SKILL.md", "enabled": false}
+```
+
+Send the absolute `path` from `list_resources` for the same `cwd` and `resourceType`. The command resolves the list again and rejects unknown paths and entries that are not `toggleable`. Auto-discovered user resources write `<agentDir>/settings.json`; auto-discovered project resources write `<cwd>/.nek/settings.json`. Explicit, package-provided, or session-forced resources must be managed at their source.
+
+The command updates the owning settings array (`skills` or `prompts`) under the settings lock. Disabling adds an exact `-path` relative to the settings directory if needed. Enabling removes matching `-path` entries and adds an exact `+path` only if the remaining rules would still exclude the resource. Other configuration is preserved. Response data is `{settingsScope: "global" | "project", enabled}` with the state from re-resolution after the write.
+
+A session RPC schedules its usual `reload` if the setting affects that session: immediately when idle, or after `agent_settled` during a run. No separate `reload` is needed for that session. After a control-process write, send `reload` to any open session that should pick up the change.
+
+### get_model_scope
+
+Resolve the model filter used by the CLI `/model` picker and model cycling. Available in either RPC mode with capability `modelScope: 1`.
+
+```json
+{"type": "get_model_scope", "cwd": "/home/user/project"}
+```
+
+Response data is `{patterns, models, diagnostics}`. `patterns` is the effective `enabledModels` array verbatim (project settings override global settings only if trusted). `cwd` and session settings selection follow `list_resources`. The resolver uses the same available model snapshot as `get_available_models` in that process; no model API is called.
+
+`models` contains `{provider, id, thinkingLevel?}` in resolver order. `thinkingLevel` appears only for a level specified in a matching pattern. Diagnostics have `{code, message, pattern}`, with code `"no-match"`, `"invalid-thinking-level"`, or `"ambiguous"`. Empty `patterns` means no configured filter; `models` and `diagnostics` are both empty in that case. Use `get_available_models` for the unfiltered list.
 
 ### list_builtin_tools
 

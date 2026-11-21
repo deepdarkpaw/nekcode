@@ -3,8 +3,9 @@ import ignore from "ignore";
 import { basename, dirname, join, relative, resolve, sep } from "path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
+import { dedupeNamedResources } from "./resource-name-resolution.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
 /** Max name length per spec */
@@ -402,51 +403,24 @@ export interface LoadSkillsOptions {
 	includeDefaults: boolean;
 }
 
-/**
- * Load skills from all configured locations.
- * Returns skills and any validation diagnostics.
- */
+/** Load skills and report collisions using the configured loading order. */
 export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
-	const { agentDir, skillPaths, includeDefaults } = options;
+	const loaded = loadSkillCandidates(options);
+	const { resources, diagnostics } = dedupeNamedResources(loaded.skills, "skill");
+	return { skills: resources, diagnostics: [...loaded.diagnostics, ...diagnostics] };
+}
 
-	// Resolve agentDir - if not provided, use default from config
+/** Parse skills before name collision resolution, preserving each valid candidate's path. */
+export function loadSkillCandidates(options: LoadSkillsOptions): LoadSkillsResult {
+	const { agentDir, skillPaths, includeDefaults } = options;
 	const resolvedCwd = resolvePath(options.cwd);
 	const resolvedAgentDir = resolvePath(agentDir ?? getAgentDir());
+	const skills: Skill[] = [];
+	const diagnostics: ResourceDiagnostic[] = [];
 
-	const skillMap = new Map<string, Skill>();
-	const realPathSet = new Set<string>();
-	const allDiagnostics: ResourceDiagnostic[] = [];
-	const collisionDiagnostics: ResourceDiagnostic[] = [];
-
-	function addSkills(result: LoadSkillsResult) {
-		allDiagnostics.push(...result.diagnostics);
-		for (const skill of result.skills) {
-			// Resolve symlinks to detect duplicate files
-			const realPath = canonicalizePath(skill.filePath);
-
-			// Skip silently if we've already loaded this exact file (via symlink)
-			if (realPathSet.has(realPath)) {
-				continue;
-			}
-
-			const existing = skillMap.get(skill.name);
-			if (existing) {
-				collisionDiagnostics.push({
-					type: "collision",
-					message: `name "${skill.name}" collision`,
-					path: skill.filePath,
-					collision: {
-						resourceType: "skill",
-						name: skill.name,
-						winnerPath: existing.filePath,
-						loserPath: skill.filePath,
-					},
-				});
-			} else {
-				skillMap.set(skill.name, skill);
-				realPathSet.add(realPath);
-			}
-		}
+	function addSkills(result: LoadSkillsResult): void {
+		for (const skill of result.skills) skills.push(skill);
+		for (const diagnostic of result.diagnostics) diagnostics.push(diagnostic);
 	}
 
 	if (includeDefaults) {
@@ -477,7 +451,7 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	for (const rawPath of skillPaths) {
 		const resolvedPath = resolvePath(rawPath, resolvedCwd, { trim: true });
 		if (!existsSync(resolvedPath)) {
-			allDiagnostics.push({ type: "warning", message: "skill path does not exist", path: resolvedPath });
+			diagnostics.push({ type: "warning", message: "skill path does not exist", path: resolvedPath });
 			continue;
 		}
 
@@ -491,19 +465,16 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 				if (result.skill) {
 					addSkills({ skills: [result.skill], diagnostics: result.diagnostics });
 				} else {
-					allDiagnostics.push(...result.diagnostics);
+					diagnostics.push(...result.diagnostics);
 				}
 			} else {
-				allDiagnostics.push({ type: "warning", message: "skill path is not a markdown file", path: resolvedPath });
+				diagnostics.push({ type: "warning", message: "skill path is not a markdown file", path: resolvedPath });
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "failed to read skill path";
-			allDiagnostics.push({ type: "warning", message, path: resolvedPath });
+			diagnostics.push({ type: "warning", message, path: resolvedPath });
 		}
 	}
 
-	return {
-		skills: Array.from(skillMap.values()),
-		diagnostics: [...allDiagnostics, ...collisionDiagnostics],
-	};
+	return { skills, diagnostics };
 }

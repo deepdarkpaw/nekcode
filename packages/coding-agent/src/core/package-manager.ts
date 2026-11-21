@@ -679,6 +679,24 @@ function isEnabledByOverrides(filePath: string, patterns: string[], baseDir: str
 	return enabled;
 }
 
+/** Toggle one auto-discovered resource without adding duplicate or unnecessary exact overrides. */
+export function updateAutoResourceOverride(
+	filePath: string,
+	entries: string[],
+	baseDir: string,
+	enabled: boolean,
+): string[] {
+	if (isEnabledByOverrides(filePath, entries, baseDir) === enabled) return entries;
+	const path = toPosixPath(relative(baseDir, filePath));
+	if (!enabled) return [...entries, `-${path}`];
+
+	const next = entries.filter(
+		(entry) => !entry.startsWith("-") || !matchesAnyExactPattern(filePath, [entry.slice(1)], baseDir),
+	);
+	if (!isEnabledByOverrides(filePath, next, baseDir)) next.push(`+${path}`);
+	return next;
+}
+
 /**
  * Apply patterns to paths and return a Set of enabled paths.
  * Pattern types:
@@ -2435,13 +2453,7 @@ export class DefaultPackageManager implements PackageManager {
 		);
 
 		// User skills from ~/.nek/agent/
-		addResources(
-			"skills",
-			collectSkillEntries(userDirs.skills),
-			userMetadata,
-			userOverrides.skills,
-			globalBaseDir,
-		);
+		addResources("skills", collectSkillEntries(userDirs.skills), userMetadata, userOverrides.skills, globalBaseDir);
 
 		addResources(
 			"prompts",

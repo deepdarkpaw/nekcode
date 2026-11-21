@@ -13,13 +13,16 @@ import { join } from "node:path";
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { AuthStorage } from "../../../core/auth-storage.ts";
+import { resolveModelScopeFromModels } from "../../../core/model-resolver.ts";
 import { ModelRuntime } from "../../../core/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../../../core/models-store.ts";
 import { resolveConfigValueOrThrow, resolveHeadersOrThrow } from "../../../core/resolve-config-value.ts";
+import { resolveGuiWorkspace } from "./config.ts";
 import type { GuiContext } from "./context.ts";
 import type {
 	RpcCatalogModel,
 	RpcFetchModelsResult,
+	RpcModelScopeResult,
 	RpcProviderDraft,
 	RpcProviderOverrides,
 	RpcRemoteModel,
@@ -53,6 +56,26 @@ function modelsPathFor(api: string): string | undefined {
 
 function trimTrailingSlashes(value: string): string {
 	return value.replace(/\/+$/u, "");
+}
+
+/** Resolve enabledModels against the same offline snapshot as get_available_models. */
+export function getModelScope(ctx: GuiContext, cwd?: string): RpcModelScopeResult {
+	const workspace = resolveGuiWorkspace(ctx, cwd);
+	const patterns = workspace.settingsManager.getEnabledModels() ?? [];
+	if (!Array.isArray(patterns) || patterns.some((pattern) => typeof pattern !== "string")) {
+		throw new Error("enabledModels must be an array of strings");
+	}
+	if (patterns.length === 0) return { patterns: [], models: [], diagnostics: [] };
+	const { scopedModels, diagnostics } = resolveModelScopeFromModels(patterns, ctx.modelRuntime.getAvailableSnapshot());
+	return {
+		patterns: [...patterns],
+		models: scopedModels.map(({ model: { provider, id }, thinkingLevel }) => ({
+			provider,
+			id,
+			...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+		})),
+		diagnostics: diagnostics.map(({ code, message, pattern }) => ({ code, message, pattern })),
+	};
 }
 
 /** The catalog nek knows about: built-in models plus models.json entries, with their thinking levels. */

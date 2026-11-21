@@ -73,14 +73,14 @@ describe("get_mention_targets", () => {
 		new ProjectTrustStore(agentDir).set(cwd, trusted);
 	}
 
-	it("lists subagent types in the subagents-section order, then skills", () => {
+	it("lists subagent types in the subagents-section order, then skills", async () => {
 		writeAgent(join(agentDir, "agents", "user-agent.md"), "user-agent", "A user preset");
 		writeAgent(join(cwd, ".nek", "agents", "project-agent.md"), "project-agent", "A project preset");
 		const userSkill = writeSkill(join(agentDir, "skills", "user-skill"), "user-skill", "A user skill");
 		const projectSkill = writeSkill(join(cwd, ".nek", "skills", "project-skill"), "project-skill", "A project skill");
 		trust(true);
 
-		const targets = getMentionTargets(controlContext());
+		const targets = await getMentionTargets(controlContext());
 
 		expect(targets.filter((target) => target.kind === "agent").map((target) => target.name)).toEqual([
 			"generalPurpose",
@@ -93,24 +93,24 @@ describe("get_mention_targets", () => {
 			{ kind: "agent", name: "explorer", description: expect.any(String) },
 		]);
 		expect(targets.filter((target) => target.kind === "skill")).toEqual([
-			{ kind: "skill", name: "user-skill", description: "A user skill", location: userSkill },
 			{ kind: "skill", name: "project-skill", description: "A project skill", location: projectSkill },
+			{ kind: "skill", name: "user-skill", description: "A user skill", location: userSkill },
 		]);
 	});
 
-	it("leaves out project resources of an untrusted project", () => {
+	it("leaves out project resources of an untrusted project", async () => {
 		writeAgent(join(agentDir, "agents", "user-agent.md"), "user-agent", "A user preset");
 		writeAgent(join(cwd, ".nek", "agents", "project-agent.md"), "project-agent", "A project preset");
 		writeSkill(join(agentDir, "skills", "user-skill"), "user-skill", "A user skill");
 		writeSkill(join(cwd, ".nek", "skills", "project-skill"), "project-skill", "A project skill");
 		trust(false);
 
-		const targets = getMentionTargets(controlContext());
+		const targets = await getMentionTargets(controlContext());
 
 		expect(targets.map((target) => target.name)).toEqual(["generalPurpose", "explorer", "user-agent", "user-skill"]);
 	});
 
-	it("answers from the live session resources", () => {
+	it("answers from the live session resources", async () => {
 		writeAgent(join(cwd, ".nek", "agents", "project-agent.md"), "project-agent", "A project preset");
 		const session = {
 			sessionManager: { getCwd: () => cwd },
@@ -143,7 +143,7 @@ describe("get_mention_targets", () => {
 			emit: () => {},
 		});
 
-		const targets = getMentionTargets(ctx);
+		const targets = await getMentionTargets(ctx);
 
 		expect(targets.filter((target) => target.kind === "skill")).toEqual([
 			{
@@ -160,7 +160,7 @@ describe("get_mention_targets", () => {
 		]);
 	});
 
-	it("answers for the requested cwd instead of the session directory", () => {
+	it("answers for the requested cwd instead of the session directory", async () => {
 		const otherCwd = join(root, "other-project");
 		writeAgent(join(otherCwd, ".nek", "agents", "other-agent.md"), "other-agent", "Another project preset");
 		writeSkill(join(otherCwd, ".nek", "skills", "other-skill"), "other-skill", "Another project skill");
@@ -179,12 +179,15 @@ describe("get_mention_targets", () => {
 			emit: () => {},
 		});
 
-		expect(getMentionTargets(ctx).map((target) => target.name)).toEqual(["generalPurpose", "explorer"]);
-		expect(getMentionTargets(ctx, cwd).map((target) => target.name)).toEqual(["generalPurpose", "explorer"]);
+		expect((await getMentionTargets(ctx)).map((target) => target.name)).toEqual(["generalPurpose", "explorer"]);
+		expect((await getMentionTargets(ctx, cwd)).map((target) => target.name)).toEqual(["generalPurpose", "explorer"]);
 		// The other directory has trust-requiring project resources and no decision, so only built-ins apply.
-		expect(getMentionTargets(ctx, otherCwd).map((target) => target.name)).toEqual(["generalPurpose", "explorer"]);
+		expect((await getMentionTargets(ctx, otherCwd)).map((target) => target.name)).toEqual([
+			"generalPurpose",
+			"explorer",
+		]);
 		new ProjectTrustStore(agentDir).set(otherCwd, true);
-		expect(getMentionTargets(ctx, otherCwd).map((target) => target.name)).toEqual([
+		expect((await getMentionTargets(ctx, otherCwd)).map((target) => target.name)).toEqual([
 			"generalPurpose",
 			"explorer",
 			"other-agent",

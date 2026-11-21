@@ -13,9 +13,10 @@ import { type GuiContext, requireSession } from "./context.ts";
 import { readHistoryCommand } from "./history.ts";
 import { getChangelog, getInfo } from "./info.ts";
 import { getMentionTargets } from "./mentions.ts";
-import { fetchProviderModels, getModelCatalog, testProvider } from "./models.ts";
+import { fetchProviderModels, getModelCatalog, getModelScope, testProvider } from "./models.ts";
 import { mcpTest, testWebSearch } from "./probes.ts";
 import type { RpcGuiCommand, RpcReloadResult } from "./protocol.ts";
+import { listResources, setResourceEnabled } from "./resources.ts";
 import { guiError, guiSuccess } from "./response.ts";
 import { exportSession, navigateTree, setEntryLabel, shareSession } from "./session-current.ts";
 import { deleteSession, importSession, listSessions, readSessionSnapshotFor, renameSession } from "./sessions.ts";
@@ -35,6 +36,9 @@ export const GUI_COMMAND_TYPES: ReadonlySet<string> = new Set<RpcGuiCommand["typ
 	"validate_config",
 	"get_changelog",
 	"get_mention_targets",
+	"list_resources",
+	"set_resource_enabled",
+	"get_model_scope",
 	"list_builtin_tools",
 	"list_sessions",
 	"delete_session",
@@ -88,7 +92,13 @@ export async function handleGuiCommand(
 			case "get_changelog":
 				return guiSuccess(id, "get_changelog", getChangelog(cmd.sinceVersion));
 			case "get_mention_targets":
-				return guiSuccess(id, "get_mention_targets", { targets: getMentionTargets(ctx, cmd.cwd) });
+				return guiSuccess(id, "get_mention_targets", { targets: await getMentionTargets(ctx, cmd.cwd) });
+			case "list_resources":
+				return guiSuccess(id, cmd.type, await listResources(ctx, cmd.cwd, cmd.resourceType));
+			case "set_resource_enabled":
+				return guiSuccess(id, cmd.type, await setResourceEnabled(ctx, cmd, deps.reload));
+			case "get_model_scope":
+				return guiSuccess(id, cmd.type, getModelScope(ctx, cmd.cwd));
 			case "list_builtin_tools":
 				return guiSuccess(id, "list_builtin_tools", { tools: listBuiltinTools(ctx) });
 			case "list_sessions":

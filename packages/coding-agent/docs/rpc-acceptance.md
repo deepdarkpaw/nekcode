@@ -8,7 +8,9 @@ This matrix covers the GUI additions on `gui/rpc-v1` (the 21 commits on top of n
 | `reload` | `src/modes/rpc/gui/config.ts` | `test/suite/rpc-gui-acceptance.test.ts` — `reloads immediately and defers a busy reload until the faux turn settles` | **yes** |
 | `validate_config` | `src/modes/rpc/gui/config.ts` | `test/rpc-gui-control-mode.test.ts` — `answers get_changelog and validate_config`; `test/suite/rpc-gui-acceptance.test.ts` — `reports invalid configuration diagnostics rather than hiding them` | **yes** (diagnostic regression) |
 | `get_changelog` | `src/modes/rpc/gui/info.ts` | `test/rpc-gui-control-mode.test.ts` — `answers get_changelog and validate_config` | no |
-| `get_mention_targets` | `src/modes/rpc/gui/mentions.ts` | `test/rpc-gui-mentions.test.ts` — `is a control command and answers through the dispatcher` | no |
+| `get_mention_targets` | `src/modes/rpc/gui/mentions.ts` | `test/rpc-gui-mentions.test.ts`; `test/rpc-gui-config-resources.test.ts` — compares control completion to a session's resolved skills | no |
+| `list_resources` / `set_resource_enabled` | `src/modes/rpc/gui/resources.ts` | `test/rpc-gui-config-resources.test.ts` — metadata, diagnostics, trust, and persisted toggles in control and session modes | no |
+| `get_model_scope` | `src/modes/rpc/gui/models.ts` | `test/rpc-gui-config-resources.test.ts` — effective settings and available model snapshots in both modes | no |
 | `list_builtin_tools` | `src/modes/rpc/gui/tools.ts` | `test/rpc-gui-tools.test.ts` — `answers the command through the GUI dispatch table` | no |
 | `list_sessions` | `src/modes/rpc/gui/sessions.ts` | `test/rpc-gui-sessions.test.ts` — `lists sessions newest first and truncates the first message` | no |
 | `delete_session` | `src/modes/rpc/gui/sessions.ts` | `test/rpc-gui-sessions.test.ts` — `deletes every file of a session` | no |

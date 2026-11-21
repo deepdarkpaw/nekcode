@@ -1539,7 +1539,7 @@ it("HP11 persisted watermark/active leaf fencing and explicit foreign session se
 });
 it("HC8 capability v2, removed commands, exported command table, control allowlist and handler agree", async () => {
 	const info = buildGuiInfo({ agentDir: join(root, "agent"), cwd: root, entryPath: join(root, "cli.ts") });
-	expect(info.capabilities).toEqual({ historyPages: 2, historyStream: 1 });
+	expect(info.capabilities).toEqual({ historyPages: 2, historyStream: 1, resources: 1, modelScope: 1 });
 	expect(NEK_CONTROL_COMMANDS).not.toContain("set_history_stream");
 	const sessionPath = sqlite("handler", rounds(1));
 	for (const type of [

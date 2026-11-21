@@ -26,9 +26,15 @@ import {
 } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import { findGitPaths } from "./footer-data-provider.ts";
-import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
+import {
+	DefaultPackageManager,
+	type PathMetadata,
+	type ResolvedPaths,
+	type ResolvedResource,
+} from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
+import { dedupeNamedResources } from "./resource-name-resolution.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
@@ -100,10 +106,19 @@ function mergeExtensionWarnings(
 	];
 }
 
+export interface SessionResourceInputs {
+	/** CLI package resources load before settings, when present. */
+	beforeSettings: readonly ResolvedResource[];
+	loadConfigured: boolean;
+	/** Explicit paths and extension-discovered resources load after settings. */
+	afterSettings: readonly ResolvedResource[];
+}
+
 export interface ResourceLoader {
 	getExtensions(): LoadExtensionsResult;
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
+	getSessionResourceInputs?(type: "skills" | "prompts"): SessionResourceInputs;
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
 	getSystemPrompt(): string | undefined;
@@ -312,6 +327,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private extensionPromptSourceInfos: Map<string, SourceInfo>;
 	private extensionThemeSourceInfos: Map<string, SourceInfo>;
 	private resourceMetadataByPath: Map<string, PathMetadata>;
+	private cliPackageResources: Pick<ResolvedPaths, "skills" | "prompts"> = { skills: [], prompts: [] };
 	private lastPromptPaths: string[];
 	private lastThemePaths: string[];
 	private loaded: boolean;
@@ -376,6 +392,27 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] } {
 		return { prompts: this.prompts, diagnostics: this.promptDiagnostics };
+	}
+
+	/** Expose the sources that cannot be recovered from settings in another process. */
+	getSessionResourceInputs(type: "skills" | "prompts"): SessionResourceInputs {
+		const isSkill = type === "skills";
+		const paths = isSkill ? this.additionalSkillPaths : this.additionalPromptTemplatePaths;
+		const fromExtensions = isSkill ? this.extensionSkillSourceInfos : this.extensionPromptSourceInfos;
+		const cliMetadata: PathMetadata = { source: "cli", scope: "temporary", origin: "top-level" };
+		const afterSettings = paths.map((path) => ({
+			path: this.resolveResourcePath(path),
+			metadata: cliMetadata,
+			enabled: true,
+		}));
+		for (const { path, ...metadata } of fromExtensions.values()) {
+			afterSettings.push({ path, metadata, enabled: true });
+		}
+		return {
+			beforeSettings: this.cliPackageResources[type],
+			loadConfigured: isSkill ? !this.noSkills : !this.noPromptTemplates,
+			afterSettings,
+		};
 	}
 
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] } {
@@ -470,6 +507,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
 			temporary: true,
 		});
+		this.cliPackageResources = { skills: cliExtensionPaths.skills, prompts: cliExtensionPaths.prompts };
 		// Kept on the instance so post-reload passes (extendResources) can still resolve package metadata.
 		this.resourceMetadataByPath = new Map();
 		const metadataByPath = this.resourceMetadataByPath;
@@ -779,9 +817,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 				promptPaths,
 				includeDefaults: false,
 			});
-			const deduped = this.dedupePrompts(loaded.templates);
+			const deduped = dedupeNamedResources(loaded.templates, "prompt");
 			promptsResult = {
-				prompts: deduped.prompts,
+				prompts: deduped.resources,
 				diagnostics: [...loaded.diagnostics, ...deduped.diagnostics],
 			};
 		}
@@ -1053,32 +1091,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 
 		return { extensions, errors };
-	}
-
-	private dedupePrompts(prompts: PromptTemplate[]): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] } {
-		const seen = new Map<string, PromptTemplate>();
-		const diagnostics: ResourceDiagnostic[] = [];
-
-		for (const prompt of prompts) {
-			const existing = seen.get(prompt.name);
-			if (existing) {
-				diagnostics.push({
-					type: "collision",
-					message: `name "/${prompt.name}" collision`,
-					path: prompt.filePath,
-					collision: {
-						resourceType: "prompt",
-						name: prompt.name,
-						winnerPath: existing.filePath,
-						loserPath: prompt.filePath,
-					},
-				});
-			} else {
-				seen.set(prompt.name, prompt);
-			}
-		}
-
-		return { prompts: Array.from(seen.values()), diagnostics };
 	}
 
 	private dedupeThemes(themes: Theme[]): { themes: Theme[]; diagnostics: ResourceDiagnostic[] } {

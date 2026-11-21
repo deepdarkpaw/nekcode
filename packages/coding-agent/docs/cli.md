@@ -237,6 +237,8 @@ nek gui-info --json
 
 `gui-info` prints one JSON object that lets a desktop client start nek without a shell: the protocol version, `nekVersion` and `piVersion`, the Node executable and version, `launch.args` to prefix the nek arguments, the agent and session directories, and the platform and architecture. In a source checkout, `launch.args` preloads `src/experimental/source-resolver.ts` so Node's TypeScript stripping resolves the workspace aliases; a built install lists the `dist` entry instead. `installDir` is present when the CLI runs from a source install directory that holds `.nek-install-state.json`.
 
+The `capabilities` object advertises supported GUI features. `resources: 1` enables workspace [resource listing and toggles](rpc-commands.md#list_resources); `modelScope: 1` enables [model scope resolution](rpc-commands.md#get_model_scope).
+
 The client starts a session process with `nek --mode rpc` (plus session options) and, for configuration work, a control process with `nek --mode rpc --control`. The control process creates no session and loads no extensions or MCP servers, and accepts only the commands listed in [RPC Commands](rpc-commands.md#gui-commands). See [RPC Mode](rpc.md) for the protocol.
 
 ## MCP commands

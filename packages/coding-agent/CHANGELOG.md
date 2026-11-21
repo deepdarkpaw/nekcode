@@ -12,6 +12,7 @@
 
 ### Added
 
+- Added GUI RPC commands `list_resources` and `set_resource_enabled` for skills and prompt templates, and `get_model_scope` for the effective `enabledModels` filter. `nek gui-info --json` advertises them as `resources: 1` and `modelScope: 1`.
 - Added the built-in `ast_grep` tool for structural code search (nekcode).
 - Added the built-in `nek` extension with `todo_write`, the todo widget, and `/todos` (nekcode).
 - Added plan mode with `switch_mode`, `create_plan`, `ask_question`, `/plan`, `/nek-build`, the `alt+m` shortcut, and `--plan` (nekcode).

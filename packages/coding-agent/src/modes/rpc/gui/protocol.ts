@@ -37,7 +37,7 @@ export type RpcEndpointApi = (typeof NEK_ENDPOINT_APIS)[number];
 /** Output of `nek gui-info --json`. */
 export interface RpcGuiInfo {
 	protocolVersion: number;
-	capabilities: { historyPages: 2; historyStream: 1 };
+	capabilities: { historyPages: 2; historyStream: 1; resources: 1; modelScope: 1 };
 	/** nek version from package.json `nekConfig.version`, e.g. "0.4.0". */
 	nekVersion: string;
 	/** Base pi version, e.g. "1.0.2". */
@@ -95,6 +95,17 @@ export type RpcGuiCommand =
 	| { id?: string; type: "get_changelog"; sinceVersion?: string }
 	| { id?: string; type: "get_mention_targets"; cwd?: string }
 	| { id?: string; type: "list_builtin_tools" }
+	// ---- resources [session + control] ----
+	| { id?: string; type: "list_resources"; cwd?: string; resourceType: RpcResourceType }
+	| {
+			id?: string;
+			type: "set_resource_enabled";
+			cwd?: string;
+			resourceType: RpcResourceType;
+			/** The absolute path returned by `list_resources` for this workspace. */
+			path: string;
+			enabled: boolean;
+	  }
 	// ---- session catalog [session + control] ----
 	| { id?: string; type: "list_sessions"; cwd?: string; all?: boolean; limit?: number }
 	| { id?: string; type: "delete_session"; sessionPath: string }
@@ -119,6 +130,7 @@ export type RpcGuiCommand =
 	| { id?: string; type: "auth_login"; provider: string; method?: "oauth" | "api_key" }
 	| { id?: string; type: "auth_logout"; provider: string }
 	// ---- models [session + control] ----
+	| { id?: string; type: "get_model_scope"; cwd?: string }
 	| { id?: string; type: "get_model_catalog"; provider?: string; ids?: string[] }
 	| {
 			id?: string;
@@ -155,6 +167,9 @@ export const NEK_CONTROL_COMMANDS: readonly string[] = [
 	"validate_config",
 	"get_changelog",
 	"get_mention_targets",
+	"list_resources",
+	"set_resource_enabled",
+	"get_model_scope",
 	"list_builtin_tools",
 	"list_sessions",
 	"delete_session",
@@ -214,6 +229,62 @@ export interface RpcMentionTarget {
 	description?: string;
 	/** `SKILL.md` of a skill; absent for subagent types. */
 	location?: string;
+}
+
+export type RpcResourceType = "skills" | "prompts";
+
+export interface RpcResourceInfo {
+	resourceType: RpcResourceType;
+	/** Skill name or prompt command name without its leading slash. */
+	name: string;
+	description?: string;
+	/** Absolute path to the resource's Markdown file. */
+	path: string;
+	/** Automatic resources belong to their configuration roots; explicit sources are temporary. */
+	scope: "user" | "project" | "temporary";
+	/** The original `PathMetadata.source`. */
+	source: string;
+	/** The state after applying settings overrides, independent of name collisions. */
+	enabled: boolean;
+	toggleable: boolean;
+}
+
+export interface RpcResourceDiagnostic {
+	type: "warning" | "error" | "collision";
+	message: string;
+	path?: string;
+}
+
+export interface RpcListResourcesResult {
+	resources: RpcResourceInfo[];
+	diagnostics: RpcResourceDiagnostic[];
+	projectTrusted: boolean;
+}
+
+export interface RpcSetResourceEnabledResult {
+	settingsScope: "global" | "project";
+	/** The re-resolved state. An affected session reloads, possibly after its current turn. */
+	enabled: boolean;
+}
+
+export interface RpcModelScopeEntry {
+	provider: string;
+	id: string;
+	/** Only present for a thinking level specified by a matching pattern. */
+	thinkingLevel?: RpcThinkingLevel;
+}
+
+export interface RpcModelScopeDiagnostic {
+	code: "no-match" | "invalid-thinking-level" | "ambiguous";
+	message: string;
+	pattern: string;
+}
+
+export interface RpcModelScopeResult {
+	/** Effective `enabledModels`. Empty means no configured filter; `models` is then empty too. */
+	patterns: string[];
+	models: RpcModelScopeEntry[];
+	diagnostics: RpcModelScopeDiagnostic[];
 }
 
 /** One built-in tool of `list_builtin_tools`. */
@@ -344,6 +415,9 @@ export interface RpcGuiResponseData extends RpcHistoryResponseData, RpcHistorySt
 	validate_config: { diagnostics: RpcConfigDiagnostic[] };
 	get_changelog: { markdown: string };
 	get_mention_targets: { targets: RpcMentionTarget[] };
+	list_resources: RpcListResourcesResult;
+	set_resource_enabled: RpcSetResourceEnabledResult;
+	get_model_scope: RpcModelScopeResult;
 	list_builtin_tools: { tools: RpcBuiltinTool[] };
 	list_sessions: { sessions: RpcSessionSummary[] };
 	delete_session: Record<string, never>;
