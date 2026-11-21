@@ -33,9 +33,9 @@ describe("Fireworks models", () => {
 		expect(model.maxTokens).toBeGreaterThan(0);
 		expect(model.maxTokens).toBeLessThanOrEqual(model.contextWindow);
 		expect(model.cost).toEqual({
-			input: 3,
-			output: 15,
-			cacheRead: 0.3,
+			input: 2,
+			output: 10,
+			cacheRead: 0.2,
 			cacheWrite: 0,
 		});
 	});
