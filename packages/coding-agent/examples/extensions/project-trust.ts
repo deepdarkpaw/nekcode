@@ -10,7 +10,7 @@
  *
  *   nek -e packages/coding-agent/examples/extensions/project-trust.ts
  *
- * Try it in a project containing .nek, AGENTS.md/CLAUDE.md, or .agents/skills.
+ * Try it in a project containing .nek/settings.json or .nek/skills.
  */
 
 import type { ExtensionAPI, ProjectTrustEventResult } from "@earendil-works/pi-coding-agent";

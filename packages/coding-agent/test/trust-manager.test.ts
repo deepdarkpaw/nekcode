@@ -43,32 +43,13 @@ describe("ProjectTrustStore", () => {
 		expect(hasTrustRequiringProjectResources(cwd)).toBe(true);
 	});
 
-	it("detects trust-requiring project resources", () => {
-		const originalHome = process.env.HOME;
-		process.env.HOME = tempDir;
-		try {
-			mkdirSync(join(tempDir, CONFIG_DIR_NAME, "agent"), { recursive: true });
-			mkdirSync(join(tempDir, ".agents", "skills"), { recursive: true });
-			expect(hasTrustRequiringProjectResources(tempDir)).toBe(false);
-			expect(hasTrustRequiringProjectResources(cwd)).toBe(false);
+	it("requires trust only for skills under the working directory's .nek", () => {
+		mkdirSync(join(tempDir, ".agents", "skills"), { recursive: true });
+		mkdirSync(join(tempDir, CONFIG_DIR_NAME, "skills"), { recursive: true });
+		mkdirSync(join(cwd, ".agents", "skills"), { recursive: true });
+		expect(hasTrustRequiringProjectResources(cwd)).toBe(false);
 
-			writeFileSync(join(tempDir, CONFIG_DIR_NAME, "settings.json"), "{}");
-			expect(hasTrustRequiringProjectResources(tempDir)).toBe(true);
-			rmSync(join(tempDir, CONFIG_DIR_NAME, "settings.json"), { force: true });
-
-			mkdirSync(join(cwd, CONFIG_DIR_NAME), { recursive: true });
-			writeFileSync(join(cwd, CONFIG_DIR_NAME, "settings.json"), "{}");
-			expect(hasTrustRequiringProjectResources(cwd)).toBe(true);
-
-			rmSync(join(cwd, CONFIG_DIR_NAME), { recursive: true, force: true });
-			mkdirSync(join(cwd, ".agents", "skills"), { recursive: true });
-			expect(hasTrustRequiringProjectResources(cwd)).toBe(true);
-		} finally {
-			if (originalHome === undefined) {
-				delete process.env.HOME;
-			} else {
-				process.env.HOME = originalHome;
-			}
-		}
+		mkdirSync(join(cwd, CONFIG_DIR_NAME, "skills"), { recursive: true });
+		expect(hasTrustRequiringProjectResources(cwd)).toBe(true);
 	});
 });

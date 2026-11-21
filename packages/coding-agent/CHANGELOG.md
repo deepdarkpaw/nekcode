@@ -8,6 +8,7 @@
 - Removed the `install`, `remove`, `update`, `list`, and `config` commands, extension discovery from settings and resource directories, and the startup version and package update checks. Extensions passed with `-e` still load (nekcode).
 - Replaced the `edit` tool input with the Claude Code schema: `file_path`, `old_string`, `new_string`, and `replace_all`. The `path`/`edits[]` input, fuzzy matching, and multi-edit calls were removed. `edit` requires a prior `read` of the file, and `write` requires one before overwriting an existing file.
 - Changed `read` output to prefix each line with a six-column line number and `|`, and to return files over 10,000 characters as symbol-aligned chunks.
+- Removed automatic skill discovery from `~/.agents/skills` and `.agents/skills` in the working directory and its ancestors. Only `~/.nek/agent/skills` (or `<agentDir>/skills`) and trusted `<cwd>/.nek/skills` are scanned by default. Move skills into one of those locations or opt in with a `skills` settings entry or `--skill`.
 
 ### Added
 

@@ -52,4 +52,6 @@ A new session activates `read`, `bash`, `edit`, `write`, and `ast_grep` by defau
 
 Agent data is stored in `~/.nek/agent/`; trusted project resources are stored in `.nek/`. Configure plan and subagent behavior in `~/.nek/agent/nek.yaml` or `.nek/nek.yaml`.
 
+nek discovers [skills](docs/skills.md#choose-where-it-loads) automatically only in `<agentDir>/skills` (default `~/.nek/agent/skills`) and in the working directory's `.nek/skills` when trusted. To use skills stored elsewhere, opt in via settings, a package, or `--skill`.
+
 See [docs/nek.md](docs/nek.md) for the full nekcode-specific behavior and [docs/index.md](docs/index.md) for the general CLI documentation.

@@ -56,11 +56,14 @@ Set `disable-model-invocation: true` in frontmatter when a skill should be avail
 
 ## Add it to nekcode
 
-Place the skill in your user or project skills directory. Directories containing `SKILL.md` are discovered recursively.
+nekcode automatically discovers skills in exactly two locations:
 
-nekcode also supports the Agent Skills locations `~/.agents/skills/` and `.agents/skills/`. Project `.agents/skills/` directories are discovered from the working directory through its ancestors, stopping at the repository root when one exists.
+- User: `<agentDir>/skills/` (default `~/.nek/agent/skills/`).
+- Project: `<cwd>/.nek/skills/`, only when the working directory is trusted.
 
-nekcode accepts some standalone Markdown skills, but a directory containing `SKILL.md` is the portable form and should be preferred. See [Settings](settings.md#resources) and [nekcode Packages](packages.md) for additional locations.
+Directories containing `SKILL.md` are discovered recursively within these locations. nekcode also accepts some standalone Markdown skills, but a directory containing `SKILL.md` is the portable form and should be preferred.
+
+Other locations, including `~/.agents/skills/` or a project's `.agents/skills/`, are not searched automatically. To keep skills there, explicitly add the paths in [settings](settings.md#resources), use a [package](packages.md), or pass `--skill <path>` for the current run. Extensions can also provide skills.
 
 Project skills can instruct the model to run scripts or modify files. Review unfamiliar skills and their supporting files before granting project trust.
 

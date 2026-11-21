@@ -31,7 +31,6 @@
 - `.nek/settings.json`
 - `.nek/extensions`、`.nek/skills`、`.nek/prompts`、`.nek/themes`
 - `.nek/SYSTEM.md`、`.nek/APPEND_SYSTEM.md`
-- 当前目录或上级目录中的项目 `.agents/skills`
 
 只有一个空的 `.nek` 目录（或只有 `.nek/plans/`）不需要信任。
 

@@ -58,14 +58,14 @@ Read `references/formats.md` before converting a document. Run scripts relative 
 
 ## 放在哪里 {#locations}
 
+nek 只从以下两个位置自动发现 Skill：
+
 | 位置 | 作用范围 |
 |---|---|
-| `~/.nek/agent/skills/` | 用户级 |
-| `~/.agents/skills/` | 用户级（Agent Skills 通用位置） |
-| `.nek/skills/` | 项目级，信任项目后加载 |
-| `.agents/skills/` | 项目级，从工作目录向上查找各级目录（有仓库时到仓库根为止），信任项目后加载 |
-| 设置 `skills` | 额外的文件或目录 |
-| `--skill <路径>` | 只对本次运行生效（可重复） |
+| `<agentDir>/skills/`（默认 `~/.nek/agent/skills/`） | 用户级 |
+| 当前工作目录下的 `.nek/skills/` | 项目级，信任项目后加载 |
+
+nek 不再自动搜索用户级或项目中的 `.agents/skills/`，也不会向上级目录查找 Skill。要继续使用其他位置的 Skill，可在设置的 `skills` 中显式添加文件或目录、通过包或扩展提供，或用 `--skill <路径>`（可重复，仅本次运行生效）。
 
 包含 `SKILL.md` 的目录会被递归发现。nek 也接受部分独立的 Markdown Skill 文件，但包含 `SKILL.md` 的目录是可移植的形式，推荐使用。
 

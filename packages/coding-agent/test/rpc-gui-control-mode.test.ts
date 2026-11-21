@@ -2,7 +2,7 @@
  * Control RPC mode: the command allowlist, the refusal message, and a control-mode command round trip.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ import { controlModeError, handleControlCommand, isControlCommand } from "../src
 import { createGuiContext, type GuiContext } from "../src/modes/rpc/gui/context.ts";
 import type { GuiDeps } from "../src/modes/rpc/gui/handlers.ts";
 import { NEK_CONTROL_COMMANDS, NEK_GUI_PROTOCOL_VERSION } from "../src/modes/rpc/gui/protocol.ts";
+import { canonicalizePath } from "../src/utils/paths.ts";
 
 /** A model runtime that answers only the calls a control command makes without a network. */
 function stubModelRuntime(): ModelRuntime {
@@ -100,6 +101,24 @@ describe("control RPC mode", () => {
 		expect(response.command).toBe("get_available_models");
 		expect(response.success).toBe(true);
 		expect(response.data.models).toEqual([]);
+	});
+
+	it("reports only working-directory .nek skills as trust-requiring resources", async () => {
+		const cwd = join(agentDir, "project");
+		mkdirSync(join(agentDir, ".agents", "skills"), { recursive: true });
+		mkdirSync(join(cwd, ".agents", "skills"), { recursive: true });
+		const command = { type: "get_project_trust", cwd };
+		expect(await handleControlCommand(command, ctx, deps)).toMatchObject({
+			success: true,
+			data: { resources: [] },
+		});
+
+		const skills = join(cwd, ".nek", "skills");
+		mkdirSync(skills, { recursive: true });
+		expect(await handleControlCommand(command, ctx, deps)).toMatchObject({
+			success: true,
+			data: { resources: [{ kind: "skills", path: canonicalizePath(skills) }] },
+		});
 	});
 
 	it("answers get_changelog and validate_config", async () => {

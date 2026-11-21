@@ -39,7 +39,6 @@ nekcode requires a project-trust decision when it finds any of these resources f
 - `.nek/settings.json`
 - `.nek/extensions`, `.nek/skills`, `.nek/prompts`, or `.nek/themes`
 - `.nek/SYSTEM.md` or `.nek/APPEND_SYSTEM.md`
-- project `.agents/skills` in the current directory or an ancestor directory
 
 A bare `.nek` directory does not require project trust.
 

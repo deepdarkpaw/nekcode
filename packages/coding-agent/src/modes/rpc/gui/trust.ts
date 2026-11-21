@@ -6,8 +6,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { CONFIG_DIR_NAME } from "../../../config.ts";
 import { ProjectTrustStore } from "../../../core/trust-manager.ts";
 import { canonicalizePath, resolvePath } from "../../../utils/paths.ts";
@@ -27,22 +26,7 @@ const TRUST_RESOURCES: ReadonlyArray<{ name: string; kind: RpcProjectTrustResour
 	{ name: "APPEND_SYSTEM.md", kind: "system_prompt" },
 ];
 
-/** `.agents/skills` directories from `cwd` upwards, excluding the user-level one that needs no trust. */
-function agentsSkillsDirs(cwd: string): string[] {
-	const home = canonicalizePath(resolvePath(process.env.HOME || homedir()));
-	const userSkills = join(home, ".agents", "skills");
-	const dirs: string[] = [];
-	let current = canonicalizePath(resolvePath(cwd));
-	for (;;) {
-		const path = join(current, ".agents", "skills");
-		if (path !== userSkills && existsSync(path)) dirs.push(path);
-		const parent = dirname(current);
-		if (parent === current) return dirs;
-		current = parent;
-	}
-}
-
-/** Project resources that exist for `cwd`; `.agents/skills` in the project and its ancestors counts as skills. */
+/** Project resources that exist under the working directory's `.nek` directory. */
 export function listTrustResources(cwd: string): RpcProjectTrustResource[] {
 	const resources: RpcProjectTrustResource[] = [];
 	const configDir = join(canonicalizePath(resolvePath(cwd)), CONFIG_DIR_NAME);
@@ -50,7 +34,6 @@ export function listTrustResources(cwd: string): RpcProjectTrustResource[] {
 		const path = join(configDir, entry.name);
 		if (existsSync(path)) resources.push({ kind: entry.kind, path });
 	}
-	for (const path of agentsSkillsDirs(cwd)) resources.push({ kind: "skills", path });
 	return resources;
 }
 

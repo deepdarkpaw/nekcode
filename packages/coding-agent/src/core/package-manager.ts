@@ -361,14 +361,7 @@ function collectFiles(
 	return files;
 }
 
-type SkillDiscoveryMode = "nek" | "agents";
-
-function collectSkillEntries(
-	dir: string,
-	mode: SkillDiscoveryMode,
-	ignoreMatcher?: IgnoreMatcher,
-	rootDir?: string,
-): string[] {
+function collectSkillEntries(dir: string, ignoreMatcher?: IgnoreMatcher, rootDir?: string): string[] {
 	const entries: string[] = [];
 	if (!existsSync(dir)) return entries;
 
@@ -420,11 +413,7 @@ function collectSkillEntries(
 			}
 
 			const relPath = toPosixPath(relative(root, fullPath));
-			const shouldIncludeMarkdownFile =
-				isFile &&
-				entry.name.endsWith(".md") &&
-				!ig.ignores(relPath) &&
-				((mode === "nek" && dir === root) || (mode === "agents" && dir !== root));
+			const shouldIncludeMarkdownFile = dir === root && isFile && entry.name.endsWith(".md") && !ig.ignores(relPath);
 			if (shouldIncludeMarkdownFile) {
 				entries.push(fullPath);
 				continue;
@@ -433,52 +422,13 @@ function collectSkillEntries(
 			if (!isDir) continue;
 			if (ig.ignores(`${relPath}/`)) continue;
 
-			entries.push(...collectSkillEntries(fullPath, mode, ig, root));
+			entries.push(...collectSkillEntries(fullPath, ig, root));
 		}
 	} catch {
 		// Ignore errors
 	}
 
 	return entries;
-}
-
-function collectAutoSkillEntries(dir: string, mode: SkillDiscoveryMode): string[] {
-	return collectSkillEntries(dir, mode);
-}
-
-function findGitRepoRoot(startDir: string): string | null {
-	let dir = resolve(startDir);
-	while (true) {
-		if (existsSync(join(dir, ".git"))) {
-			return dir;
-		}
-		const parent = dirname(dir);
-		if (parent === dir) {
-			return null;
-		}
-		dir = parent;
-	}
-}
-
-function collectAncestorAgentsSkillDirs(startDir: string): string[] {
-	const skillDirs: string[] = [];
-	const resolvedStartDir = resolve(startDir);
-	const gitRepoRoot = findGitRepoRoot(resolvedStartDir);
-
-	let dir = resolvedStartDir;
-	while (true) {
-		skillDirs.push(join(dir, ".agents", "skills"));
-		if (gitRepoRoot && dir === gitRepoRoot) {
-			break;
-		}
-		const parent = dirname(dir);
-		if (parent === dir) {
-			break;
-		}
-		dir = parent;
-	}
-
-	return skillDirs;
 }
 
 function collectAutoPromptEntries(dir: string): string[] {
@@ -645,7 +595,7 @@ function collectAutoExtensionEntries(dir: string): string[] {
  */
 function collectResourceFiles(dir: string, resourceType: ResourceType): string[] {
 	if (resourceType === "skills") {
-		return collectSkillEntries(dir, "nek");
+		return collectSkillEntries(dir);
 	}
 	if (resourceType === "extensions") {
 		return collectAutoExtensionEntries(dir);
@@ -2425,11 +2375,6 @@ export class DefaultPackageManager implements PackageManager {
 			prompts: join(projectBaseDir, "prompts"),
 			themes: join(projectBaseDir, "themes"),
 		};
-		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
-		const projectTrusted = this.settingsManager.isProjectTrusted();
-		const projectAgentsSkillDirs = projectTrusted
-			? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => resolve(dir) !== resolve(userAgentsSkillsDir))
-			: [];
 
 		const addResources = (
 			resourceType: ResourceType,
@@ -2445,7 +2390,7 @@ export class DefaultPackageManager implements PackageManager {
 			}
 		};
 
-		if (projectTrusted) {
+		if (this.settingsManager.isProjectTrusted()) {
 			// Project extensions from .nek/
 			addResources(
 				"extensions",
@@ -2458,30 +2403,12 @@ export class DefaultPackageManager implements PackageManager {
 			// Project skills from .nek/
 			addResources(
 				"skills",
-				collectAutoSkillEntries(projectDirs.skills, "nek"),
+				collectSkillEntries(projectDirs.skills),
 				projectMetadata,
 				projectOverrides.skills,
 				projectBaseDir,
 			);
-		}
 
-		// Project skills from .agents/ (each with its own baseDir)
-		for (const agentsSkillsDir of projectAgentsSkillDirs) {
-			const agentsBaseDir = dirname(agentsSkillsDir); // the .agents directory
-			const agentsMetadata: PathMetadata = {
-				...projectMetadata,
-				baseDir: agentsBaseDir,
-			};
-			addResources(
-				"skills",
-				collectAutoSkillEntries(agentsSkillsDir, "agents"),
-				agentsMetadata,
-				projectOverrides.skills,
-				agentsBaseDir,
-			);
-		}
-
-		if (projectTrusted) {
 			addResources(
 				"prompts",
 				collectAutoPromptEntries(projectDirs.prompts),
@@ -2510,24 +2437,10 @@ export class DefaultPackageManager implements PackageManager {
 		// User skills from ~/.nek/agent/
 		addResources(
 			"skills",
-			collectAutoSkillEntries(userDirs.skills, "nek"),
+			collectSkillEntries(userDirs.skills),
 			userMetadata,
 			userOverrides.skills,
 			globalBaseDir,
-		);
-
-		// User skills from ~/.agents/ (with its own baseDir)
-		const userAgentsBaseDir = dirname(userAgentsSkillsDir);
-		const userAgentsMetadata: PathMetadata = {
-			...userMetadata,
-			baseDir: userAgentsBaseDir,
-		};
-		addResources(
-			"skills",
-			collectAutoSkillEntries(userAgentsSkillsDir, "agents"),
-			userAgentsMetadata,
-			userOverrides.skills,
-			userAgentsBaseDir,
 		);
 
 		addResources(
