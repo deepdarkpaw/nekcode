@@ -18,6 +18,7 @@ nekcode 基于开源项目 [pi](https://github.com/earendil-works/pi) 二次开�
 | Durable 会话 | 每一步写入 SQLite，重开完整恢复历史而不静默重发请求；SDK 可开启自动续跑 | [Durable 会话](/reference/durable-sessions) |
 | 一键安装与便携包 | 支持源码脚本安装（`nek update` 跟随 stable 或 dev 通道）与 GitHub Releases 预编译压缩包 | [安装、更新与卸载](/start/install) |
 | OpenTUI 界面 | 实验性的新终端界面，`nek --ui opentui` | [OpenTUI 界面](/guide/opentui) |
+| 桌面应用 | 图形界面 nekcode GUI，与 CLI 共用同一套配置和会话，支持 Remote SSH | [桌面应用](/gui/) |
 
 ## 和 pi 的区别
 

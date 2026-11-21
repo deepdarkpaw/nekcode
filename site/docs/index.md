@@ -16,6 +16,9 @@ hero:
       text: 安装
       link: /start/install
     - theme: alt
+      text: 桌面应用
+      link: /gui/
+    - theme: alt
       text: 命令行参考
       link: /reference/cli
 
@@ -44,6 +47,7 @@ features:
 
 - **第一次用**：按顺序读 [安装](/start/install) 和 [快速上手](/start/quickstart)，十分钟内能跑起第一个任务。
 - **日常使用**：[终端界面与输入](/guide/usage) 讲清楚输入框、快捷键和排队消息；[会话与上下文](/guide/sessions) 讲续接、分支和压缩。
+- **桌面应用**：[nekcode GUI](/gui/) 是 nek 的图形界面，和终端里的 nek 共用同一套配置、模型、Skill、MCP 和会话；[Remote SSH](/gui/remote) 在 Linux 主机上运行。
 - **nek 独有功能**：[Plan 模式](/guide/plan-mode)、[Todo 列表](/guide/todos)、[子代理](/guide/subagents)、[内置工具](/guide/tools)。
 - **按需定制**：[配置总览](/customize/configuration) 列出所有配置文件的位置；[参考](/reference/cli) 部分逐项列出命令行参数、设置和快捷键。
 - **写程序调用 nek**：[脚本与程序集成](/develop/cli-integration) 介绍 print、JSON、RPC 三种模式和 SDK。

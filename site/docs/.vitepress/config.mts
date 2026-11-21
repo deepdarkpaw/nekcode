@@ -30,6 +30,13 @@ const sidebar = [
 		],
 	},
 	{
+		text: "桌面应用",
+		items: [
+			{ text: "nekcode GUI", link: "/gui/" },
+			{ text: "Remote SSH", link: "/gui/remote" },
+		],
+	},
+	{
 		text: "安全与隔离",
 		items: [
 			{ text: "安全使用", link: "/guide/security" },
@@ -96,7 +103,7 @@ const sidebar = [
 export default defineConfig({
 	lang: "zh-CN",
 	title: "nekcode",
-	description: "nekcode（nek）用户手册：运行在终端里的编程助手",
+	description: "nekcode（nek）用户手册：终端里的编程助手，以及它的桌面应用",
 	base: "/nekcode/",
 	cleanUrls: true,
 	head: [["link", { rel: "icon", type: "image/svg+xml", href: "/nekcode/logo.svg" }]],
@@ -109,6 +116,7 @@ export default defineConfig({
 		nav: [
 			{ text: "快速上手", link: "/start/quickstart" },
 			{ text: "使用指南", link: "/guide/usage" },
+			{ text: "桌面应用", link: "/gui/" },
 			{ text: "参考", link: "/reference/cli" },
 			{ text: "GitHub", link: REPO },
 		],
