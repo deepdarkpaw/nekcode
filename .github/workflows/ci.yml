@@ -96,6 +96,19 @@ jobs:
           if [[ -n "$RELEASE_TAG" ]]; then
             node ../ci-control/scripts/nek-tag.mjs parse --tag "$RELEASE_TAG" --github-output "$GITHUB_OUTPUT"
           fi
+      - name: Check that source archives exclude test code
+        # Historical tags explicitly selected for backfill may predate these rules.
+        if: ${{ inputs.release_tag == '' }}
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git archive --format=tar HEAD | tar -tf - | awk '
+            /(^|\/)(test|tests|__tests__)\// || /\.(test|spec)\.[^/]+$/ || /(^|\/)test\.ts$/ || $0 == "test.sh" {
+              print "Unexpected test path in source archive: " $0 > "/dev/stderr"
+              found = 1
+            }
+            END { exit found }
+          '
       - name: Hydrate and validate model data
         working-directory: source
         run: |

@@ -147,8 +147,10 @@ for platform in "${PLATFORMS[@]}"; do
     mkdir -p "$OUTPUT_DIR/$platform/assets"
     cp dist/modes/interactive/assets/* "$OUTPUT_DIR/$platform/assets/"
     cp -r dist/core/export-html "$OUTPUT_DIR/$platform/"
-    cp -r docs "$OUTPUT_DIR/$platform/"
-    cp -r examples "$OUTPUT_DIR/$platform/"
+    # Keep runnable examples, but leave test suites and provider test scripts in the checkout.
+    tar --exclude='test' --exclude='tests' --exclude='__tests__' \
+        --exclude='*.test.*' --exclude='*.spec.*' --exclude='test.ts' \
+        -cf - docs examples | tar -xf - -C "$OUTPUT_DIR/$platform"
 
     # Copy the selected architecture's native platform helpers next to the executable.
     native_platform="${platform/windows-/win32-}"

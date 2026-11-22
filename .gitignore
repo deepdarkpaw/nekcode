@@ -60,9 +60,20 @@ plans/
 collect.sh
 packages/agent/docs/extensions/pi-server-artifact/index.md
 
+# Local tests (tracked CI tests stay tracked; use git add -f for new CI coverage)
+test/
+tests/
+__tests__/
+*.test.*
+*.spec.*
+*-test.*
+test.ts
+mini-test.sh
+
 # nekcode workspace
 .worktree/
 .tmp/
+release/
 reference/
 /*.md
 !/README.md

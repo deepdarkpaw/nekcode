@@ -12,6 +12,17 @@
 # Archived patch artifacts preserve whitespace exactly
 packages/agent/docs/**/*.diff -whitespace
 
+# Source release archives omit test suites; normal Git checkouts retain them.
+test export-ignore
+tests export-ignore
+__tests__ export-ignore
+*.test.* export-ignore
+*.spec.* export-ignore
+*-test.* export-ignore
+test.ts export-ignore
+mini-test.sh export-ignore
+/test.sh export-ignore
+
 # Common binary assets
 *.png binary
 *.jpg binary
